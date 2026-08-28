@@ -34,6 +34,33 @@ class InviteExpired(ApiException):
         super().__init__("INVITE_EXPIRED", "The invite has expired.", status_code=410)
 
 
+class LessonRequestNotFound(ApiException):
+    def __init__(self):
+        super().__init__(
+            "LESSON_REQUEST_NOT_FOUND",
+            "The lesson request could not be found.",
+            status_code=404,
+        )
+
+
+class SlotOfferNotFound(ApiException):
+    def __init__(self):
+        super().__init__(
+            "SLOT_OFFER_NOT_FOUND",
+            "The selected lesson time is no longer available.",
+            status_code=404,
+        )
+
+
+class CalendarLinksUnavailable(ApiException):
+    def __init__(self):
+        super().__init__(
+            "CALENDAR_LINKS_UNAVAILABLE",
+            "Calendar links are unavailable until the lesson is confirmed.",
+            status_code=409,
+        )
+
+
 class SchedulingConflict(ApiException):
     def __init__(
         self,

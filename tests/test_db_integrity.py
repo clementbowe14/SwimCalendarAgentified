@@ -116,9 +116,16 @@ def test_alembic_migration_creates_entities_and_postgres_overlap_constraint():
 
     engine = create_engine(database_url)
     inspector = inspect(engine)
-    assert {"instructors", "appointments", "clients", "invite_tokens", "lesson_requests", "route_estimates"}.issubset(
-        set(inspector.get_table_names())
-    )
+    assert {
+        "instructors",
+        "appointments",
+        "clients",
+        "invite_tokens",
+        "lesson_requests",
+        "route_estimates",
+        "invite_intakes",
+        "invite_slot_offers",
+    }.issubset(set(inspector.get_table_names()))
     route_constraints = {
         constraint["name"] for constraint in inspector.get_unique_constraints("route_estimates")
     }

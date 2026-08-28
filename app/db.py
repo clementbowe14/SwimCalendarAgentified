@@ -10,6 +10,7 @@ from app.models import (
     Base,
     ClientDB,
     InstructorDB,
+    InviteIntakeDB,
     InviteTokenDB,
     LessonRequestDB,
     LocationInfo,
@@ -21,6 +22,7 @@ DATABASE_URL = os.getenv(
 )
 ACTIVE_APPOINTMENT_STATUSES = ("scheduled", "hold")
 DEMO_INVITE_TOKEN = "demo-invite-token"
+SOFIA_INVITE_TOKEN = "invite_sofia_0826"
 
 engine = create_engine(DATABASE_URL, echo=False)
 SessionLocal = sessionmaker(bind=engine)
@@ -125,6 +127,20 @@ def seed_data():
             )
         )
 
+    if not session.query(ClientDB).filter_by(id="client_sofia").first():
+        session.add(
+            ClientDB(
+                id="client_sofia",
+                instructor_id="inst_001",
+                name="Sofia Martinez",
+                email="ana.martinez@example.com",
+                phone="(512) 555-0194",
+                default_location_address="820 Lakeview Dr, Austin, TX",
+                default_lat=30.289,
+                default_lng=-97.739,
+            )
+        )
+
     if not session.query(InviteTokenDB).filter_by(token=DEMO_INVITE_TOKEN).first():
         session.add(
             InviteTokenDB(
@@ -135,6 +151,37 @@ def seed_data():
                 preferred_duration_mins=60,
                 allowed_durations_mins="30,45,60",
                 expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=30),
+            )
+        )
+
+    if not session.query(InviteTokenDB).filter_by(token=SOFIA_INVITE_TOKEN).first():
+        session.add(
+            InviteTokenDB(
+                token=SOFIA_INVITE_TOKEN,
+                instructor_id="inst_001",
+                client_id="client_sofia",
+                business_name="Swim Command",
+                location_label="Riverside facility or home pool",
+                preferred_duration_mins=45,
+                allowed_durations_mins="30,45,60",
+                expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=30),
+            )
+        )
+
+    if not session.query(InviteIntakeDB).filter_by(invite_token=SOFIA_INVITE_TOKEN).first():
+        session.add(
+            InviteIntakeDB(
+                id="intake_sofia_0826",
+                invite_token=SOFIA_INVITE_TOKEN,
+                client_name="Sofia Martinez",
+                guardian_phone="(512) 555-0194",
+                guardian_email="ana.martinez@example.com",
+                notes="Beginner swimmer. Prefers shallow end warmup.",
+                location_type="home",
+                location_address="820 Lakeview Dr, Austin, TX",
+                lat=30.289,
+                lng=-97.739,
+                is_instructor_facility=False,
             )
         )
     session.commit()

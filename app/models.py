@@ -191,6 +191,60 @@ class RouteEstimateDB(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+
+class InviteIntakeDB(Base):
+    __tablename__ = "invite_intakes"
+    __table_args__ = (
+        UniqueConstraint("invite_token", name="uq_invite_intakes_invite_token"),
+    )
+
+    id = Column(String, primary_key=True)
+    invite_token = Column(String, ForeignKey("invite_tokens.token"), nullable=False)
+    client_name = Column(String, nullable=False)
+    guardian_phone = Column(String, nullable=True)
+    guardian_email = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+    location_type = Column(String, nullable=False, default="home")
+    location_address = Column(String, nullable=False)
+    lat = Column(Float, nullable=True)
+    lng = Column(Float, nullable=True)
+    is_instructor_facility = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    invite = relationship("InviteTokenDB")
+
+
+class InviteSlotOfferDB(Base):
+    __tablename__ = "invite_slot_offers"
+    __table_args__ = (
+        Index("ix_invite_slot_offers_invite_expires", "invite_token", "expires_at"),
+    )
+
+    id = Column(String, primary_key=True)
+    invite_token = Column(String, ForeignKey("invite_tokens.token"), nullable=False)
+    instructor_id = Column(String, ForeignKey("instructors.id"), nullable=False)
+    client_name = Column(String, nullable=False)
+    client_address = Column(String, nullable=False)
+    requested_date = Column(Date, nullable=False)
+    slot_start = Column(DateTime, nullable=False)
+    slot_end = Column(DateTime, nullable=False)
+    duration_mins = Column(Integer, nullable=False)
+    location_type = Column(String, nullable=False)
+    location_address = Column(String, nullable=False)
+    lat = Column(Float, nullable=False)
+    lng = Column(Float, nullable=False)
+    travel_time_mins = Column(Integer, nullable=False)
+    buffer_mins = Column(Integer, nullable=False)
+    distance_miles = Column(Float, nullable=False)
+    recurrence = Column(String, nullable=False, default="single")
+    recurrence_available = Column(Boolean, nullable=False, default=True)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    invite = relationship("InviteTokenDB")
+
 # Pydantic Schemas
 class LocationInfo(BaseModel):
     address: str
