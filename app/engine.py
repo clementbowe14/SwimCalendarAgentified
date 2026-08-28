@@ -161,7 +161,9 @@ class SwimSchedulerConstraintEngine:
 
         # 1. Travel from previous location to target location
         dist_from_prev, travel_from_prev = self.routing.get_distance_and_travel_time(
-            prev_coords, target_coords
+            prev_coords,
+            target_coords,
+            departure_time=prev_end_time,
         )
 
         if prev_is_break:
@@ -182,23 +184,29 @@ class SwimSchedulerConstraintEngine:
                 is_after_break=prev_is_break
             )
 
-        # 2. Travel from target location to next location (if next event exists)
-        if next_coords is not None:
-            dist_to_next, travel_to_next = self.routing.get_distance_and_travel_time(
-                target_coords, next_coords
-            )
-            buffer_to_next = self.get_inter_lesson_buffer_minutes(dist_to_next)
-            # Must arrive at next location before next_start_time
-            latest_possible_lesson_end = next_start_time - datetime.timedelta(minutes=travel_to_next + buffer_to_next)
-        else:
-            latest_possible_lesson_end = day_end
-
         # Loop through 15-minute increments in the candidate window
         current_candidate = candidate_start
-        while current_candidate + lesson_delta <= latest_possible_lesson_end:
+        latest_gap_end = next_start_time if next_coords is not None else day_end
+        while current_candidate + lesson_delta <= latest_gap_end:
+            candidate_end = current_candidate + lesson_delta
+            if next_coords is not None:
+                dist_to_next, travel_to_next = self.routing.get_distance_and_travel_time(
+                    target_coords,
+                    next_coords,
+                    departure_time=candidate_end,
+                )
+                buffer_to_next = self.get_inter_lesson_buffer_minutes(dist_to_next)
+                arrives_before_next = (
+                    candidate_end + datetime.timedelta(minutes=travel_to_next + buffer_to_next)
+                    <= next_start_time
+                )
+                if not arrives_before_next:
+                    current_candidate += datetime.timedelta(minutes=15)
+                    continue
+
             slot = TimeSlotDTO(
                 start_time=current_candidate,
-                end_time=current_candidate + lesson_delta,
+                end_time=candidate_end,
                 travel_time_mins=travel_from_prev,
                 buffer_mins=buffer_mins,
                 distance_miles=dist_from_prev

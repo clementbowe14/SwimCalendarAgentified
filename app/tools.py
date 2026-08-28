@@ -1,12 +1,22 @@
 import datetime
 from typing import List, Optional
-from app.routing import HaversineRoutingProvider
 from app.engine import SwimSchedulerConstraintEngine
 from app.models import LocationInfo, TimeSlotDTO
 from app import db
+from app.routing_service import build_routing_provider
 
-routing_provider = HaversineRoutingProvider()
+routing_provider = build_routing_provider()
 constraint_engine = SwimSchedulerConstraintEngine(routing_provider)
+
+
+def configure_routing_provider(provider):
+    global routing_provider, constraint_engine
+    routing_provider = provider
+    constraint_engine = SwimSchedulerConstraintEngine(routing_provider)
+
+
+def reset_routing_provider():
+    configure_routing_provider(build_routing_provider())
 
 def find_available_swim_slots(
     instructor_id: str,

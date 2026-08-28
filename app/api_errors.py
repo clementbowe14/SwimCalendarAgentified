@@ -61,6 +61,52 @@ class InvalidSchedulingRequest(ApiException):
         super().__init__("INVALID_SCHEDULING_REQUEST", message, status_code=400, details=details)
 
 
+class GeocodingFailed(ApiException):
+    def __init__(self, details: Optional[dict[str, Any]] = None):
+        super().__init__(
+            "GEOCODING_FAILED",
+            "The address could not be geocoded.",
+            status_code=400,
+            details=details,
+        )
+
+
+class RoutingEstimateFailed(ApiException):
+    def __init__(self):
+        super().__init__(
+            "ROUTING_ESTIMATE_FAILED",
+            "Travel time could not be estimated.",
+            status_code=503,
+        )
+
+
+class RoutingTimeout(ApiException):
+    def __init__(self):
+        super().__init__(
+            "ROUTING_TIMEOUT",
+            "Travel time estimation timed out.",
+            status_code=503,
+        )
+
+
+class RoutingProviderUnavailable(ApiException):
+    def __init__(self):
+        super().__init__(
+            "ROUTING_PROVIDER_UNAVAILABLE",
+            "The routing provider is unavailable.",
+            status_code=503,
+        )
+
+
+class RoutingConfigurationError(ApiException):
+    def __init__(self):
+        super().__init__(
+            "ROUTING_CONFIGURATION_ERROR",
+            "The routing provider is not configured.",
+            status_code=503,
+        )
+
+
 def error_payload(code: str, message: str, details: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     error: dict[str, Any] = {"code": code, "message": message}
     if details:
