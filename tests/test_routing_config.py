@@ -2,6 +2,8 @@ import pytest
 
 from app.config import routing_settings_from_env
 from app.routing import HaversineRoutingProvider, RoutingProviderNotConfigured
+from app.routing_cache import CachingRoutingProvider
+from app.routing_providers import MapboxRoutingProvider
 from app.routing_service import build_routing_provider
 
 
@@ -28,11 +30,31 @@ def test_invalid_routing_provider_fails_with_configuration_error(monkeypatch):
         build_routing_provider(routing_settings_from_env())
 
 
-def test_mapbox_provider_is_reserved_for_production_provider_pr(monkeypatch):
+def test_mapbox_provider_requires_access_token(monkeypatch):
     monkeypatch.setenv("SWIM_ROUTING_PROVIDER", "mapbox")
+    monkeypatch.delenv("SWIM_MAPBOX_ACCESS_TOKEN", raising=False)
 
-    with pytest.raises(RoutingProviderNotConfigured, match="next routing provider PR"):
+    with pytest.raises(RoutingProviderNotConfigured, match="SWIM_MAPBOX_ACCESS_TOKEN"):
         build_routing_provider(routing_settings_from_env())
+
+
+def test_mapbox_provider_can_be_selected_by_configuration(monkeypatch):
+    monkeypatch.setenv("SWIM_ROUTING_PROVIDER", "mapbox")
+    monkeypatch.setenv("SWIM_MAPBOX_ACCESS_TOKEN", "test-token")
+    monkeypatch.delenv("SWIM_ROUTE_CACHE_ENABLED", raising=False)
+
+    provider = build_routing_provider(routing_settings_from_env())
+
+    assert isinstance(provider, MapboxRoutingProvider)
+
+
+def test_configured_cache_wraps_selected_provider(monkeypatch):
+    monkeypatch.setenv("SWIM_ROUTE_CACHE_ENABLED", "true")
+    monkeypatch.setenv("SWIM_ROUTING_PROVIDER", "haversine")
+
+    provider = build_routing_provider(routing_settings_from_env())
+
+    assert isinstance(provider, CachingRoutingProvider)
 
 
 def test_routing_settings_parse_cache_and_traffic_env(monkeypatch):

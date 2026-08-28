@@ -32,7 +32,15 @@ def reset_postgres_database(seed: bool = True) -> None:
 
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
-    command.upgrade(config, "head")
+    previous_database_url = os.environ.get("SWIM_DATABASE_URL")
+    os.environ["SWIM_DATABASE_URL"] = TEST_DATABASE_URL
+    try:
+        command.upgrade(config, "head")
+    finally:
+        if previous_database_url is None:
+            os.environ.pop("SWIM_DATABASE_URL", None)
+        else:
+            os.environ["SWIM_DATABASE_URL"] = previous_database_url
     db.configure_database(TEST_DATABASE_URL)
     if seed:
         db.seed_data()

@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -157,6 +158,38 @@ class LessonRequestDB(Base):
     client = relationship("ClientDB")
     invite = relationship("InviteTokenDB", back_populates="lesson_requests")
     appointment = relationship("AppointmentDB", back_populates="lesson_request", uselist=False)
+
+
+class RouteEstimateDB(Base):
+    __tablename__ = "route_estimates"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "origin_key",
+            "destination_key",
+            "departure_bucket_start",
+            "traffic_mode",
+            name="uq_route_estimates_cache_key",
+        ),
+        Index("ix_route_estimates_expires_at", "expires_at"),
+    )
+
+    id = Column(String, primary_key=True)
+    provider = Column(String, nullable=False)
+    origin_lat = Column(Float, nullable=False)
+    origin_lng = Column(Float, nullable=False)
+    destination_lat = Column(Float, nullable=False)
+    destination_lng = Column(Float, nullable=False)
+    origin_key = Column(String, nullable=False)
+    destination_key = Column(String, nullable=False)
+    departure_bucket_start = Column(DateTime, nullable=False)
+    traffic_mode = Column(String, nullable=False, default="none")
+    distance_miles = Column(Float, nullable=False)
+    travel_time_mins = Column(Integer, nullable=False)
+    duration_seconds = Column(Integer, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 # Pydantic Schemas
 class LocationInfo(BaseModel):

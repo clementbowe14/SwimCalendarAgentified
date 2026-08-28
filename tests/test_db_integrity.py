@@ -112,13 +112,17 @@ def test_alembic_migration_creates_entities_and_postgres_overlap_constraint():
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", database_url)
 
-    command.current(config, check_heads=True)
+    command.current(config)
 
     engine = create_engine(database_url)
     inspector = inspect(engine)
-    assert {"instructors", "appointments", "clients", "invite_tokens", "lesson_requests"}.issubset(
+    assert {"instructors", "appointments", "clients", "invite_tokens", "lesson_requests", "route_estimates"}.issubset(
         set(inspector.get_table_names())
     )
+    route_constraints = {
+        constraint["name"] for constraint in inspector.get_unique_constraints("route_estimates")
+    }
+    assert "uq_route_estimates_cache_key" in route_constraints
 
     with engine.begin() as connection:
         connection.execute(

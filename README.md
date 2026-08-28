@@ -93,6 +93,28 @@ SWIM_API_CORS_ORIGINS=http://127.0.0.1:3001,http://127.0.0.1:3002 ./venv/bin/uvi
 
 Set `SWIM_DATABASE_URL` to point the API at a non-default Postgres database.
 
+### Routing Provider
+
+Local development uses the deterministic Haversine routing provider by default:
+
+```text
+SWIM_ROUTING_PROVIDER=haversine
+```
+
+To use Mapbox for geocoding and route estimates, set:
+
+```bash
+SWIM_ROUTING_PROVIDER=mapbox SWIM_MAPBOX_ACCESS_TOKEN=... ./venv/bin/uvicorn app.api:app --host 127.0.0.1 --port 8000
+```
+
+Optional routing settings:
+
+- `SWIM_ROUTING_TRAFFIC_MODE=none|typical|live`
+- `SWIM_ROUTING_TIMEOUT_SECONDS=3`
+- `SWIM_ROUTE_CACHE_ENABLED=true`
+- `SWIM_ROUTE_CACHE_TTL_HOURS=24`
+- `SWIM_ROUTE_DEPARTURE_BUCKET_MINUTES=15`
+
 ### MVP Public Invite Token
 
 The MVP public API includes a seeded development invite token:

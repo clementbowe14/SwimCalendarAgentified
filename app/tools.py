@@ -1,11 +1,33 @@
 import datetime
 from typing import List, Optional
+from app.routing import BaseRoutingProvider, RoutingProviderNotConfigured
 from app.engine import SwimSchedulerConstraintEngine
 from app.models import LocationInfo, TimeSlotDTO
 from app import db
 from app.routing_service import build_routing_provider
 
-routing_provider = build_routing_provider()
+
+class UnconfiguredRoutingProvider(BaseRoutingProvider):
+    provider_name = "unconfigured"
+
+    def __init__(self, error: RoutingProviderNotConfigured):
+        self.error = error
+
+    def estimate_route(self, origin_coords, dest_coords, departure_time=None, traffic_mode="none"):
+        raise self.error
+
+    def geocode(self, address: str):
+        raise self.error
+
+
+def _build_default_routing_provider():
+    try:
+        return build_routing_provider()
+    except RoutingProviderNotConfigured as exc:
+        return UnconfiguredRoutingProvider(exc)
+
+
+routing_provider = _build_default_routing_provider()
 constraint_engine = SwimSchedulerConstraintEngine(routing_provider)
 
 
@@ -16,7 +38,7 @@ def configure_routing_provider(provider):
 
 
 def reset_routing_provider():
-    configure_routing_provider(build_routing_provider())
+    configure_routing_provider(_build_default_routing_provider())
 
 def find_available_swim_slots(
     instructor_id: str,
