@@ -9,6 +9,13 @@ DATABASE_URL = "sqlite:///swim_scheduler.db"
 engine = create_engine(DATABASE_URL, echo=False)
 SessionLocal = sessionmaker(bind=engine)
 
+def configure_database(database_url: str = DATABASE_URL):
+    """Rebinds the database session factory; useful for isolated API tests."""
+    global DATABASE_URL, engine, SessionLocal
+    DATABASE_URL = database_url
+    engine = create_engine(DATABASE_URL, echo=False)
+    SessionLocal = sessionmaker(bind=engine)
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     seed_data()
@@ -116,6 +123,8 @@ def get_appointments_for_date(instructor_id: str, date_str: str) -> List[dict]:
     session.close()
     return result
 
+import uuid
+
 def save_appointment(
     instructor_id: str,
     client_id: str,
@@ -127,7 +136,7 @@ def save_appointment(
     lng: float
 ) -> str:
     session = SessionLocal()
-    app_id = f"app_{int(datetime.datetime.now().timestamp())}"
+    app_id = f"app_{uuid.uuid4().hex[:8]}"
     new_app = AppointmentDB(
         id=app_id,
         instructor_id=instructor_id,

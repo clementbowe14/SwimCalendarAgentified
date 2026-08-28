@@ -1,0 +1,46 @@
+from datetime import date
+
+from fastapi import APIRouter, Depends, Query
+
+from app.api_schemas import (
+    AvailabilitySearchRequest,
+    AvailabilitySearchResponse,
+    BookLessonResponse,
+    CoachBookLessonRequest,
+    CoachContext as CoachContextResponse,
+    CoachScheduleResponse,
+)
+from app.api_services import book_coach_lesson, get_coach_schedule, search_coach_availability
+from app.dependencies import CoachContext, get_current_coach
+
+
+router = APIRouter(prefix="/api/coach", tags=["coach"])
+
+
+@router.get("/me", response_model=CoachContextResponse)
+def read_current_coach(coach: CoachContext = Depends(get_current_coach)) -> CoachContextResponse:
+    return CoachContextResponse(instructor_id=coach.instructor_id, display_name=coach.display_name)
+
+
+@router.get("/schedule", response_model=CoachScheduleResponse)
+def read_schedule(
+    date_: date = Query(alias="date"),
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachScheduleResponse:
+    return get_coach_schedule(coach.instructor_id, date_)
+
+
+@router.post("/availability", response_model=AvailabilitySearchResponse)
+def find_availability(
+    request: AvailabilitySearchRequest,
+    coach: CoachContext = Depends(get_current_coach),
+) -> AvailabilitySearchResponse:
+    return search_coach_availability(coach.instructor_id, request)
+
+
+@router.post("/bookings", response_model=BookLessonResponse)
+def create_booking(
+    request: CoachBookLessonRequest,
+    coach: CoachContext = Depends(get_current_coach),
+) -> BookLessonResponse:
+    return book_coach_lesson(coach.instructor_id, request)
