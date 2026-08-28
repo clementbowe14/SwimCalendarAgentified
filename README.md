@@ -14,6 +14,34 @@ Create or use the existing virtual environment, then install dependencies:
 ./venv/bin/python -m pip install -r requirements.txt
 ```
 
+Start the local Postgres database:
+
+```bash
+docker compose up -d postgres
+```
+
+This creates the local `swim_scheduler` database for the API and a `swim_scheduler_test` database for tests.
+
+### Database Migrations
+
+Run migrations before starting the API when creating or upgrading a local database:
+
+```bash
+./venv/bin/alembic upgrade head
+```
+
+The default database is:
+
+```text
+postgresql+psycopg://swim:swim@127.0.0.1:5432/swim_scheduler
+```
+
+Override it with:
+
+```bash
+SWIM_DATABASE_URL=postgresql+psycopg://user:password@host:5432/swim_scheduler ./venv/bin/alembic upgrade head
+```
+
 ### Start The API
 
 ```bash
@@ -63,6 +91,8 @@ Override the list with a comma-separated environment variable:
 SWIM_API_CORS_ORIGINS=http://127.0.0.1:3001,http://127.0.0.1:3002 ./venv/bin/uvicorn app.api:app --host 127.0.0.1 --port 8000
 ```
 
+Set `SWIM_DATABASE_URL` to point the API at a non-default Postgres database.
+
 ### MVP Public Invite Token
 
 The MVP public API includes a seeded development invite token:
@@ -109,3 +139,11 @@ Run the full test suite with:
 ```bash
 ./venv/bin/python -m pytest -q
 ```
+
+Database-backed tests require Postgres. By default they use:
+
+```text
+postgresql+psycopg://swim:swim@127.0.0.1:5432/swim_scheduler_test
+```
+
+Override the test database with `SWIM_TEST_DATABASE_URL`.

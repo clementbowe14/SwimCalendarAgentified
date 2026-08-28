@@ -1,10 +1,26 @@
 import datetime
+import os
+import uuid
 from typing import Optional, List
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
-from app.models import Base, InstructorDB, AppointmentDB, LocationInfo
+from app.models import (
+    AppointmentDB,
+    Base,
+    ClientDB,
+    InstructorDB,
+    InviteTokenDB,
+    LessonRequestDB,
+    LocationInfo,
+)
 
-DATABASE_URL = "sqlite:///swim_scheduler.db"
+DATABASE_URL = os.getenv(
+    "SWIM_DATABASE_URL",
+    "postgresql+psycopg://swim:swim@127.0.0.1:5432/swim_scheduler",
+)
+ACTIVE_APPOINTMENT_STATUSES = ("scheduled", "hold")
+DEMO_INVITE_TOKEN = "demo-invite-token"
 
 engine = create_engine(DATABASE_URL, echo=False)
 SessionLocal = sessionmaker(bind=engine)
@@ -17,7 +33,6 @@ def configure_database(database_url: str = DATABASE_URL):
     SessionLocal = sessionmaker(bind=engine)
 
 def init_db():
-    Base.metadata.create_all(bind=engine)
     seed_data()
 
 def seed_data():
@@ -86,6 +101,43 @@ def seed_data():
         session.add_all([app1, app2, app3])
         session.commit()
 
+    if not session.query(ClientDB).filter_by(id="client_alice").first():
+        session.add(
+            ClientDB(
+                id="client_alice",
+                instructor_id="inst_001",
+                name="Alice",
+                default_location_address="450 North Blvd, Austin, TX",
+                default_lat=30.3300,
+                default_lng=-97.7200,
+            )
+        )
+
+    if not session.query(ClientDB).filter_by(id="client_bob").first():
+        session.add(
+            ClientDB(
+                id="client_bob",
+                instructor_id="inst_001",
+                name="Bob",
+                default_location_address="800 West Lake Dr, Austin, TX",
+                default_lat=30.2700,
+                default_lng=-97.8200,
+            )
+        )
+
+    if not session.query(InviteTokenDB).filter_by(token=DEMO_INVITE_TOKEN).first():
+        session.add(
+            InviteTokenDB(
+                token=DEMO_INVITE_TOKEN,
+                instructor_id="inst_001",
+                business_name="Riley Swim",
+                location_label="Instructor facility or client pool",
+                preferred_duration_mins=60,
+                allowed_durations_mins="30,45,60",
+                expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=30),
+            )
+        )
+    session.commit()
     session.close()
 
 def get_instructor_info(instructor_id: str = "inst_001") -> Optional[InstructorDB]:
@@ -104,7 +156,9 @@ def get_appointments_for_date(instructor_id: str, date_str: str) -> List[dict]:
     apps = session.query(AppointmentDB).filter(
         AppointmentDB.instructor_id == instructor_id,
         AppointmentDB.start_time >= start_of_day,
-        AppointmentDB.end_time <= end_of_day
+        AppointmentDB.end_time <= end_of_day,
+        AppointmentDB.status.in_(ACTIVE_APPOINTMENT_STATUSES),
+        AppointmentDB.cancelled_at.is_(None),
     ).all()
 
     result = [
@@ -123,7 +177,60 @@ def get_appointments_for_date(instructor_id: str, date_str: str) -> List[dict]:
     session.close()
     return result
 
-import uuid
+class ScheduleConflictError(Exception):
+    pass
+
+class IdempotencyKeyConflictError(Exception):
+    pass
+
+def get_appointment_by_idempotency_key(idempotency_key: Optional[str]) -> Optional[dict]:
+    if not idempotency_key:
+        return None
+    session = SessionLocal()
+    appointment = session.query(AppointmentDB).filter_by(idempotency_key=idempotency_key).first()
+    result = _appointment_to_dict(appointment) if appointment else None
+    session.close()
+    return result
+
+def _appointment_to_dict(appointment: Optional[AppointmentDB]) -> Optional[dict]:
+    if not appointment:
+        return None
+    return {
+        "id": appointment.id,
+        "instructor_id": appointment.instructor_id,
+        "client_id": appointment.client_id,
+        "title": appointment.title,
+        "start_time": appointment.start_time,
+        "end_time": appointment.end_time,
+        "location_address": appointment.location_address,
+        "lat": appointment.lat,
+        "lng": appointment.lng,
+        "is_break": appointment.is_break,
+        "event_type": appointment.event_type,
+        "status": appointment.status,
+        "idempotency_key": appointment.idempotency_key,
+        "request_id": appointment.request_id,
+    }
+
+def has_active_schedule_conflict(
+    instructor_id: str,
+    start_time: datetime.datetime,
+    end_time: datetime.datetime,
+    exclude_appointment_id: Optional[str] = None,
+) -> bool:
+    session = SessionLocal()
+    query = session.query(AppointmentDB).filter(
+        AppointmentDB.instructor_id == instructor_id,
+        AppointmentDB.status.in_(ACTIVE_APPOINTMENT_STATUSES),
+        AppointmentDB.cancelled_at.is_(None),
+        AppointmentDB.start_time < end_time,
+        AppointmentDB.end_time > start_time,
+    )
+    if exclude_appointment_id:
+        query = query.filter(AppointmentDB.id != exclude_appointment_id)
+    exists = session.query(query.exists()).scalar()
+    session.close()
+    return bool(exists)
 
 def save_appointment(
     instructor_id: str,
@@ -133,23 +240,68 @@ def save_appointment(
     end_time: datetime.datetime,
     location_address: str,
     lat: float,
-    lng: float
+    lng: float,
+    *,
+    idempotency_key: Optional[str] = None,
+    event_type: str = "lesson",
+    status: str = "scheduled",
+    request_id: Optional[str] = None,
 ) -> str:
+    if end_time <= start_time:
+        raise ValueError("Appointment end time must be after start time.")
+
     session = SessionLocal()
-    app_id = f"app_{uuid.uuid4().hex[:8]}"
-    new_app = AppointmentDB(
-        id=app_id,
-        instructor_id=instructor_id,
-        client_id=client_id,
-        title=title,
-        start_time=start_time,
-        end_time=end_time,
-        location_address=location_address,
-        lat=lat,
-        lng=lng,
-        is_break=False
-    )
-    session.add(new_app)
-    session.commit()
-    session.close()
-    return app_id
+    try:
+        if idempotency_key:
+            existing = session.query(AppointmentDB).filter_by(idempotency_key=idempotency_key).first()
+            if existing:
+                if (
+                    existing.instructor_id != instructor_id
+                    or existing.start_time != start_time
+                    or existing.end_time != end_time
+                    or existing.client_id != client_id
+                ):
+                    raise IdempotencyKeyConflictError("Idempotency key was already used for a different booking.")
+                return existing.id
+
+        conflict = session.query(AppointmentDB).filter(
+            AppointmentDB.instructor_id == instructor_id,
+            AppointmentDB.status.in_(ACTIVE_APPOINTMENT_STATUSES),
+            AppointmentDB.cancelled_at.is_(None),
+            AppointmentDB.start_time < end_time,
+            AppointmentDB.end_time > start_time,
+        ).first()
+        if conflict:
+            raise ScheduleConflictError("An active schedule item already occupies that time.")
+
+        app_id = f"app_{uuid.uuid4().hex[:8]}"
+        new_app = AppointmentDB(
+            id=app_id,
+            instructor_id=instructor_id,
+            client_id=client_id,
+            request_id=request_id,
+            title=title,
+            start_time=start_time,
+            end_time=end_time,
+            location_address=location_address,
+            lat=lat,
+            lng=lng,
+            is_break=event_type == "block",
+            event_type=event_type,
+            status=status,
+            idempotency_key=idempotency_key,
+        )
+        session.add(new_app)
+        session.commit()
+        return app_id
+    except IntegrityError as exc:
+        session.rollback()
+        if "exclude_appointments_active_overlap" in str(exc):
+            raise ScheduleConflictError("An active schedule item already occupies that time.") from exc
+        if idempotency_key:
+            existing = session.query(AppointmentDB).filter_by(idempotency_key=idempotency_key).first()
+            if existing:
+                return existing.id
+        raise
+    finally:
+        session.close()
