@@ -1,6 +1,67 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Python caches and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Python virtual environments
 venv/
 .venv/
-__pycache__/
-*.pyc
+env/
+.env/
+
+# Python packaging and build output
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Local databases
 *.db
-.pytest_cache/
+*.sqlite
+*.sqlite3
+
+# Node dependencies
+node_modules/
+
+# Node logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Node and frontend build output
+.next/
+out/
+coverage/
+.turbo/
+.vite/
+
+# Package manager stores
+.npm/
+.pnpm-store/
+
+# Local prototype folders
+swim-command-center/
+client-invite-next/
