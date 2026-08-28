@@ -72,7 +72,9 @@ def book_swim_lesson(
     client_name: str,
     start_time_iso: str,
     duration_mins: int,
-    location_address: str
+    location_address: str,
+    idempotency_key: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> dict:
     """
     Books an appointment slot after validating inputs.
@@ -90,7 +92,9 @@ def book_swim_lesson(
         end_time=end_time,
         location_address=location_address,
         lat=lat,
-        lng=lng
+        lng=lng,
+        idempotency_key=idempotency_key,
+        request_id=request_id,
     )
 
     return {

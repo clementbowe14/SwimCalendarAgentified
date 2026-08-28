@@ -43,6 +43,15 @@ class SchedulingConflict(ApiException):
         super().__init__("SCHEDULING_CONFLICT", message, status_code=409, details=details)
 
 
+class IdempotencyConflict(ApiException):
+    def __init__(self):
+        super().__init__(
+            "IDEMPOTENCY_KEY_CONFLICT",
+            "The idempotency key was already used for a different mutation.",
+            status_code=409,
+        )
+
+
 class InvalidSchedulingRequest(ApiException):
     def __init__(
         self,

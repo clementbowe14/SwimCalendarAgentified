@@ -1,7 +1,19 @@
 from datetime import datetime, time
 from typing import List, Optional
 from pydantic import BaseModel, Field
-from sqlalchemy import Column, String, Float, DateTime, Boolean, ForeignKey, Integer, create_engine
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -18,13 +30,30 @@ class InstructorDB(Base):
     work_end_time = Column(String, default="18:00")   # HH:MM format
 
     appointments = relationship("AppointmentDB", back_populates="instructor")
+    clients = relationship("ClientDB", back_populates="instructor")
+    invite_tokens = relationship("InviteTokenDB", back_populates="instructor")
+    lesson_requests = relationship("LessonRequestDB", back_populates="instructor")
 
 class AppointmentDB(Base):
     __tablename__ = 'appointments'
+    __table_args__ = (
+        CheckConstraint("end_time > start_time", name="ck_appointments_end_after_start"),
+        CheckConstraint(
+            "event_type in ('lesson', 'block', 'hold')",
+            name="ck_appointments_event_type",
+        ),
+        CheckConstraint(
+            "status in ('scheduled', 'hold', 'cancelled', 'completed')",
+            name="ck_appointments_status",
+        ),
+        Index("ix_appointments_instructor_window", "instructor_id", "start_time", "end_time"),
+        Index("uq_appointments_idempotency_key", "idempotency_key", unique=True),
+    )
 
     id = Column(String, primary_key=True)
     instructor_id = Column(String, ForeignKey('instructors.id'), nullable=False)
     client_id = Column(String, nullable=False) # 'client' or 'instructor_break'
+    request_id = Column(String, ForeignKey("lesson_requests.id"), nullable=True)
     title = Column(String, nullable=False)
     start_time = Column(DateTime, nullable=False)
     end_time = Column(DateTime, nullable=False)
@@ -32,8 +61,102 @@ class AppointmentDB(Base):
     lat = Column(Float, nullable=False)
     lng = Column(Float, nullable=False)
     is_break = Column(Boolean, default=False)
+    event_type = Column(String, nullable=False, default="lesson")
+    status = Column(String, nullable=False, default="scheduled")
+    idempotency_key = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    cancelled_at = Column(DateTime, nullable=True)
 
     instructor = relationship("InstructorDB", back_populates="appointments")
+    lesson_request = relationship("LessonRequestDB", back_populates="appointment")
+
+class ClientDB(Base):
+    __tablename__ = "clients"
+    __table_args__ = (
+        Index("ix_clients_instructor_name", "instructor_id", "name"),
+    )
+
+    id = Column(String, primary_key=True)
+    instructor_id = Column(String, ForeignKey("instructors.id"), nullable=False)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    default_location_address = Column(String, nullable=True)
+    default_lat = Column(Float, nullable=True)
+    default_lng = Column(Float, nullable=True)
+    status = Column(String, nullable=False, default="active")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    instructor = relationship("InstructorDB", back_populates="clients")
+
+class InviteTokenDB(Base):
+    __tablename__ = "invite_tokens"
+    __table_args__ = (
+        Index("ix_invite_tokens_instructor", "instructor_id"),
+    )
+
+    token = Column(String, primary_key=True)
+    instructor_id = Column(String, ForeignKey("instructors.id"), nullable=False)
+    client_id = Column(String, ForeignKey("clients.id"), nullable=True)
+    business_name = Column(String, nullable=False)
+    location_label = Column(String, nullable=False)
+    preferred_duration_mins = Column(Integer, nullable=False, default=60)
+    allowed_durations_mins = Column(Text, nullable=False, default="30,45,60")
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    instructor = relationship("InstructorDB", back_populates="invite_tokens")
+    client = relationship("ClientDB")
+    lesson_requests = relationship("LessonRequestDB", back_populates="invite")
+
+class LessonRequestDB(Base):
+    __tablename__ = "lesson_requests"
+    __table_args__ = (
+        CheckConstraint("slot_end > slot_start", name="ck_lesson_requests_end_after_start"),
+        CheckConstraint(
+            "status in ('pending', 'accepted', 'declined', 'cancelled')",
+            name="ck_lesson_requests_status",
+        ),
+        CheckConstraint(
+            "location_type in ('home', 'facility')",
+            name="ck_lesson_requests_location_type",
+        ),
+        Index("ix_lesson_requests_instructor_status", "instructor_id", "status"),
+        Index("uq_lesson_requests_request_token", "request_token", unique=True),
+        Index("uq_lesson_requests_idempotency_key", "idempotency_key", unique=True),
+    )
+
+    id = Column(String, primary_key=True)
+    request_token = Column(String, nullable=False)
+    invite_token = Column(String, ForeignKey("invite_tokens.token"), nullable=False)
+    instructor_id = Column(String, ForeignKey("instructors.id"), nullable=False)
+    client_id = Column(String, ForeignKey("clients.id"), nullable=True)
+    client_name = Column(String, nullable=False)
+    client_email = Column(String, nullable=True)
+    client_phone = Column(String, nullable=True)
+    client_address = Column(String, nullable=False)
+    lat = Column(Float, nullable=False)
+    lng = Column(Float, nullable=False)
+    requested_date = Column(Date, nullable=False)
+    slot_start = Column(DateTime, nullable=False)
+    slot_end = Column(DateTime, nullable=False)
+    duration_mins = Column(Integer, nullable=False)
+    travel_time_mins = Column(Integer, nullable=False, default=0)
+    buffer_mins = Column(Integer, nullable=False, default=0)
+    distance_miles = Column(Float, nullable=False, default=0.0)
+    location_type = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="pending")
+    idempotency_key = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    instructor = relationship("InstructorDB", back_populates="lesson_requests")
+    client = relationship("ClientDB")
+    invite = relationship("InviteTokenDB", back_populates="lesson_requests")
+    appointment = relationship("AppointmentDB", back_populates="lesson_request", uselist=False)
 
 # Pydantic Schemas
 class LocationInfo(BaseModel):
