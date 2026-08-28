@@ -3,13 +3,13 @@ import pytest
 
 from app import db
 from app.api import create_app
-from app.public_tokens import DEMO_INVITE_TOKEN, clear_lesson_requests
+from app.public_tokens import DEMO_INVITE_TOKEN
+from tests.db_test_utils import reset_postgres_database
 
 
 @pytest.fixture()
-def client(tmp_path):
-    db.configure_database(f"sqlite:///{tmp_path / 'api-test.db'}")
-    clear_lesson_requests()
+def client():
+    reset_postgres_database()
     with TestClient(create_app(), raise_server_exceptions=False) as test_client:
         yield test_client
     db.configure_database()
@@ -153,3 +153,62 @@ def test_public_lesson_request_creates_pending_request(client):
     assert payload["status"] == "pending"
     assert payload["request_token"].startswith("req_")
     assert payload["selected_slot"]["start_iso"] == slot_start
+
+
+def test_coach_booking_retry_with_idempotency_key_returns_same_appointment(client):
+    availability = client.post(
+        "/api/coach/availability",
+        json={
+            "client_name": "Charlie",
+            "client_address": "450 North Blvd, Austin, TX",
+            "requested_date": "2026-08-21",
+            "duration_mins": 60,
+            "is_instructor_facility": False,
+        },
+    )
+    slot_start = availability.json()["available_slots"][0]["start_iso"]
+    payload = {
+        "client_name": "Charlie",
+        "client_address": "450 North Blvd, Austin, TX",
+        "start_time": slot_start,
+        "duration_mins": 60,
+        "is_instructor_facility": False,
+        "idempotency_key": "booking-api-key-123",
+    }
+
+    first = client.post("/api/coach/bookings", json=payload)
+    second = client.post("/api/coach/bookings", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["appointment_id"] == second.json()["appointment_id"]
+
+
+def test_public_request_retry_with_idempotency_key_returns_same_request(client):
+    availability = client.post(
+        f"/api/public/invites/{DEMO_INVITE_TOKEN}/availability",
+        json={
+            "client_name": "Sofia Martinez",
+            "client_address": "450 North Blvd, Austin, TX",
+            "requested_date": "2026-08-21",
+            "location_type": "home",
+            "duration_mins": 45,
+        },
+    )
+    slot_start = availability.json()["available_slots"][0]["start_iso"]
+    payload = {
+        "client_name": "Sofia Martinez",
+        "client_address": "450 North Blvd, Austin, TX",
+        "requested_date": "2026-08-21",
+        "slot_start": slot_start,
+        "duration_mins": 45,
+        "location_type": "home",
+        "idempotency_key": "request-api-key-123",
+    }
+
+    first = client.post(f"/api/public/invites/{DEMO_INVITE_TOKEN}/requests", json=payload)
+    second = client.post(f"/api/public/invites/{DEMO_INVITE_TOKEN}/requests", json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["request_token"] == second.json()["request_token"]

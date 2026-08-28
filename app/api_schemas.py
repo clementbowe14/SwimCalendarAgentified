@@ -79,6 +79,7 @@ class CoachBookLessonRequest(BaseModel):
     start_time: datetime
     duration_mins: int = Field(default=60, ge=15, le=240, multiple_of=15)
     is_instructor_facility: bool = False
+    idempotency_key: Optional[str] = Field(default=None, min_length=8, max_length=160)
 
 
 class BookLessonResponse(BaseModel):
@@ -120,6 +121,7 @@ class PublicLessonRequestCreate(BaseModel):
     slot_start: datetime
     duration_mins: int = Field(default=60, ge=15, le=240, multiple_of=15)
     location_type: Literal["home", "facility"] = "home"
+    idempotency_key: Optional[str] = Field(default=None, min_length=8, max_length=160)
 
 
 class PublicLessonRequestResponse(BaseModel):
