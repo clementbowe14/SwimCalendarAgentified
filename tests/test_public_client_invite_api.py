@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -8,6 +9,24 @@ from app.api import create_app
 from app.db import SOFIA_INVITE_TOKEN
 from app.models import AppointmentDB, LessonRequestDB
 from tests.db_test_utils import reset_postgres_database
+
+
+def test_client_invite_openapi_documents_fetch_adapter_contract():
+    schema = create_app().openapi()
+
+    expected_paths = {
+        ("GET", "/api/public/client-invites/{token}"): "ClientInviteEnvelopeResponse",
+        ("POST", "/api/public/client-invites/{token}/intake"): "ClientInviteEnvelopeResponse",
+        ("POST", "/api/public/client-invites/{token}/slots"): "ClientInviteAvailabilityResponse",
+        ("POST", "/api/public/client-invites/{token}/lesson-requests"): "ClientInviteLessonRequestResponse",
+        ("GET", "/api/public/lesson-requests/{request_token}"): "ClientInviteLessonRequestResponse",
+        ("GET", "/api/public/lesson-requests/{request_token}/calendar-links"): "ClientInviteCalendarLinks",
+    }
+
+    for (method, path), response_schema in expected_paths.items():
+        operation = schema["paths"][path][method.lower()]
+        success_response = operation["responses"]["200"]["content"]["application/json"]["schema"]
+        assert success_response["$ref"].endswith(f"/{response_schema}")
 
 
 @pytest.fixture()
@@ -83,6 +102,22 @@ def test_client_invite_slots_ignore_spoofed_internal_ids_and_return_slot_ids(cli
     assert "client_id" not in _flatten_keys(payload)
 
 
+def test_parallel_slot_searches_reuse_server_issued_offer_ids(client):
+    request = _slot_search_request()
+
+    def search_slots() -> dict[str, Any]:
+        response = client.post(f"/api/public/client-invites/{SOFIA_INVITE_TOKEN}/slots", json=request)
+        assert response.status_code == 200
+        return response.json()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first, second = executor.map(lambda _: search_slots(), range(2))
+
+    assert first["slots"]
+    assert second["slots"]
+    assert [slot["id"] for slot in first["slots"]] == [slot["id"] for slot in second["slots"]]
+
+
 def test_client_invite_lesson_request_uses_server_issued_slot_offer(client):
     slot_response = _create_slot_offer(client)
     slot_id = slot_response["slots"][0]["id"]
@@ -156,23 +191,27 @@ def test_confirmed_request_returns_public_calendar_links(client):
 def _create_slot_offer(client: TestClient) -> dict[str, Any]:
     response = client.post(
         f"/api/public/client-invites/{SOFIA_INVITE_TOKEN}/slots",
-        json={
-            "invite_token": SOFIA_INVITE_TOKEN,
-            "client_name": "Sofia Martinez",
-            "location": {
-                "address": "450 North Blvd, Austin, TX",
-                "lat": 30.33,
-                "lng": -97.72,
-                "is_instructor_facility": False,
-            },
-            "requested_date": "2026-08-20",
-            "duration_mins": 45,
-            "recurrence": "single",
-            "windows": [{"id": "all_day", "days": ["Thu"], "start_time": "08:00", "end_time": "18:00"}],
-        },
+        json=_slot_search_request(),
     )
     assert response.status_code == 200
     return response.json()
+
+
+def _slot_search_request() -> dict[str, Any]:
+    return {
+        "invite_token": SOFIA_INVITE_TOKEN,
+        "client_name": "Sofia Martinez",
+        "location": {
+            "address": "450 North Blvd, Austin, TX",
+            "lat": 30.33,
+            "lng": -97.72,
+            "is_instructor_facility": False,
+        },
+        "requested_date": "2026-08-20",
+        "duration_mins": 45,
+        "recurrence": "single",
+        "windows": [{"id": "all_day", "days": ["Thu"], "start_time": "08:00", "end_time": "18:00"}],
+    }
 
 
 def _mark_request_confirmed(request_token: str) -> None:

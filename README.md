@@ -117,10 +117,11 @@ Optional routing settings:
 
 ### MVP Public Invite Token
 
-The MVP public API includes a seeded development invite token:
+The MVP public API includes seeded development invite tokens:
 
 ```text
 demo-invite-token
+invite_sofia_0826
 ```
 
 Example public invite request:
@@ -129,7 +130,16 @@ Example public invite request:
 curl http://127.0.0.1:8000/api/public/invites/demo-invite-token
 ```
 
-Public routes are scoped by invite/request tokens and do not require clients to submit raw instructor or client IDs.
+The `frontend-client-invite` app can disable its mock adapter by setting:
+
+```bash
+VITE_CLIENT_INVITE_API_URL=http://127.0.0.1:8000/api/public
+```
+
+It defaults to the seeded `invite_sofia_0826` token. The backend exposes the matching fetch adapter
+routes under `/api/public/client-invites/{token}` and `/api/public/lesson-requests/{request_token}`.
+Public routes are scoped by invite/request tokens and do not require clients to submit raw instructor
+or client IDs.
 
 ### Representative Routes
 
@@ -142,6 +152,13 @@ Public routes are scoped by invite/request tokens and do not require clients to 
 - `POST /api/public/invites/{token}/availability`
 - `POST /api/public/invites/{token}/requests`
 - `GET /api/public/requests/{request_token}`
+- `GET /api/public/client-invites/{token}`
+- `POST /api/public/client-invites/{token}/intake`
+- `POST /api/public/client-invites/{token}/slots`
+- `POST /api/public/client-invites/{token}/lesson-requests`
+- `GET /api/public/lesson-requests/{request_token}`
+- `GET /api/public/lesson-requests/{request_token}/calendar-links`
+- `GET /api/public/calendar/{request_token}.ics`
 
 Errors use a stable JSON shape:
 
