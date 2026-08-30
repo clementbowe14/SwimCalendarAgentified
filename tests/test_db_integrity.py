@@ -112,7 +112,7 @@ def test_alembic_migration_creates_entities_and_postgres_overlap_constraint():
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", database_url)
 
-    command.current(config)
+    command.current(config, check_heads=True)
 
     engine = create_engine(database_url)
     inspector = inspect(engine)
