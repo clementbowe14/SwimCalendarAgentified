@@ -1,4 +1,4 @@
-import { expect, test } from "../../swim-command-center/node_modules/@playwright/test/index.mjs";
+import { expect, test } from "@playwright/test";
 
 test("navigates the instructor command screens with the local adapter", async ({ page }) => {
   await page.goto("/");

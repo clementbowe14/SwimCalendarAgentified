@@ -1,0 +1,193 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+env:
+  SWIM_DATABASE_URL: postgresql+psycopg://swim:swim@127.0.0.1:5432/swim_scheduler
+  SWIM_TEST_DATABASE_URL: postgresql+psycopg://swim:swim@127.0.0.1:5432/swim_scheduler_test
+  SWIM_REQUIRE_POSTGRES_TESTS: "true"
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: swim
+          POSTGRES_PASSWORD: swim
+          POSTGRES_DB: swim_scheduler
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U swim -d swim_scheduler"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Create test database
+        run: >-
+          python -c "import psycopg;
+          conn = psycopg.connect('postgresql://swim:swim@127.0.0.1:5432/swim_scheduler', autocommit=True);
+          conn.execute('CREATE DATABASE swim_scheduler_test')"
+
+      - name: Apply Alembic migrations
+        run: alembic upgrade head
+
+      - name: Run Python tests
+        run: python -m pytest -q -m "not integration and not e2e"
+
+      - name: Run Postgres-backed integration tests
+        run: python -m pytest -q -m integration
+
+      - name: Check API contracts
+        run: python scripts/export_contracts.py --check
+
+      - name: Start FastAPI
+        run: |
+          python -m uvicorn app.api:app --host 127.0.0.1 --port 8000 > /tmp/swim-api.log 2>&1 &
+          python - <<'PY'
+          import time
+          import urllib.request
+
+          for _ in range(40):
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=2) as response:
+                      if response.status == 200:
+                          break
+              except Exception:
+                  time.sleep(1)
+          else:
+              raise SystemExit("FastAPI did not become healthy")
+          PY
+
+      - name: Run API e2e smoke tests
+        env:
+          SWIM_E2E_BASE_URL: http://127.0.0.1:8000
+        run: python -m pytest -q -m e2e
+
+  frontends:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: swim
+          POSTGRES_PASSWORD: swim
+          POSTGRES_DB: swim_scheduler
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U swim -d swim_scheduler"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            frontend-instructor-command/package-lock.json
+            frontend-client-invite/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Create test database
+        run: >-
+          python -c "import psycopg;
+          conn = psycopg.connect('postgresql://swim:swim@127.0.0.1:5432/swim_scheduler', autocommit=True);
+          conn.execute('CREATE DATABASE swim_scheduler_test')"
+
+      - name: Apply Alembic migrations
+        run: alembic upgrade head
+
+      - name: Install instructor frontend
+        working-directory: frontend-instructor-command
+        run: npm ci
+
+      - name: Install client invite frontend
+        working-directory: frontend-client-invite
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        working-directory: frontend-client-invite
+        run: npx playwright install --with-deps chromium
+
+      - name: Run instructor unit tests
+        working-directory: frontend-instructor-command
+        run: npm test
+
+      - name: Run client invite unit tests
+        working-directory: frontend-client-invite
+        run: npm run test:unit
+
+      - name: Build instructor frontend
+        working-directory: frontend-instructor-command
+        run: npm run build
+
+      - name: Build client invite frontend
+        working-directory: frontend-client-invite
+        run: npm run build
+
+      - name: Run instructor Playwright smoke tests
+        working-directory: frontend-instructor-command
+        run: npm run test:e2e
+
+      - name: Run client invite Playwright smoke tests
+        working-directory: frontend-client-invite
+        run: npm run test:e2e
+
+      - name: Start FastAPI
+        run: |
+          python -m uvicorn app.api:app --host 127.0.0.1 --port 8000 > /tmp/swim-api.log 2>&1 &
+          python - <<'PY'
+          import time
+          import urllib.request
+
+          for _ in range(40):
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=2) as response:
+                      if response.status == 200:
+                          break
+              except Exception:
+                  time.sleep(1)
+          else:
+              raise SystemExit("FastAPI did not become healthy")
+          PY
+
+      - name: Run instructor live-backend Playwright smoke tests
+        working-directory: frontend-instructor-command
+        env:
+          VITE_INSTRUCTOR_API_URL: http://127.0.0.1:8000/api
+        run: npm run test:e2e:live
+
+      - name: Run client invite live-backend Playwright smoke tests
+        working-directory: frontend-client-invite
+        env:
+          VITE_CLIENT_INVITE_API_URL: http://127.0.0.1:8000/api/public
+        run: npm run test:e2e:live

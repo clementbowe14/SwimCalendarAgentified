@@ -4,13 +4,15 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "../swim-command-center/node_modules/.bin/vite",
-    "typecheck": "../swim-command-center/node_modules/.bin/tsc --noEmit",
-    "build": "npm run typecheck && ../swim-command-center/node_modules/.bin/vite build",
-    "test": "../swim-command-center/node_modules/.bin/tsc -p tsconfig.test.json && node --test .test-build/tests/*.test.js",
-    "test:e2e": "../swim-command-center/node_modules/.bin/playwright test -c playwright.config.ts"
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build",
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/tests/*.test.js",
+    "test:e2e": "playwright test",
+    "test:e2e:live": "playwright test e2e/instructor-command.spec.ts"
   },
   "devDependencies": {
+    "@playwright/test": "1.61.1",
     "typescript": "7.0.2",
     "vite": "8.1.3"
   }

@@ -1,4 +1,4 @@
-import { defineConfig, devices } from "../swim-command-center/node_modules/@playwright/test/index.mjs";
+import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",

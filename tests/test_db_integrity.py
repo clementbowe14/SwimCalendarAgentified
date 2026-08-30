@@ -2,6 +2,8 @@ import datetime
 
 from alembic import command
 from alembic.config import Config
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
@@ -112,9 +114,12 @@ def test_alembic_migration_creates_entities_and_postgres_overlap_constraint():
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", database_url)
 
-    command.current(config, check_heads=True)
-
     engine = create_engine(database_url)
+    script = ScriptDirectory.from_config(config)
+    with engine.connect() as connection:
+        context = MigrationContext.configure(connection)
+        assert set(context.get_current_heads()) == set(script.get_heads())
+
     inspector = inspect(engine)
     assert {
         "instructors",
