@@ -169,3 +169,29 @@ postgresql+psycopg://swim:swim@127.0.0.1:5432/swim_scheduler_test
 ```
 
 Override the test database with `SWIM_TEST_DATABASE_URL`.
+
+Useful backend test slices:
+
+```bash
+./venv/bin/python -m pytest -q -m integration
+./venv/bin/python -m pytest -q -m "not e2e"
+```
+
+The e2e smoke tests are opt-in and run against an already-started API:
+
+```bash
+SWIM_E2E_BASE_URL=http://127.0.0.1:8000 ./venv/bin/python -m pytest -q -m e2e
+```
+
+Frontend prototype tests:
+
+```bash
+cd frontend-instructor-command && npm test
+cd frontend-instructor-command && npm run test:e2e
+cd frontend-client-invite && npm run test:unit
+cd frontend-client-invite && npm run test:e2e
+```
+
+Set `VITE_INSTRUCTOR_API_URL=http://127.0.0.1:8000/api` or
+`VITE_CLIENT_INVITE_API_URL=http://127.0.0.1:8000/api/public` before running
+the frontend e2e commands to exercise a live local backend.

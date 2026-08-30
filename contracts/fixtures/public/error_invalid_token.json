@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "INVITE_NOT_FOUND",
+    "message": "The invite could not be found."
+  }
+}

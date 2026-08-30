@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022", "DOM"],
+    "rootDir": ".",
+    "outDir": ".test-build",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": false
+  },
+  "include": ["src/api/**/*.ts", "src/components/**/*.ts", "src/domain/**/*.ts", "src/lib/**/*.ts", "src/vite-env.d.ts", "tests/**/*.test.ts", "tests/**/*.d.ts"]
+}

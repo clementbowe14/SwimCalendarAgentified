@@ -26,6 +26,8 @@ def reset_postgres_database(seed: bool = True) -> None:
             connection.execute(text("GRANT ALL ON SCHEMA public TO swim"))
             connection.execute(text("GRANT ALL ON SCHEMA public TO public"))
     except OperationalError as exc:
+        if os.getenv("SWIM_REQUIRE_POSTGRES_TESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
+            raise
         pytest.skip(f"PostgreSQL test database is not available: {exc}")
     finally:
         engine.dispose()

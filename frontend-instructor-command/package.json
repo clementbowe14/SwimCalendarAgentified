@@ -1,0 +1,17 @@
+{
+  "name": "frontend-instructor-command",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "../swim-command-center/node_modules/.bin/vite",
+    "typecheck": "../swim-command-center/node_modules/.bin/tsc --noEmit",
+    "build": "npm run typecheck && ../swim-command-center/node_modules/.bin/vite build",
+    "test": "../swim-command-center/node_modules/.bin/tsc -p tsconfig.test.json && node --test .test-build/tests/*.test.js",
+    "test:e2e": "../swim-command-center/node_modules/.bin/playwright test -c playwright.config.ts"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vite": "8.1.3"
+  }
+}
