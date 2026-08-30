@@ -5,14 +5,14 @@
       "id": "near",
       "label": "Under 5 mi",
       "max_miles": 4.999,
-      "min_miles": 0
+      "min_miles": 0.0
     },
     {
       "buffer_mins": 20,
       "id": "medium",
       "label": "5-10 mi",
-      "max_miles": 10,
-      "min_miles": 5
+      "max_miles": 10.0,
+      "min_miles": 5.0
     },
     {
       "buffer_mins": 30,
@@ -22,6 +22,15 @@
       "min_miles": 10.001
     }
   ],
+  "payments": {
+    "cancellation_window_hours": 12,
+    "enabled_methods": [
+      "card",
+      "ach",
+      "cash"
+    ],
+    "require_payment_method_for_new_clients": true
+  },
   "post_break_buffer_mins": 15,
   "rounding_increment_mins": 15
 }

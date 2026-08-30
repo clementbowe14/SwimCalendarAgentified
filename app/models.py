@@ -245,6 +245,22 @@ class InviteSlotOfferDB(Base):
 
     invite = relationship("InviteTokenDB")
 
+
+class SchedulerSettingsDB(Base):
+    __tablename__ = "scheduler_settings"
+
+    instructor_id = Column(String, ForeignKey("instructors.id"), primary_key=True)
+    rounding_increment_mins = Column(Integer, nullable=False, default=15)
+    post_break_buffer_mins = Column(Integer, nullable=False, default=15)
+    distance_buffer_tiers = Column(Text, nullable=False)
+    payments_enabled_methods = Column(Text, nullable=False, default="")
+    cancellation_window_hours = Column(Integer, nullable=False, default=24)
+    require_payment_method_for_new_clients = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    instructor = relationship("InstructorDB")
+
 # Pydantic Schemas
 class LocationInfo(BaseModel):
     address: str

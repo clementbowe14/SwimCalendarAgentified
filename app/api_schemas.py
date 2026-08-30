@@ -30,6 +30,10 @@ class InstructorProfileResponse(BaseModel):
     work_end_time: str
 
 
+class CoachInstructorProfileResponse(InstructorProfileResponse):
+    business_name: str
+
+
 class AppointmentResponse(BaseModel):
     id: str
     title: str
@@ -45,6 +49,97 @@ class CoachScheduleResponse(BaseModel):
     instructor: InstructorProfileResponse
     date: date
     appointments: list[AppointmentResponse]
+
+
+class CoachAvailabilityWindow(BaseModel):
+    id: str
+    days: list[str]
+    start_time: str
+    end_time: str
+
+
+class CoachClientResponse(BaseModel):
+    id: str
+    name: str
+    phone: str = ""
+    email: str = ""
+    guardian_name: Optional[str] = None
+    default_location: LocationResponse
+    location_mode: Literal["client_home", "instructor_facility"]
+    availability: list[CoachAvailabilityWindow] = Field(default_factory=list)
+    lesson_duration_mins: int = Field(default=45, ge=15, le=240, multiple_of=15)
+    notes: str = ""
+    history_summary: str = ""
+    progress_focus: str = ""
+
+
+class CoachTimeSlotResponse(BaseModel):
+    id: str
+    start_time: datetime
+    end_time: datetime
+    travel_time_mins: int
+    buffer_mins: int
+    distance_miles: float
+    target_location: LocationResponse
+    previous_event_id: Optional[str] = None
+    next_event_id: Optional[str] = None
+
+
+class CoachScheduleItemResponse(BaseModel):
+    id: str
+    kind: Literal["lesson", "travel", "buffer", "break", "open_gap"]
+    client_id: Optional[str] = None
+    title: str
+    start_time: datetime
+    end_time: datetime
+    location: LocationResponse
+    travel_time_mins: Optional[int] = None
+    buffer_mins: Optional[int] = None
+    status: Optional[Literal["scheduled", "rescheduled", "canceled"]] = None
+    note: Optional[str] = None
+
+
+class CoachLessonRequestResponse(BaseModel):
+    id: str
+    client_id: str
+    client_name: str
+    requested_slot: CoachTimeSlotResponse
+    source: Literal["client_invite", "manual_intake", "reschedule"]
+    status: Literal["pending", "approved", "needs_alternatives", "declined"]
+    risk: Literal["clear", "at_risk"]
+    submitted_at: datetime
+    note: str
+    alternative_slots: list[CoachTimeSlotResponse] = Field(default_factory=list)
+
+
+class CoachDistanceBufferTier(BaseModel):
+    id: str
+    label: str
+    min_miles: float = Field(ge=0)
+    max_miles: Optional[float] = Field(default=None, ge=0)
+    buffer_mins: int = Field(ge=0, le=240)
+
+
+class CoachSchedulerPayments(BaseModel):
+    enabled_methods: list[Literal["card", "ach", "cash", "wallet"]] = Field(default_factory=list)
+    cancellation_window_hours: int = Field(default=24, ge=0, le=168)
+    require_payment_method_for_new_clients: bool = False
+
+
+class CoachSchedulerRules(BaseModel):
+    rounding_increment_mins: Literal[15] = 15
+    post_break_buffer_mins: int = Field(default=15, ge=0, le=240)
+    distance_buffer_tiers: list[CoachDistanceBufferTier]
+    payments: CoachSchedulerPayments = Field(default_factory=CoachSchedulerPayments)
+
+
+class CoachCommandCenterSnapshot(BaseModel):
+    instructor: CoachInstructorProfileResponse
+    date: date
+    clients: list[CoachClientResponse]
+    schedule: list[CoachScheduleItemResponse]
+    requests: list[CoachLessonRequestResponse]
+    rules: CoachSchedulerRules
 
 
 class AvailabilitySearchRequest(BaseModel):

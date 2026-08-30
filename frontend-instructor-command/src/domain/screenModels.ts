@@ -108,19 +108,19 @@ export function buildReadinessReport(): ScreenReadiness[] {
       screen: "Client Detail",
       isReadyForBackend: false,
       requiredApiMethods: ["getSnapshot"],
-      missingApiContracts: ["coach client list/detail endpoint"],
+      missingApiContracts: ["coach client notes, availability, lesson history, and progress detail fields"],
     },
     {
       screen: "Settings/Rules",
-      isReadyForBackend: false,
+      isReadyForBackend: true,
       requiredApiMethods: ["getSnapshot", "saveRules"],
-      missingApiContracts: ["coach scheduler settings read/write endpoints"],
+      missingApiContracts: [],
     },
     {
       screen: "Request management",
       isReadyForBackend: false,
       requiredApiMethods: ["approveRequest", "requestAlternatives"],
-      missingApiContracts: ["coach lesson request queue", "approve request mutation", "request alternatives mutation"],
+      missingApiContracts: ["approve request mutation", "request alternatives mutation"],
     },
   ];
 }

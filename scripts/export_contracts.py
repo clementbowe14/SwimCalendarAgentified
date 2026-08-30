@@ -10,9 +10,11 @@ if str(ROOT) not in sys.path:
 CONTRACT_ROOT = Path("contracts")
 
 from app.api import create_app
+from app.api_schemas import CoachCommandCenterSnapshot, CoachSchedulerRules
 
 
 def build_contract_artifacts() -> dict[str, Any]:
+    coach_settings_fixture = _coach_settings_fixture()
     return {
         "openapi.json": create_app().openapi(),
         "fixtures/public/client_invite_envelope.json": {
@@ -165,23 +167,8 @@ def build_contract_artifacts() -> dict[str, Any]:
                 }
             ],
         },
-        "fixtures/coach/settings.json": {
-            "rounding_increment_mins": 15,
-            "post_break_buffer_mins": 15,
-            "distance_buffer_tiers": [
-                {"id": "near", "label": "Under 5 mi", "min_miles": 0, "max_miles": 4.999, "buffer_mins": 10},
-                {"id": "medium", "label": "5-10 mi", "min_miles": 5, "max_miles": 10, "buffer_mins": 20},
-                {"id": "far", "label": "Over 10 mi", "min_miles": 10.001, "max_miles": None, "buffer_mins": 30},
-            ],
-        },
-        "fixtures/coach/command_center_snapshot.json": {
-            "instructor": {"id": "inst_001", "name": "Coach Sarah", "business_name": "Swim Command"},
-            "date": "2026-08-20",
-            "clients": [],
-            "schedule": [],
-            "requests": [],
-            "rules_fixture": "fixtures/coach/settings.json",
-        },
+        "fixtures/coach/settings.json": coach_settings_fixture,
+        "fixtures/coach/command_center_snapshot.json": _coach_command_center_snapshot_fixture(coach_settings_fixture),
     }
 
 
@@ -212,6 +199,108 @@ def check_contracts(output_dir: Path = CONTRACT_ROOT) -> list[str]:
 
 def _json(payload: Any) -> str:
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+
+def _coach_settings_fixture() -> dict[str, Any]:
+    return CoachSchedulerRules.model_validate(
+        {
+            "rounding_increment_mins": 15,
+            "post_break_buffer_mins": 15,
+            "distance_buffer_tiers": [
+                {"id": "near", "label": "Under 5 mi", "min_miles": 0, "max_miles": 4.999, "buffer_mins": 10},
+                {"id": "medium", "label": "5-10 mi", "min_miles": 5, "max_miles": 10, "buffer_mins": 20},
+                {"id": "far", "label": "Over 10 mi", "min_miles": 10.001, "max_miles": None, "buffer_mins": 30},
+            ],
+            "payments": {
+                "enabled_methods": ["card", "ach", "cash"],
+                "cancellation_window_hours": 12,
+                "require_payment_method_for_new_clients": True,
+            },
+        }
+    ).model_dump(mode="json")
+
+
+def _coach_command_center_snapshot_fixture(rules: dict[str, Any]) -> dict[str, Any]:
+    return CoachCommandCenterSnapshot.model_validate(
+        {
+            "instructor": {
+                "id": "inst_001",
+                "name": "Coach Sarah",
+                "business_name": "Swim Command",
+                "main_address": "100 Main St, Austin, TX",
+                "lat": 30.2672,
+                "lng": -97.7431,
+                "work_start_time": "08:00",
+                "work_end_time": "17:00",
+            },
+            "date": "2026-08-20",
+            "clients": [
+                {
+                    "id": "client_alice",
+                    "name": "Alice",
+                    "phone": "",
+                    "email": "",
+                    "default_location": {
+                        "address": "450 North Blvd, Austin, TX",
+                        "lat": 30.33,
+                        "lng": -97.72,
+                        "is_instructor_facility": False,
+                    },
+                    "location_mode": "client_home",
+                    "availability": [],
+                    "lesson_duration_mins": 45,
+                    "notes": "",
+                    "history_summary": "Loaded from client profile",
+                    "progress_focus": "",
+                }
+            ],
+            "schedule": [
+                {
+                    "id": "app_101",
+                    "kind": "lesson",
+                    "client_id": "client_alice",
+                    "title": "Alice",
+                    "start_time": "2026-08-20T09:00:00",
+                    "end_time": "2026-08-20T10:00:00",
+                    "location": {
+                        "address": "450 North Blvd, Austin, TX",
+                        "lat": 30.33,
+                        "lng": -97.72,
+                        "is_instructor_facility": False,
+                    },
+                    "status": "scheduled",
+                }
+            ],
+            "requests": [
+                {
+                    "id": "req_sofia_pending_0820",
+                    "client_id": "client_sofia",
+                    "client_name": "Sofia Martinez",
+                    "requested_slot": {
+                        "id": "slot_req_sofia_pending_0820",
+                        "start_time": "2026-08-20T16:00:00",
+                        "end_time": "2026-08-20T16:45:00",
+                        "travel_time_mins": 12,
+                        "buffer_mins": 10,
+                        "distance_miles": 2.1,
+                        "target_location": {
+                            "address": "820 Lakeview Dr, Austin, TX",
+                            "lat": 30.289,
+                            "lng": -97.739,
+                            "is_instructor_facility": False,
+                        },
+                    },
+                    "source": "client_invite",
+                    "status": "pending",
+                    "risk": "clear",
+                    "submitted_at": "2026-08-19T16:30:00",
+                    "note": "Client selected this time from an invite.",
+                    "alternative_slots": [],
+                }
+            ],
+            "rules": rules,
+        }
+    ).model_dump(mode="json", exclude_none=True)
 
 
 def _contracts_readme() -> str:

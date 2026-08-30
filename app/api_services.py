@@ -19,7 +19,16 @@ from app.api_schemas import (
     AvailabilitySearchResponse,
     BookLessonResponse,
     CoachBookLessonRequest,
+    CoachClientResponse,
+    CoachCommandCenterSnapshot,
+    CoachDistanceBufferTier,
+    CoachLessonRequestResponse,
+    CoachScheduleItemResponse,
     CoachScheduleResponse,
+    CoachSchedulerPayments,
+    CoachSchedulerRules,
+    CoachTimeSlotResponse,
+    CoachInstructorProfileResponse,
     InstructorProfileResponse,
     LocationResponse,
     PublicAvailabilitySearchRequest,
@@ -61,6 +70,52 @@ def get_instructor_profile(instructor_id: str) -> InstructorProfileResponse:
     )
 
 
+def get_coach_command_center_snapshot(
+    instructor_id: str,
+    snapshot_date: date,
+) -> CoachCommandCenterSnapshot:
+    instructor = get_instructor_profile(instructor_id)
+    coach_instructor = CoachInstructorProfileResponse(
+        **instructor.model_dump(),
+        business_name=_business_name_for_instructor(instructor_id),
+    )
+    clients = [
+        _client_response(client, coach_instructor)
+        for client in db.get_clients_for_instructor(instructor_id)
+    ]
+    schedule = [
+        _schedule_item_response(appointment, coach_instructor)
+        for appointment in db.get_appointments_for_date(instructor_id, snapshot_date.isoformat())
+    ]
+    requests = [
+        _coach_lesson_request_response(request)
+        for request in db.get_pending_lesson_requests_for_instructor(instructor_id)
+    ]
+    return CoachCommandCenterSnapshot(
+        instructor=coach_instructor,
+        date=snapshot_date,
+        clients=clients,
+        schedule=schedule,
+        requests=requests,
+        rules=get_coach_scheduler_settings(instructor_id),
+    )
+
+
+def get_coach_scheduler_settings(instructor_id: str) -> CoachSchedulerRules:
+    saved = db.get_scheduler_settings(instructor_id)
+    if saved is None:
+        return _default_scheduler_rules()
+    return CoachSchedulerRules.model_validate(saved)
+
+
+def update_coach_scheduler_settings(
+    instructor_id: str,
+    rules: CoachSchedulerRules,
+) -> CoachSchedulerRules:
+    saved = db.save_scheduler_settings(instructor_id, rules.model_dump(mode="json"))
+    return CoachSchedulerRules.model_validate(saved)
+
+
 def get_coach_schedule(instructor_id: str, schedule_date: date) -> CoachScheduleResponse:
     instructor = get_instructor_profile(instructor_id)
     appointments = db.get_appointments_for_date(instructor_id, schedule_date.isoformat())
@@ -80,6 +135,153 @@ def get_coach_schedule(instructor_id: str, schedule_date: date) -> CoachSchedule
             )
             for appointment in appointments
         ],
+    )
+
+
+def _business_name_for_instructor(instructor_id: str) -> str:
+    session = db.SessionLocal()
+    try:
+        invite = (
+            session.query(db.InviteTokenDB)
+            .filter_by(instructor_id=instructor_id, business_name="Swim Command")
+            .first()
+        )
+        if invite:
+            return invite.business_name
+        invite = (
+            session.query(db.InviteTokenDB)
+            .filter_by(instructor_id=instructor_id)
+            .order_by(db.InviteTokenDB.created_at.desc())
+            .first()
+        )
+        return invite.business_name if invite else "Swim Command"
+    finally:
+        session.close()
+
+
+def _client_response(client: dict, instructor: CoachInstructorProfileResponse) -> CoachClientResponse:
+    address = client["default_location_address"] or instructor.main_address
+    lat = client["default_lat"] if client["default_lat"] is not None else instructor.lat
+    lng = client["default_lng"] if client["default_lng"] is not None else instructor.lng
+    is_facility = address == instructor.main_address
+    return CoachClientResponse(
+        id=client["id"],
+        name=client["name"],
+        phone=client["phone"] or "",
+        email=client["email"] or "",
+        default_location=LocationResponse(
+            address=address,
+            lat=lat,
+            lng=lng,
+            is_instructor_facility=is_facility,
+        ),
+        location_mode="instructor_facility" if is_facility else "client_home",
+        lesson_duration_mins=45,
+        history_summary="Loaded from client profile",
+    )
+
+
+def _schedule_item_response(
+    appointment: dict,
+    instructor: CoachInstructorProfileResponse,
+) -> CoachScheduleItemResponse:
+    is_break = appointment["is_break"] or appointment["event_type"] == "block"
+    is_facility = is_break or appointment["location_address"] == instructor.main_address
+    title = appointment["title"]
+    if not is_break:
+        title = title.replace("Lesson with ", "", 1)
+    return CoachScheduleItemResponse(
+        id=appointment["id"],
+        kind="break" if is_break else "lesson",
+        client_id=None if is_break else appointment["client_id"],
+        title=title,
+        start_time=appointment["start_time"],
+        end_time=appointment["end_time"],
+        location=LocationResponse(
+            address=appointment["location_address"],
+            lat=appointment["lat"],
+            lng=appointment["lng"],
+            is_instructor_facility=is_facility,
+        ),
+        status=None if is_break else _lesson_status(appointment["status"]),
+    )
+
+
+def _coach_lesson_request_response(request: dict) -> CoachLessonRequestResponse:
+    location = LocationResponse(
+        address=request["client_address"],
+        lat=request["lat"],
+        lng=request["lng"],
+        is_instructor_facility=request["location_type"] == "facility",
+    )
+    return CoachLessonRequestResponse(
+        id=request["request_token"],
+        client_id=request["client_id"] or _client_id_from_name(request["client_name"]),
+        client_name=request["client_name"],
+        requested_slot=CoachTimeSlotResponse(
+            id=f"slot_{request['request_token']}",
+            start_time=request["slot_start"],
+            end_time=request["slot_end"],
+            travel_time_mins=request["travel_time_mins"],
+            buffer_mins=request["buffer_mins"],
+            distance_miles=request["distance_miles"],
+            target_location=location,
+        ),
+        source="client_invite",
+        status=_request_status(request["status"]),
+        risk="clear",
+        submitted_at=request["created_at"],
+        note="Client selected this time from an invite.",
+        alternative_slots=[],
+    )
+
+
+def _lesson_status(status: str) -> str:
+    if status == "cancelled":
+        return "canceled"
+    return "scheduled"
+
+
+def _request_status(status: str) -> str:
+    if status == "accepted":
+        return "approved"
+    if status in {"declined", "cancelled"}:
+        return "declined"
+    return "pending"
+
+
+def _default_scheduler_rules() -> CoachSchedulerRules:
+    return CoachSchedulerRules(
+        rounding_increment_mins=15,
+        post_break_buffer_mins=15,
+        distance_buffer_tiers=[
+            CoachDistanceBufferTier(
+                id="near",
+                label="Under 5 mi",
+                min_miles=0,
+                max_miles=4.999,
+                buffer_mins=10,
+            ),
+            CoachDistanceBufferTier(
+                id="medium",
+                label="5-10 mi",
+                min_miles=5,
+                max_miles=10,
+                buffer_mins=20,
+            ),
+            CoachDistanceBufferTier(
+                id="far",
+                label="Over 10 mi",
+                min_miles=10.001,
+                max_miles=None,
+                buffer_mins=30,
+            ),
+        ],
+        payments=CoachSchedulerPayments(
+            enabled_methods=["card", "ach", "cash"],
+            cancellation_window_hours=12,
+            require_payment_method_for_new_clients=True,
+        ),
     )
 
 

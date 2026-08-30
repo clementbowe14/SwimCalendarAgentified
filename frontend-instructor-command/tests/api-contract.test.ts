@@ -4,50 +4,26 @@ import {
   HttpInstructorCommandApi,
   InstructorCommandApiError,
 } from "../src/api/instructorApi.js";
-import type { BookingRequestDTO } from "../src/api/types.js";
+import type { BookingRequestDTO, CommandCenterSnapshot, SchedulerRules } from "../src/api/types.js";
 
 type FetchCall = {
   url: string;
   init?: RequestInit;
 };
 
-test("HTTP instructor adapter reads the coach schedule contract without raw instructor routing", async () => {
+test("HTTP instructor adapter reads the coach command-center snapshot without raw instructor routing", async () => {
   const calls: FetchCall[] = [];
   const api = new HttpInstructorCommandApi("http://api.test/api/");
 
-  await withMockFetch(calls, async () =>
-    jsonResponse({
-      instructor: {
-        id: "inst_001",
-        name: "Coach Sarah",
-        main_address: "100 Main St, Austin, TX",
-        lat: 30.2672,
-        lng: -97.7431,
-        work_start_time: "08:00",
-        work_end_time: "17:00",
-      },
-      date: "2026-08-20",
-      appointments: [
-        {
-          id: "app_101",
-          title: "Lesson with Alice",
-          start_time: "2026-08-20T09:00:00",
-          end_time: "2026-08-20T10:00:00",
-          location_address: "450 North Blvd, Austin, TX",
-          lat: 30.33,
-          lng: -97.72,
-          is_break: false,
-        },
-      ],
-    }),
+  await withMockFetch(calls, async () => jsonResponse(snapshotContract()),
     async () => {
       const snapshot = await api.getSnapshot("frontend-should-not-route-by-this-id", "2026-08-20");
 
-      assert.equal(calls[0].url, "http://api.test/api/coach/schedule?date=2026-08-20");
+      assert.equal(calls[0].url, "http://api.test/api/coach/command-center/snapshot?date=2026-08-20");
       assert.equal(snapshot.instructor.id, "inst_001");
       assert.equal(snapshot.clients.length, 1);
       assert.equal(snapshot.clients[0].name, "Alice");
-      assert.equal(snapshot.requests.length, 0);
+      assert.equal(snapshot.requests.length, 1);
       assert.equal(snapshot.schedule[0].kind, "lesson");
       assert.equal(snapshot.rules.rounding_increment_mins, 15);
     },
@@ -148,6 +124,22 @@ test("HTTP instructor adapter preserves stable backend error codes", async () =>
   assert.equal((caught as InstructorCommandApiError).code, "SCHEDULING_CONFLICT");
 });
 
+test("HTTP instructor adapter saves scheduler rules through the coach settings contract", async () => {
+  const calls: FetchCall[] = [];
+  const api = new HttpInstructorCommandApi("http://api.test/api");
+  const rules = snapshotContract().rules;
+
+  await withMockFetch(calls, async () => jsonResponse(rules), async () => {
+    const saved = await api.saveRules(rules);
+    const body = JSON.parse(String(calls[0].init?.body)) as SchedulerRules;
+
+    assert.equal(calls[0].url, "http://api.test/api/coach/settings");
+    assert.equal(calls[0].init?.method, "PUT");
+    assert.deepEqual(body, rules);
+    assert.deepEqual(saved, rules);
+  });
+});
+
 async function withMockFetch(
   calls: FetchCall[],
   handler: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
@@ -176,4 +168,98 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
     headers: { "content-type": "application/json" },
     ...init,
   });
+}
+
+function snapshotContract(): CommandCenterSnapshot {
+  return {
+    instructor: {
+      id: "inst_001",
+      name: "Coach Sarah",
+      business_name: "Swim Command",
+      main_address: "100 Main St, Austin, TX",
+      lat: 30.2672,
+      lng: -97.7431,
+      work_start_time: "08:00",
+      work_end_time: "17:00",
+    },
+    date: "2026-08-20",
+    clients: [
+      {
+        id: "client_alice",
+        name: "Alice",
+        phone: "",
+        email: "",
+        default_location: {
+          address: "450 North Blvd, Austin, TX",
+          lat: 30.33,
+          lng: -97.72,
+          is_instructor_facility: false,
+        },
+        location_mode: "client_home",
+        availability: [],
+        lesson_duration_mins: 45,
+        notes: "",
+        history_summary: "Loaded from client profile",
+        progress_focus: "",
+      },
+    ],
+    schedule: [
+      {
+        id: "app_101",
+        kind: "lesson",
+        client_id: "client_alice",
+        title: "Alice",
+        start_time: "2026-08-20T09:00:00",
+        end_time: "2026-08-20T10:00:00",
+        location: {
+          address: "450 North Blvd, Austin, TX",
+          lat: 30.33,
+          lng: -97.72,
+          is_instructor_facility: false,
+        },
+        status: "scheduled",
+      },
+    ],
+    requests: [
+      {
+        id: "req_sofia_pending_0820",
+        client_id: "client_sofia",
+        client_name: "Sofia Martinez",
+        requested_slot: {
+          id: "slot_req_sofia_pending_0820",
+          start_time: "2026-08-20T16:00:00",
+          end_time: "2026-08-20T16:45:00",
+          travel_time_mins: 12,
+          buffer_mins: 10,
+          distance_miles: 2.1,
+          target_location: {
+            address: "820 Lakeview Dr, Austin, TX",
+            lat: 30.289,
+            lng: -97.739,
+            is_instructor_facility: false,
+          },
+        },
+        source: "client_invite",
+        status: "pending",
+        risk: "clear",
+        submitted_at: "2026-08-19T16:30:00",
+        note: "Client selected this time from an invite.",
+        alternative_slots: [],
+      },
+    ],
+    rules: {
+      rounding_increment_mins: 15,
+      post_break_buffer_mins: 15,
+      distance_buffer_tiers: [
+        { id: "near", label: "Under 5 mi", min_miles: 0, max_miles: 4.999, buffer_mins: 10 },
+        { id: "medium", label: "5-10 mi", min_miles: 5, max_miles: 10, buffer_mins: 20 },
+        { id: "far", label: "Over 10 mi", min_miles: 10.001, max_miles: null, buffer_mins: 30 },
+      ],
+      payments: {
+        enabled_methods: ["card", "ach", "cash"],
+        cancellation_window_hours: 12,
+        require_payment_method_for_new_clients: true,
+      },
+    },
+  };
 }

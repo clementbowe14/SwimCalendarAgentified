@@ -1,4 +1,5 @@
 import datetime
+import json
 import os
 import uuid
 from typing import Optional, List
@@ -14,6 +15,7 @@ from app.models import (
     InviteTokenDB,
     LessonRequestDB,
     LocationInfo,
+    SchedulerSettingsDB,
 )
 
 DATABASE_URL = os.getenv(
@@ -184,6 +186,33 @@ def seed_data():
                 is_instructor_facility=False,
             )
         )
+    if not session.query(LessonRequestDB).filter_by(id="req_sofia_pending_0820").first():
+        session.add(
+            LessonRequestDB(
+                id="req_sofia_pending_0820",
+                request_token="req_sofia_pending_0820",
+                invite_token=SOFIA_INVITE_TOKEN,
+                instructor_id="inst_001",
+                client_id="client_sofia",
+                client_name="Sofia Martinez",
+                client_email="ana.martinez@example.com",
+                client_phone="(512) 555-0194",
+                client_address="820 Lakeview Dr, Austin, TX",
+                lat=30.289,
+                lng=-97.739,
+                requested_date=datetime.date(2026, 8, 20),
+                slot_start=datetime.datetime(2026, 8, 20, 16, 0),
+                slot_end=datetime.datetime(2026, 8, 20, 16, 45),
+                duration_mins=45,
+                travel_time_mins=12,
+                buffer_mins=10,
+                distance_miles=2.1,
+                location_type="home",
+                status="pending",
+                created_at=datetime.datetime(2026, 8, 19, 16, 30),
+                updated_at=datetime.datetime(2026, 8, 19, 16, 30),
+            )
+        )
     session.commit()
     session.close()
 
@@ -206,23 +235,134 @@ def get_appointments_for_date(instructor_id: str, date_str: str) -> List[dict]:
         AppointmentDB.end_time <= end_of_day,
         AppointmentDB.status.in_(ACTIVE_APPOINTMENT_STATUSES),
         AppointmentDB.cancelled_at.is_(None),
-    ).all()
+    ).order_by(AppointmentDB.start_time.asc()).all()
 
     result = [
         {
             "id": a.id,
             "title": a.title,
+            "client_id": a.client_id,
             "start_time": a.start_time,
             "end_time": a.end_time,
             "location_address": a.location_address,
             "lat": a.lat,
             "lng": a.lng,
-            "is_break": a.is_break
+            "is_break": a.is_break,
+            "event_type": a.event_type,
+            "status": a.status,
         }
         for a in apps
     ]
     session.close()
     return result
+
+def get_clients_for_instructor(instructor_id: str) -> List[dict]:
+    session = SessionLocal()
+    clients = (
+        session.query(ClientDB)
+        .filter(ClientDB.instructor_id == instructor_id, ClientDB.status == "active")
+        .order_by(ClientDB.name)
+        .all()
+    )
+    result = [
+        {
+            "id": client.id,
+            "name": client.name,
+            "email": client.email,
+            "phone": client.phone,
+            "default_location_address": client.default_location_address,
+            "default_lat": client.default_lat,
+            "default_lng": client.default_lng,
+        }
+        for client in clients
+    ]
+    session.close()
+    return result
+
+def get_pending_lesson_requests_for_instructor(instructor_id: str) -> List[dict]:
+    session = SessionLocal()
+    requests = (
+        session.query(LessonRequestDB)
+        .filter(
+            LessonRequestDB.instructor_id == instructor_id,
+            LessonRequestDB.status == "pending",
+        )
+        .order_by(LessonRequestDB.created_at.asc())
+        .all()
+    )
+    result = [
+        {
+            "id": request.id,
+            "request_token": request.request_token,
+            "invite_token": request.invite_token,
+            "client_id": request.client_id,
+            "client_name": request.client_name,
+            "client_email": request.client_email,
+            "client_phone": request.client_phone,
+            "client_address": request.client_address,
+            "lat": request.lat,
+            "lng": request.lng,
+            "requested_date": request.requested_date,
+            "slot_start": request.slot_start,
+            "slot_end": request.slot_end,
+            "duration_mins": request.duration_mins,
+            "travel_time_mins": request.travel_time_mins,
+            "buffer_mins": request.buffer_mins,
+            "distance_miles": request.distance_miles,
+            "location_type": request.location_type,
+            "status": request.status,
+            "created_at": request.created_at,
+        }
+        for request in requests
+    ]
+    session.close()
+    return result
+
+def get_scheduler_settings(instructor_id: str) -> Optional[dict]:
+    session = SessionLocal()
+    settings = session.query(SchedulerSettingsDB).filter_by(instructor_id=instructor_id).first()
+    if settings is None:
+        session.close()
+        return None
+    result = {
+        "rounding_increment_mins": settings.rounding_increment_mins,
+        "post_break_buffer_mins": settings.post_break_buffer_mins,
+        "distance_buffer_tiers": json.loads(settings.distance_buffer_tiers),
+        "payments": {
+            "enabled_methods": _split_csv(settings.payments_enabled_methods),
+            "cancellation_window_hours": settings.cancellation_window_hours,
+            "require_payment_method_for_new_clients": settings.require_payment_method_for_new_clients,
+        },
+    }
+    session.close()
+    return result
+
+def save_scheduler_settings(instructor_id: str, rules: dict) -> dict:
+    session = SessionLocal()
+    try:
+        settings = session.query(SchedulerSettingsDB).filter_by(instructor_id=instructor_id).first()
+        if settings is None:
+            settings = SchedulerSettingsDB(instructor_id=instructor_id)
+            session.add(settings)
+        settings.rounding_increment_mins = rules["rounding_increment_mins"]
+        settings.post_break_buffer_mins = rules["post_break_buffer_mins"]
+        settings.distance_buffer_tiers = json.dumps(rules["distance_buffer_tiers"], sort_keys=True)
+        settings.payments_enabled_methods = ",".join(rules["payments"]["enabled_methods"])
+        settings.cancellation_window_hours = rules["payments"]["cancellation_window_hours"]
+        settings.require_payment_method_for_new_clients = rules["payments"]["require_payment_method_for_new_clients"]
+        settings.updated_at = datetime.datetime.utcnow()
+        session.commit()
+    finally:
+        session.close()
+    saved = get_scheduler_settings(instructor_id)
+    if saved is None:
+        raise RuntimeError("Scheduler settings were not saved.")
+    return saved
+
+def _split_csv(value: Optional[str]) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 class ScheduleConflictError(Exception):
     pass

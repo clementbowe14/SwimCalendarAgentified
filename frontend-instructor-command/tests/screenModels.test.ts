@@ -86,8 +86,14 @@ test("Readiness report covers every representative screen and calls out backend 
     report.map((screen) => screen.screen),
     ["Today schedule", "Availability Finder/New Client", "Client Detail", "Settings/Rules", "Request management"],
   );
-  assert.equal(report.every((screen) => screen.isReadyForBackend), false);
-  assert.equal(report.some((screen) => screen.missingApiContracts.includes("coach client list/detail endpoint")), true);
+  assert.equal(report.some((screen) => !screen.isReadyForBackend), true);
+  assert.equal(report.find((screen) => screen.screen === "Settings/Rules")?.isReadyForBackend, true);
+  assert.equal(
+    report.some((screen) =>
+      screen.missingApiContracts.includes("coach client notes, availability, lesson history, and progress detail fields"),
+    ),
+    true,
+  );
 });
 
 test("Availability Finder can fall back when real backend schedule has no clients for the date", () => {
