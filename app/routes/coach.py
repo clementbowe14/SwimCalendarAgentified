@@ -7,10 +7,19 @@ from app.api_schemas import (
     AvailabilitySearchResponse,
     BookLessonResponse,
     CoachBookLessonRequest,
+    CoachCommandCenterSnapshot,
     CoachContext as CoachContextResponse,
     CoachScheduleResponse,
+    CoachSchedulerRules,
 )
-from app.api_services import book_coach_lesson, get_coach_schedule, search_coach_availability
+from app.api_services import (
+    book_coach_lesson,
+    get_coach_command_center_snapshot,
+    get_coach_schedule,
+    get_coach_scheduler_settings,
+    search_coach_availability,
+    update_coach_scheduler_settings,
+)
 from app.dependencies import CoachContext, get_current_coach
 
 
@@ -28,6 +37,33 @@ def read_schedule(
     coach: CoachContext = Depends(get_current_coach),
 ) -> CoachScheduleResponse:
     return get_coach_schedule(coach.instructor_id, date_)
+
+
+@router.get(
+    "/command-center/snapshot",
+    response_model=CoachCommandCenterSnapshot,
+    response_model_exclude_none=True,
+)
+def read_command_center_snapshot(
+    date_: date = Query(alias="date"),
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachCommandCenterSnapshot:
+    return get_coach_command_center_snapshot(coach.instructor_id, date_)
+
+
+@router.get("/settings", response_model=CoachSchedulerRules)
+def read_scheduler_settings(
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachSchedulerRules:
+    return get_coach_scheduler_settings(coach.instructor_id)
+
+
+@router.put("/settings", response_model=CoachSchedulerRules)
+def save_scheduler_settings(
+    rules: CoachSchedulerRules,
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachSchedulerRules:
+    return update_coach_scheduler_settings(coach.instructor_id, rules)
 
 
 @router.post("/availability", response_model=AvailabilitySearchResponse)

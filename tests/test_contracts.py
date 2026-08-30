@@ -8,7 +8,9 @@ from app.api_schemas import (
     ClientInviteCalendarLinks,
     ClientInviteEnvelopeResponse,
     ClientInviteLessonRequestResponse,
+    CoachCommandCenterSnapshot,
     CoachScheduleResponse,
+    CoachSchedulerRules,
     ErrorResponse,
 )
 from scripts.export_contracts import CONTRACT_ROOT, check_contracts
@@ -23,6 +25,8 @@ FIXTURE_SCHEMAS = {
     "fixtures/public/error_invalid_token.json": ErrorResponse,
     "fixtures/coach/availability_search_response.json": AvailabilitySearchResponse,
     "fixtures/coach/schedule_response.json": CoachScheduleResponse,
+    "fixtures/coach/settings.json": CoachSchedulerRules,
+    "fixtures/coach/command_center_snapshot.json": CoachCommandCenterSnapshot,
 }
 FORBIDDEN_PUBLIC_KEYS = {"instructor_id", "client_id"}
 FORBIDDEN_PUBLIC_VALUE_PREFIXES = ("app_",)
@@ -41,6 +45,10 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/public/client-invites/{token}/slots" in paths
     assert "/api/public/lesson-requests/{request_token}/calendar-links" in paths
     assert "/api/coach/availability" in paths
+    assert "/api/coach/command-center/snapshot" in paths
+    assert "/api/coach/settings" in paths
+    assert "/api/public/command-center/snapshot" not in paths
+    assert "/api/public/settings" not in paths
 
 
 def test_fixtures_validate_against_response_schemas():
@@ -62,10 +70,7 @@ def test_public_fixtures_do_not_leak_private_identifiers_or_schedule_details():
 
 
 def test_required_fixture_files_exist_for_frontend_contract_tests():
-    required = set(FIXTURE_SCHEMAS.keys()) | {
-        "fixtures/coach/settings.json",
-        "fixtures/coach/command_center_snapshot.json",
-    }
+    required = set(FIXTURE_SCHEMAS.keys())
 
     for relative_path in required:
         assert (CONTRACT_ROOT / relative_path).exists()

@@ -14,11 +14,14 @@ VITE_INSTRUCTOR_API_URL=http://127.0.0.1:8000/api VITE_INSTRUCTOR_COMMAND_DATE=2
 
 The current backend exposes:
 
+- `GET /api/coach/command-center/snapshot?date=YYYY-MM-DD`
 - `GET /api/coach/schedule?date=YYYY-MM-DD`
 - `POST /api/coach/availability`
 - `POST /api/coach/bookings`
+- `GET /api/coach/settings`
+- `PUT /api/coach/settings`
 
-The command app still needs backend support for first-class client lists, request approval/alternatives, and scheduler rule management. Until those endpoints exist, the real API adapter surfaces `ENDPOINT_NOT_AVAILABLE` for those actions.
+The command app still needs backend support for request approval/alternatives. Until those endpoints exist, the real API adapter surfaces `ENDPOINT_NOT_AVAILABLE` for those actions.
 
 ## Tests
 

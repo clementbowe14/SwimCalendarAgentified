@@ -111,8 +111,7 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
   }
 
   async getSnapshot(_instructor_id: Id, date: string): Promise<CommandCenterSnapshot> {
-    const response = await this.get<CoachScheduleResponse>(`/coach/schedule?date=${encodeURIComponent(date)}`);
-    return mapScheduleToSnapshot(response);
+    return this.get<CommandCenterSnapshot>(`/coach/command-center/snapshot?date=${encodeURIComponent(date)}`);
   }
 
   async findAvailableSlots(request: BookingRequestDTO): Promise<TimeSlotDTO[]> {
@@ -145,8 +144,8 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     throw new InstructorCommandApiError(501, "ENDPOINT_NOT_AVAILABLE", "Coach request alternatives are not exposed by the current API contract.");
   }
 
-  saveRules(_rules: SchedulerRules): Promise<SchedulerRules> {
-    throw new InstructorCommandApiError(501, "ENDPOINT_NOT_AVAILABLE", "Scheduler rule mutation is not exposed by the current API contract.");
+  saveRules(rules: SchedulerRules): Promise<SchedulerRules> {
+    return this.put("/coach/settings", rules);
   }
 
   private async get<T>(path: string): Promise<T> {
@@ -156,6 +155,11 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
 
   private async post<T>(path: string, body: unknown): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, requestInit("POST", body));
+    return parseResponse<T>(response);
+  }
+
+  private async put<T>(path: string, body: unknown): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, requestInit("PUT", body));
     return parseResponse<T>(response);
   }
 
@@ -187,30 +191,6 @@ export class InstructorCommandApiError extends Error {
     this.name = "InstructorCommandApiError";
   }
 }
-
-type CoachScheduleResponse = {
-  instructor: {
-    id: Id;
-    name: string;
-    business_name?: string;
-    main_address: string;
-    lat: number;
-    lng: number;
-    work_start_time: string;
-    work_end_time: string;
-  };
-  date: string;
-  appointments: Array<{
-    id: Id;
-    title: string;
-    start_time: string;
-    end_time: string;
-    location_address: string;
-    lat: number;
-    lng: number;
-    is_break: boolean;
-  }>;
-};
 
 type CoachAvailabilityResponse = {
   status: "PRESENTING";
@@ -262,70 +242,6 @@ async function toApiError(response: Response): Promise<InstructorCommandApiError
   return new InstructorCommandApiError(response.status, code, message, payload?.error?.details);
 }
 
-function mapScheduleToSnapshot(response: CoachScheduleResponse): CommandCenterSnapshot {
-  const schedule = response.appointments.map(mapAppointmentToScheduleItem);
-  return {
-    instructor: {
-      id: response.instructor.id,
-      name: response.instructor.name,
-      business_name: response.instructor.business_name ?? "Swim Command",
-      main_address: response.instructor.main_address,
-      lat: response.instructor.lat,
-      lng: response.instructor.lng,
-      work_start_time: response.instructor.work_start_time,
-      work_end_time: response.instructor.work_end_time,
-    },
-    date: response.date,
-    clients: clientsFromSchedule(schedule),
-    schedule,
-    requests: [],
-    rules: defaultSchedulerRules(),
-  };
-}
-
-function mapAppointmentToScheduleItem(appointment: CoachScheduleResponse["appointments"][number]): CommandCenterSnapshot["schedule"][number] {
-  const isLesson = !appointment.is_break;
-  return {
-    id: appointment.id,
-    kind: appointment.is_break ? "break" : "lesson",
-    client_id: isLesson ? clientIdFromTitle(appointment.title) : undefined,
-    title: isLesson ? appointment.title.replace(/^Lesson with\s+/i, "") : appointment.title,
-    start_time: appointment.start_time,
-    end_time: appointment.end_time,
-    location: {
-      address: appointment.location_address,
-      lat: appointment.lat,
-      lng: appointment.lng,
-      is_instructor_facility: appointment.is_break,
-    },
-    status: isLesson ? "scheduled" : undefined,
-  };
-}
-
-function clientsFromSchedule(schedule: CommandCenterSnapshot["schedule"]): CommandCenterSnapshot["clients"] {
-  const clients = new Map<string, CommandCenterSnapshot["clients"][number]>();
-  schedule
-    .filter((item) => item.kind === "lesson")
-    .forEach((item) => {
-      const id = item.client_id ?? clientIdFromTitle(item.title);
-      clients.set(id, {
-        id,
-        name: item.title,
-        phone: "",
-        email: "",
-        default_location: item.location,
-        location_mode: item.location.is_instructor_facility ? "instructor_facility" : "client_home",
-        availability: [],
-        lesson_duration_mins: minutesBetweenIso(item.start_time, item.end_time),
-        notes: "",
-        history_summary: "Loaded from schedule",
-        progress_focus: "",
-      });
-    });
-
-  return [...clients.values()];
-}
-
 function mapAvailabilitySlot(
   slot: CoachAvailabilityResponse["available_slots"][number],
   location: CoachAvailabilityResponse["location"],
@@ -340,33 +256,6 @@ function mapAvailabilitySlot(
     distance_miles: slot.distance_miles,
     target_location: location,
   };
-}
-
-function defaultSchedulerRules(): SchedulerRules {
-  return {
-    rounding_increment_mins: 15,
-    post_break_buffer_mins: 15,
-    distance_buffer_tiers: [
-      { id: "near", label: "Under 5 mi", min_miles: 0, max_miles: 4.999, buffer_mins: 10 },
-      { id: "medium", label: "5-10 mi", min_miles: 5, max_miles: 10, buffer_mins: 20 },
-      { id: "far", label: "Over 10 mi", min_miles: 10.001, max_miles: null, buffer_mins: 30 },
-    ],
-    payments: {
-      enabled_methods: [],
-      cancellation_window_hours: 24,
-      require_payment_method_for_new_clients: false,
-    },
-  };
-}
-
-function clientIdFromTitle(title: string): string {
-  const name = title.replace(/^Lesson with\s+/i, "").trim().toLowerCase();
-  const slug = name.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-  return `client_${slug || "scheduled"}`;
-}
-
-function minutesBetweenIso(start: string, end: string): number {
-  return Math.max(15, Math.round((new Date(end).getTime() - new Date(start).getTime()) / 60000));
 }
 
 function readFrontendEnv(name: string): string | undefined {

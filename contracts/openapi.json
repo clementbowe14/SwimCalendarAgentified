@@ -665,6 +665,37 @@
         "title": "ClientInviteUnavailableWindow",
         "type": "object"
       },
+      "CoachAvailabilityWindow": {
+        "properties": {
+          "days": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Days",
+            "type": "array"
+          },
+          "end_time": {
+            "title": "End Time",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "start_time": {
+            "title": "Start Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "days",
+          "start_time",
+          "end_time"
+        ],
+        "title": "CoachAvailabilityWindow",
+        "type": "object"
+      },
       "CoachBookLessonRequest": {
         "properties": {
           "client_address": {
@@ -719,6 +750,134 @@
         "title": "CoachBookLessonRequest",
         "type": "object"
       },
+      "CoachClientResponse": {
+        "properties": {
+          "availability": {
+            "items": {
+              "$ref": "#/components/schemas/CoachAvailabilityWindow"
+            },
+            "title": "Availability",
+            "type": "array"
+          },
+          "default_location": {
+            "$ref": "#/components/schemas/LocationResponse"
+          },
+          "email": {
+            "default": "",
+            "title": "Email",
+            "type": "string"
+          },
+          "guardian_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guardian Name"
+          },
+          "history_summary": {
+            "default": "",
+            "title": "History Summary",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lesson_duration_mins": {
+            "default": 45,
+            "maximum": 240.0,
+            "minimum": 15.0,
+            "multipleOf": 15.0,
+            "title": "Lesson Duration Mins",
+            "type": "integer"
+          },
+          "location_mode": {
+            "enum": [
+              "client_home",
+              "instructor_facility"
+            ],
+            "title": "Location Mode",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "notes": {
+            "default": "",
+            "title": "Notes",
+            "type": "string"
+          },
+          "phone": {
+            "default": "",
+            "title": "Phone",
+            "type": "string"
+          },
+          "progress_focus": {
+            "default": "",
+            "title": "Progress Focus",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "default_location",
+          "location_mode"
+        ],
+        "title": "CoachClientResponse",
+        "type": "object"
+      },
+      "CoachCommandCenterSnapshot": {
+        "properties": {
+          "clients": {
+            "items": {
+              "$ref": "#/components/schemas/CoachClientResponse"
+            },
+            "title": "Clients",
+            "type": "array"
+          },
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "instructor": {
+            "$ref": "#/components/schemas/CoachInstructorProfileResponse"
+          },
+          "requests": {
+            "items": {
+              "$ref": "#/components/schemas/CoachLessonRequestResponse"
+            },
+            "title": "Requests",
+            "type": "array"
+          },
+          "rules": {
+            "$ref": "#/components/schemas/CoachSchedulerRules"
+          },
+          "schedule": {
+            "items": {
+              "$ref": "#/components/schemas/CoachScheduleItemResponse"
+            },
+            "title": "Schedule",
+            "type": "array"
+          }
+        },
+        "required": [
+          "instructor",
+          "date",
+          "clients",
+          "schedule",
+          "requests",
+          "rules"
+        ],
+        "title": "CoachCommandCenterSnapshot",
+        "type": "object"
+      },
       "CoachContext": {
         "properties": {
           "display_name": {
@@ -735,6 +894,278 @@
           "display_name"
         ],
         "title": "CoachContext",
+        "type": "object"
+      },
+      "CoachDistanceBufferTier": {
+        "properties": {
+          "buffer_mins": {
+            "maximum": 240.0,
+            "minimum": 0.0,
+            "title": "Buffer Mins",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "max_miles": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Miles"
+          },
+          "min_miles": {
+            "minimum": 0.0,
+            "title": "Min Miles",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "min_miles",
+          "buffer_mins"
+        ],
+        "title": "CoachDistanceBufferTier",
+        "type": "object"
+      },
+      "CoachInstructorProfileResponse": {
+        "properties": {
+          "business_name": {
+            "title": "Business Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "lat": {
+            "title": "Lat",
+            "type": "number"
+          },
+          "lng": {
+            "title": "Lng",
+            "type": "number"
+          },
+          "main_address": {
+            "title": "Main Address",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "work_end_time": {
+            "title": "Work End Time",
+            "type": "string"
+          },
+          "work_start_time": {
+            "title": "Work Start Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "main_address",
+          "lat",
+          "lng",
+          "work_start_time",
+          "work_end_time",
+          "business_name"
+        ],
+        "title": "CoachInstructorProfileResponse",
+        "type": "object"
+      },
+      "CoachLessonRequestResponse": {
+        "properties": {
+          "alternative_slots": {
+            "items": {
+              "$ref": "#/components/schemas/CoachTimeSlotResponse"
+            },
+            "title": "Alternative Slots",
+            "type": "array"
+          },
+          "client_id": {
+            "title": "Client Id",
+            "type": "string"
+          },
+          "client_name": {
+            "title": "Client Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "requested_slot": {
+            "$ref": "#/components/schemas/CoachTimeSlotResponse"
+          },
+          "risk": {
+            "enum": [
+              "clear",
+              "at_risk"
+            ],
+            "title": "Risk",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "client_invite",
+              "manual_intake",
+              "reschedule"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "approved",
+              "needs_alternatives",
+              "declined"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "submitted_at": {
+            "format": "date-time",
+            "title": "Submitted At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "client_id",
+          "client_name",
+          "requested_slot",
+          "source",
+          "status",
+          "risk",
+          "submitted_at",
+          "note"
+        ],
+        "title": "CoachLessonRequestResponse",
+        "type": "object"
+      },
+      "CoachScheduleItemResponse": {
+        "properties": {
+          "buffer_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buffer Mins"
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "end_time": {
+            "format": "date-time",
+            "title": "End Time",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "lesson",
+              "travel",
+              "buffer",
+              "break",
+              "open_gap"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/LocationResponse"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "start_time": {
+            "format": "date-time",
+            "title": "Start Time",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "scheduled",
+                  "rescheduled",
+                  "canceled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "travel_time_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Travel Time Mins"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "start_time",
+          "end_time",
+          "location"
+        ],
+        "title": "CoachScheduleItemResponse",
         "type": "object"
       },
       "CoachScheduleResponse": {
@@ -761,6 +1192,135 @@
           "appointments"
         ],
         "title": "CoachScheduleResponse",
+        "type": "object"
+      },
+      "CoachSchedulerPayments": {
+        "properties": {
+          "cancellation_window_hours": {
+            "default": 24,
+            "maximum": 168.0,
+            "minimum": 0.0,
+            "title": "Cancellation Window Hours",
+            "type": "integer"
+          },
+          "enabled_methods": {
+            "items": {
+              "enum": [
+                "card",
+                "ach",
+                "cash",
+                "wallet"
+              ],
+              "type": "string"
+            },
+            "title": "Enabled Methods",
+            "type": "array"
+          },
+          "require_payment_method_for_new_clients": {
+            "default": false,
+            "title": "Require Payment Method For New Clients",
+            "type": "boolean"
+          }
+        },
+        "title": "CoachSchedulerPayments",
+        "type": "object"
+      },
+      "CoachSchedulerRules": {
+        "properties": {
+          "distance_buffer_tiers": {
+            "items": {
+              "$ref": "#/components/schemas/CoachDistanceBufferTier"
+            },
+            "title": "Distance Buffer Tiers",
+            "type": "array"
+          },
+          "payments": {
+            "$ref": "#/components/schemas/CoachSchedulerPayments"
+          },
+          "post_break_buffer_mins": {
+            "default": 15,
+            "maximum": 240.0,
+            "minimum": 0.0,
+            "title": "Post Break Buffer Mins",
+            "type": "integer"
+          },
+          "rounding_increment_mins": {
+            "const": 15,
+            "default": 15,
+            "title": "Rounding Increment Mins",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "distance_buffer_tiers"
+        ],
+        "title": "CoachSchedulerRules",
+        "type": "object"
+      },
+      "CoachTimeSlotResponse": {
+        "properties": {
+          "buffer_mins": {
+            "title": "Buffer Mins",
+            "type": "integer"
+          },
+          "distance_miles": {
+            "title": "Distance Miles",
+            "type": "number"
+          },
+          "end_time": {
+            "format": "date-time",
+            "title": "End Time",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "next_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Event Id"
+          },
+          "previous_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Event Id"
+          },
+          "start_time": {
+            "format": "date-time",
+            "title": "Start Time",
+            "type": "string"
+          },
+          "target_location": {
+            "$ref": "#/components/schemas/LocationResponse"
+          },
+          "travel_time_mins": {
+            "title": "Travel Time Mins",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "start_time",
+          "end_time",
+          "travel_time_mins",
+          "buffer_mins",
+          "distance_miles",
+          "target_location"
+        ],
+        "title": "CoachTimeSlotResponse",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -1278,6 +1838,49 @@
         ]
       }
     },
+    "/api/coach/command-center/snapshot": {
+      "get": {
+        "operationId": "read_command_center_snapshot_api_coach_command_center_snapshot_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "date",
+            "required": true,
+            "schema": {
+              "format": "date",
+              "title": "Date",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachCommandCenterSnapshot"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Command Center Snapshot",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
     "/api/coach/me": {
       "get": {
         "operationId": "read_current_coach_api_coach_me_get",
@@ -1337,6 +1940,66 @@
           }
         },
         "summary": "Read Schedule",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/settings": {
+      "get": {
+        "operationId": "read_scheduler_settings_api_coach_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachSchedulerRules"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Scheduler Settings",
+        "tags": [
+          "coach"
+        ]
+      },
+      "put": {
+        "operationId": "save_scheduler_settings_api_coach_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoachSchedulerRules"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachSchedulerRules"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Scheduler Settings",
         "tags": [
           "coach"
         ]
