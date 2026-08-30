@@ -4,7 +4,7 @@ from typing import Optional
 from uuid import uuid4
 
 from app import db
-from app.api_errors import InviteExpired, InviteNotFound
+from app.api_errors import InviteExpired, InviteNotFound, LessonRequestNotFound
 from app.models import InviteTokenDB, LessonRequestDB
 from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -152,7 +152,7 @@ def resolve_lesson_request(request_token: str) -> LessonRequestRecord:
     try:
         request = session.query(LessonRequestDB).filter_by(request_token=request_token).first()
         if not request:
-            raise InviteNotFound()
+            raise LessonRequestNotFound()
         return _lesson_request_record(request)
     finally:
         session.close()

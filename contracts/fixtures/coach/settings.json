@@ -1,0 +1,27 @@
+{
+  "distance_buffer_tiers": [
+    {
+      "buffer_mins": 10,
+      "id": "near",
+      "label": "Under 5 mi",
+      "max_miles": 4.999,
+      "min_miles": 0
+    },
+    {
+      "buffer_mins": 20,
+      "id": "medium",
+      "label": "5-10 mi",
+      "max_miles": 10,
+      "min_miles": 5
+    },
+    {
+      "buffer_mins": 30,
+      "id": "far",
+      "label": "Over 10 mi",
+      "max_miles": null,
+      "min_miles": 10.001
+    }
+  ],
+  "post_break_buffer_mins": 15,
+  "rounding_increment_mins": 15
+}

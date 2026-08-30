@@ -1,0 +1,12 @@
+{
+  "clients": [],
+  "date": "2026-08-20",
+  "instructor": {
+    "business_name": "Swim Command",
+    "id": "inst_001",
+    "name": "Coach Sarah"
+  },
+  "requests": [],
+  "rules_fixture": "fixtures/coach/settings.json",
+  "schedule": []
+}

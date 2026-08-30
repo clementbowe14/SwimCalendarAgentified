@@ -1,0 +1,25 @@
+{
+  "allowed_durations_mins": [
+    30,
+    45,
+    60
+  ],
+  "business_name": "Swim Command",
+  "expires_at_iso": "2026-09-27T16:20:44",
+  "instructor_name": "Coach Sarah",
+  "intake": {
+    "client_name": "Sofia Martinez",
+    "guardian_email": "ana.martinez@example.com",
+    "guardian_phone": "(512) 555-0194",
+    "location": {
+      "address": "820 Lakeview Dr, Austin, TX",
+      "is_instructor_facility": false,
+      "lat": 30.289,
+      "lng": -97.739
+    },
+    "location_type": "home",
+    "notes": "Beginner swimmer. Prefers shallow end warmup."
+  },
+  "invite_token": "invite_sofia_0826",
+  "preferred_duration_mins": 45
+}

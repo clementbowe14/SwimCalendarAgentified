@@ -2,7 +2,17 @@ from datetime import date, datetime, timedelta
 import re
 
 from app import db, tools
-from app.api_errors import IdempotencyConflict, InvalidSchedulingRequest, ResourceNotFound, SchedulingConflict
+from app.api_errors import (
+    GeocodingFailed as GeocodingFailedApiError,
+    IdempotencyConflict,
+    InvalidSchedulingRequest,
+    ResourceNotFound,
+    RoutingConfigurationError,
+    RoutingEstimateFailed as RoutingEstimateFailedApiError,
+    RoutingProviderUnavailable as RoutingProviderUnavailableApiError,
+    RoutingTimeout as RoutingTimeoutApiError,
+    SchedulingConflict,
+)
 from app.api_schemas import (
     AppointmentResponse,
     AvailabilitySearchRequest,
@@ -26,6 +36,13 @@ from app.public_tokens import (
     create_lesson_request,
     resolve_lesson_request_by_idempotency_key,
     resolve_lesson_request,
+)
+from app.routing import (
+    GeocodeFailed,
+    RouteEstimateFailed,
+    RoutingProviderNotConfigured,
+    RoutingProviderUnavailable,
+    RoutingTimeout,
 )
 
 
@@ -261,6 +278,16 @@ def _find_slots(
             is_instructor_facility=is_instructor_facility,
             duration_mins=duration_mins,
         )
+    except GeocodeFailed as exc:
+        raise GeocodingFailedApiError({"field": "client_address"}) from exc
+    except RoutingTimeout as exc:
+        raise RoutingTimeoutApiError() from exc
+    except RoutingProviderUnavailable as exc:
+        raise RoutingProviderUnavailableApiError() from exc
+    except RoutingProviderNotConfigured as exc:
+        raise RoutingConfigurationError() from exc
+    except RouteEstimateFailed as exc:
+        raise RoutingEstimateFailedApiError() from exc
     except ValueError as exc:
         message = str(exc)
         if "not found" in message.lower():
@@ -309,7 +336,12 @@ def _resolve_location(
             lng=instructor.lng,
             is_instructor_facility=True,
         )
-    lat, lng = tools.routing_provider.geocode(client_address)
+    try:
+        lat, lng = tools.routing_provider.geocode(client_address)
+    except GeocodeFailed as exc:
+        raise GeocodingFailedApiError({"field": "client_address"}) from exc
+    except RoutingProviderNotConfigured as exc:
+        raise RoutingConfigurationError() from exc
     return LocationResponse(
         address=client_address,
         lat=lat,

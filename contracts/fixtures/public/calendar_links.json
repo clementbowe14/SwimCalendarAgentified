@@ -1,0 +1,5 @@
+{
+  "apple": "/api/public/calendar/req_contract_confirmed.ics",
+  "google": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Swim%20lesson&dates=20260829T123000/20260829T131500&location=820%20Lakeview%20Dr%2C%20Austin%2C%20TX",
+  "ics": "/api/public/calendar/req_contract_confirmed.ics"
+}

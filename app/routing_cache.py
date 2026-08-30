@@ -1,0 +1,204 @@
+import datetime
+import uuid
+from dataclasses import dataclass
+from typing import Dict, Optional, Protocol, Tuple
+
+from sqlalchemy.exc import IntegrityError
+
+from app import db
+from app.models import RouteEstimateDB
+from app.routing import BaseRoutingProvider, RouteEstimate
+
+
+NO_DEPARTURE_BUCKET = datetime.datetime(1970, 1, 1)
+
+
+@dataclass(frozen=True)
+class RouteCacheKey:
+    provider: str
+    origin_key: str
+    destination_key: str
+    departure_bucket_start: datetime.datetime
+    traffic_mode: str
+
+
+class RouteEstimateCache(Protocol):
+    def get(self, key: RouteCacheKey, now: datetime.datetime) -> Optional[RouteEstimate]:
+        ...
+
+    def set(
+        self,
+        key: RouteCacheKey,
+        estimate: RouteEstimate,
+        origin_coords: Tuple[float, float],
+        destination_coords: Tuple[float, float],
+        expires_at: datetime.datetime,
+    ) -> RouteEstimate:
+        ...
+
+
+class InMemoryRouteEstimateCache:
+    def __init__(self):
+        self._entries: Dict[RouteCacheKey, tuple[RouteEstimate, datetime.datetime]] = {}
+
+    def get(self, key: RouteCacheKey, now: datetime.datetime) -> Optional[RouteEstimate]:
+        cached = self._entries.get(key)
+        if not cached:
+            return None
+        estimate, expires_at = cached
+        if expires_at <= now:
+            self._entries.pop(key, None)
+            return None
+        return estimate
+
+    def set(
+        self,
+        key: RouteCacheKey,
+        estimate: RouteEstimate,
+        origin_coords: Tuple[float, float],
+        destination_coords: Tuple[float, float],
+        expires_at: datetime.datetime,
+    ) -> RouteEstimate:
+        self._entries[key] = (estimate, expires_at)
+        return estimate
+
+
+class DatabaseRouteEstimateCache:
+    def get(self, key: RouteCacheKey, now: datetime.datetime) -> Optional[RouteEstimate]:
+        session = db.SessionLocal()
+        try:
+            row = _query_cache_row(session, key)
+            if row is None or row.expires_at <= now:
+                return None
+            return _row_to_estimate(row)
+        finally:
+            session.close()
+
+    def set(
+        self,
+        key: RouteCacheKey,
+        estimate: RouteEstimate,
+        origin_coords: Tuple[float, float],
+        destination_coords: Tuple[float, float],
+        expires_at: datetime.datetime,
+    ) -> RouteEstimate:
+        session = db.SessionLocal()
+        try:
+            row = RouteEstimateDB(
+                id=f"route_{uuid.uuid4().hex[:12]}",
+                provider=key.provider,
+                origin_lat=origin_coords[0],
+                origin_lng=origin_coords[1],
+                destination_lat=destination_coords[0],
+                destination_lng=destination_coords[1],
+                origin_key=key.origin_key,
+                destination_key=key.destination_key,
+                departure_bucket_start=key.departure_bucket_start,
+                traffic_mode=key.traffic_mode,
+                distance_miles=estimate.distance_miles,
+                travel_time_mins=estimate.travel_time_mins,
+                duration_seconds=estimate.duration_seconds,
+                expires_at=expires_at,
+            )
+            session.add(row)
+            session.commit()
+            return estimate
+        except IntegrityError:
+            session.rollback()
+            existing = _query_cache_row(session, key)
+            if existing is not None and existing.expires_at > datetime.datetime.utcnow():
+                return _row_to_estimate(existing)
+            raise
+        finally:
+            session.close()
+
+
+class CachingRoutingProvider(BaseRoutingProvider):
+    def __init__(
+        self,
+        provider: BaseRoutingProvider,
+        cache: RouteEstimateCache,
+        ttl_hours: int = 24,
+        bucket_minutes: int = 15,
+        traffic_mode: str = "none",
+    ):
+        self.provider = provider
+        self.cache = cache
+        self.ttl_hours = ttl_hours
+        self.bucket_minutes = bucket_minutes
+        self.traffic_mode = traffic_mode
+        self.provider_name = provider.provider_name
+
+    def estimate_route(
+        self,
+        origin_coords: Tuple[float, float],
+        dest_coords: Tuple[float, float],
+        departure_time: Optional[datetime.datetime] = None,
+        traffic_mode: str = "none",
+    ) -> RouteEstimate:
+        resolved_traffic_mode = traffic_mode if traffic_mode != "none" else self.traffic_mode
+        departure_bucket = bucket_departure_time(departure_time, self.bucket_minutes)
+        key = RouteCacheKey(
+            provider=self.provider.provider_name,
+            origin_key=coordinate_key(origin_coords),
+            destination_key=coordinate_key(dest_coords),
+            departure_bucket_start=departure_bucket,
+            traffic_mode=resolved_traffic_mode,
+        )
+        now = datetime.datetime.utcnow()
+        cached = self.cache.get(key, now)
+        if cached:
+            return cached
+
+        estimate = self.provider.estimate_route(
+            origin_coords,
+            dest_coords,
+            departure_time=departure_bucket,
+            traffic_mode=resolved_traffic_mode,
+        )
+        expires_at = now + datetime.timedelta(hours=self.ttl_hours)
+        return self.cache.set(key, estimate, origin_coords, dest_coords, expires_at)
+
+    def geocode(self, address: str) -> Tuple[float, float]:
+        return self.provider.geocode(address)
+
+
+def coordinate_key(coords: Tuple[float, float]) -> str:
+    return f"{coords[0]:.5f},{coords[1]:.5f}"
+
+
+def bucket_departure_time(
+    departure_time: Optional[datetime.datetime],
+    bucket_minutes: int,
+) -> datetime.datetime:
+    if departure_time is None:
+        return NO_DEPARTURE_BUCKET
+    discard = datetime.timedelta(
+        minutes=departure_time.minute % bucket_minutes,
+        seconds=departure_time.second,
+        microseconds=departure_time.microsecond,
+    )
+    return departure_time - discard
+
+
+def _query_cache_row(session, key: RouteCacheKey) -> Optional[RouteEstimateDB]:
+    return (
+        session.query(RouteEstimateDB)
+        .filter_by(
+            provider=key.provider,
+            origin_key=key.origin_key,
+            destination_key=key.destination_key,
+            departure_bucket_start=key.departure_bucket_start,
+            traffic_mode=key.traffic_mode,
+        )
+        .first()
+    )
+
+
+def _row_to_estimate(row: RouteEstimateDB) -> RouteEstimate:
+    return RouteEstimate(
+        distance_miles=row.distance_miles,
+        travel_time_mins=row.travel_time_mins,
+        duration_seconds=row.duration_seconds,
+        provider=row.provider,
+    )

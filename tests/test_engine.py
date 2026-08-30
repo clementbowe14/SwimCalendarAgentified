@@ -1,6 +1,6 @@
 import pytest
 import datetime
-from app.routing import HaversineRoutingProvider
+from app.routing import BaseRoutingProvider, HaversineRoutingProvider, RouteEstimate
 from app.engine import SwimSchedulerConstraintEngine
 from app.models import LocationInfo
 
@@ -81,3 +81,111 @@ def test_first_lesson_start_location(engine, routing):
     dist, travel = routing.get_distance_and_travel_time((main_loc.lat, main_loc.lng), (target_loc.lat, target_loc.lng))
     expected_earliest = engine.apply_15min_ceiling(day_start + datetime.timedelta(minutes=travel))
     assert first_slot.start_time == expected_earliest
+
+
+class RecordingRoutingProvider(BaseRoutingProvider):
+    provider_name = "recording"
+
+    def __init__(self):
+        self.calls = []
+
+    def estimate_route(self, origin_coords, dest_coords, departure_time=None, traffic_mode="none"):
+        self.calls.append(
+            {
+                "origin": origin_coords,
+                "destination": dest_coords,
+                "departure_time": departure_time,
+                "traffic_mode": traffic_mode,
+            }
+        )
+        return RouteEstimate(
+            distance_miles=1.0,
+            travel_time_mins=5,
+            duration_seconds=300,
+            provider=self.provider_name,
+        )
+
+    def geocode(self, address: str):
+        return (30.2672, -97.7431)
+
+
+def test_engine_passes_departure_context_to_routing_provider():
+    routing = RecordingRoutingProvider()
+    engine = SwimSchedulerConstraintEngine(routing)
+    main_loc = LocationInfo(address="Base", lat=30.0, lng=-97.0, is_instructor_facility=True)
+    target_loc = LocationInfo(address="Target", lat=30.1, lng=-97.1, is_instructor_facility=False)
+    next_loc = LocationInfo(address="Next", lat=30.2, lng=-97.2, is_instructor_facility=False)
+
+    slots = engine.find_available_slots_for_day(
+        day_start=datetime.datetime(2026, 8, 20, 8, 0),
+        day_end=datetime.datetime(2026, 8, 20, 11, 0),
+        instructor_main_location=main_loc,
+        existing_events=[
+            {
+                "id": "app_next",
+                "start_time": datetime.datetime(2026, 8, 20, 10, 0),
+                "end_time": datetime.datetime(2026, 8, 20, 10, 45),
+                "lat": next_loc.lat,
+                "lng": next_loc.lng,
+                "is_break": False,
+            }
+        ],
+        target_location=target_loc,
+        duration_mins=30,
+    )
+
+    assert slots
+    assert all(call["departure_time"] is not None for call in routing.calls)
+    assert datetime.datetime(2026, 8, 20, 8, 0) in {
+        call["departure_time"] for call in routing.calls
+    }
+    assert slots[0].end_time in {call["departure_time"] for call in routing.calls}
+
+
+class ReturnLegTrafficProvider(RecordingRoutingProvider):
+    def estimate_route(self, origin_coords, dest_coords, departure_time=None, traffic_mode="none"):
+        self.calls.append(
+            {
+                "origin": origin_coords,
+                "destination": dest_coords,
+                "departure_time": departure_time,
+                "traffic_mode": traffic_mode,
+            }
+        )
+        travel_time = 40 if departure_time == datetime.datetime(2026, 8, 20, 9, 30) else 5
+        return RouteEstimate(
+            distance_miles=1.0,
+            travel_time_mins=travel_time,
+            duration_seconds=travel_time * 60,
+            provider=self.provider_name,
+        )
+
+
+def test_engine_uses_candidate_end_time_for_return_leg_routing():
+    routing = ReturnLegTrafficProvider()
+    engine = SwimSchedulerConstraintEngine(routing)
+    main_loc = LocationInfo(address="Base", lat=30.0, lng=-97.0, is_instructor_facility=True)
+    target_loc = LocationInfo(address="Target", lat=30.1, lng=-97.1, is_instructor_facility=False)
+
+    slots = engine.find_available_slots_for_day(
+        day_start=datetime.datetime(2026, 8, 20, 8, 0),
+        day_end=datetime.datetime(2026, 8, 20, 11, 0),
+        instructor_main_location=main_loc,
+        existing_events=[
+            {
+                "id": "app_next",
+                "start_time": datetime.datetime(2026, 8, 20, 10, 0),
+                "end_time": datetime.datetime(2026, 8, 20, 10, 45),
+                "lat": 30.2,
+                "lng": -97.2,
+                "is_break": False,
+            }
+        ],
+        target_location=target_loc,
+        duration_mins=30,
+    )
+
+    assert datetime.datetime(2026, 8, 20, 9, 30) in {
+        call["departure_time"] for call in routing.calls
+    }
+    assert datetime.datetime(2026, 8, 20, 9, 0) not in {slot.start_time for slot in slots}

@@ -1,0 +1,30 @@
+{
+  "confirmation": {
+    "appointment_id": "req_contract_confirmed",
+    "calendar_links": {
+      "apple": "/api/public/calendar/req_contract_confirmed.ics",
+      "google": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Swim%20lesson&dates=20260829T123000/20260829T131500&location=820%20Lakeview%20Dr%2C%20Austin%2C%20TX",
+      "ics": "/api/public/calendar/req_contract_confirmed.ics"
+    },
+    "confirmed_at_iso": "2026-08-28T16:35:00",
+    "message": "Your swim lesson is confirmed for Sat, Aug 29 at 12:30 PM."
+  },
+  "id": "req_contract_confirmed",
+  "invite_token": "invite_sofia_0826",
+  "requested_at_iso": "2026-08-28T16:30:00",
+  "slot": {
+    "buffer_mins": 10,
+    "display": "Sat, Aug 29 at 12:30 PM",
+    "distance_miles": 2.1,
+    "end_iso": "2026-08-29T13:15:00",
+    "id": "slot_contract_0829_1230",
+    "location_address": "820 Lakeview Dr, Austin, TX",
+    "next_event": "Next commitment",
+    "previous_event": "Prior commitment",
+    "recurrence_available": true,
+    "safety_reason": "This requested time was created from a server-issued slot offer.",
+    "start_iso": "2026-08-29T12:30:00",
+    "travel_time_mins": 12
+  },
+  "status": "confirmed"
+}
