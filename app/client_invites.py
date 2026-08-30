@@ -3,6 +3,8 @@ import hashlib
 import urllib.parse
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError
+
 from app import db, tools
 from app.api_errors import (
     CalendarLinksUnavailable,
@@ -290,35 +292,62 @@ def _store_and_shape_slot(
         safety_reason="Travel and buffer time fit before the next protected schedule item.",
         recurrence_available=request.recurrence == "single" or _weekly_candidate(slot.start_time),
     )
+    _save_slot_offer(invite, request, location, slot, shaped, is_facility)
+    return shaped
+
+
+def _save_slot_offer(
+    invite: InviteContext,
+    request: ClientInviteAvailabilityRequest,
+    location: ClientInviteLocation,
+    slot: TimeSlotDTO,
+    shaped: ClientInviteSchedulerSlot,
+    is_facility: bool,
+) -> None:
     session = db.SessionLocal()
     try:
-        existing = session.query(InviteSlotOfferDB).filter_by(id=slot_id).first()
-        if existing is None:
-            existing = InviteSlotOfferDB(id=slot_id)
-            session.add(existing)
-        existing.invite_token = invite.token
-        existing.instructor_id = invite.instructor_id
-        existing.client_name = request.client_name
-        existing.client_address = location.address
-        existing.requested_date = request.requested_date
-        existing.slot_start = slot.start_time
-        existing.slot_end = slot.end_time
-        existing.duration_mins = request.duration_mins
-        existing.location_type = "facility" if is_facility else "home"
-        existing.location_address = location.address
-        existing.lat = location.lat or 0.0
-        existing.lng = location.lng or 0.0
-        existing.travel_time_mins = slot.travel_time_mins
-        existing.buffer_mins = slot.buffer_mins
-        existing.distance_miles = slot.distance_miles
-        existing.recurrence = request.recurrence
-        existing.recurrence_available = shaped.recurrence_available
-        existing.expires_at = datetime.datetime.utcnow() + datetime.timedelta(minutes=SLOT_OFFER_TTL_MINUTES)
-        existing.updated_at = datetime.datetime.utcnow()
+        _upsert_slot_offer(session, invite, request, location, slot, shaped, is_facility)
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        _upsert_slot_offer(session, invite, request, location, slot, shaped, is_facility)
         session.commit()
     finally:
         session.close()
-    return shaped
+
+
+def _upsert_slot_offer(
+    session,
+    invite: InviteContext,
+    request: ClientInviteAvailabilityRequest,
+    location: ClientInviteLocation,
+    slot: TimeSlotDTO,
+    shaped: ClientInviteSchedulerSlot,
+    is_facility: bool,
+) -> None:
+    existing = session.query(InviteSlotOfferDB).filter_by(id=shaped.id).first()
+    if existing is None:
+        existing = InviteSlotOfferDB(id=shaped.id)
+        session.add(existing)
+    existing.invite_token = invite.token
+    existing.instructor_id = invite.instructor_id
+    existing.client_name = request.client_name
+    existing.client_address = location.address
+    existing.requested_date = request.requested_date
+    existing.slot_start = slot.start_time
+    existing.slot_end = slot.end_time
+    existing.duration_mins = request.duration_mins
+    existing.location_type = "facility" if is_facility else "home"
+    existing.location_address = location.address
+    existing.lat = location.lat or 0.0
+    existing.lng = location.lng or 0.0
+    existing.travel_time_mins = slot.travel_time_mins
+    existing.buffer_mins = slot.buffer_mins
+    existing.distance_miles = slot.distance_miles
+    existing.recurrence = request.recurrence
+    existing.recurrence_available = shaped.recurrence_available
+    existing.expires_at = datetime.datetime.utcnow() + datetime.timedelta(minutes=SLOT_OFFER_TTL_MINUTES)
+    existing.updated_at = datetime.datetime.utcnow()
 
 
 def _load_active_offer(invite_token: str, slot_id: str) -> InviteSlotOfferDB:
