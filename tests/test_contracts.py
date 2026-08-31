@@ -21,6 +21,7 @@ FIXTURE_SCHEMAS = {
     "fixtures/public/availability_search_response.json": ClientInviteAvailabilityResponse,
     "fixtures/public/lesson_request_requested.json": ClientInviteLessonRequestResponse,
     "fixtures/public/lesson_request_confirmed.json": ClientInviteLessonRequestResponse,
+    "fixtures/public/lesson_request_needs_new_times.json": ClientInviteLessonRequestResponse,
     "fixtures/public/calendar_links.json": ClientInviteCalendarLinks,
     "fixtures/public/error_invalid_token.json": ErrorResponse,
     "fixtures/coach/availability_search_response.json": AvailabilitySearchResponse,
@@ -46,6 +47,9 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/public/lesson-requests/{request_token}/calendar-links" in paths
     assert "/api/coach/availability" in paths
     assert "/api/coach/command-center/snapshot" in paths
+    assert "/api/coach/lesson-requests/{request_token}/approve" in paths
+    assert "/api/coach/lesson-requests/{request_token}/alternatives" in paths
+    assert "/api/coach/lesson-requests/{request_token}/decline" in paths
     assert "/api/coach/settings" in paths
     assert "/api/public/command-center/snapshot" not in paths
     assert "/api/public/settings" not in paths
