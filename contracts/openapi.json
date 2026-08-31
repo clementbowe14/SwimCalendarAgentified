@@ -987,6 +987,45 @@
         "title": "CoachInstructorProfileResponse",
         "type": "object"
       },
+      "CoachLessonRequestActionResponse": {
+        "properties": {
+          "appointment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Appointment Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "approved",
+              "needs_alternatives",
+              "declined"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "message"
+        ],
+        "title": "CoachLessonRequestActionResponse",
+        "type": "object"
+      },
       "CoachLessonRequestResponse": {
         "properties": {
           "alternative_slots": {
@@ -1654,7 +1693,11 @@
             "type": "string"
           },
           "status": {
-            "const": "pending",
+            "enum": [
+              "pending",
+              "confirmed",
+              "needs_new_times"
+            ],
             "title": "Status",
             "type": "string"
           }
@@ -1876,6 +1919,132 @@
           }
         },
         "summary": "Read Command Center Snapshot",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/lesson-requests/{request_token}/alternatives": {
+      "post": {
+        "operationId": "request_lesson_alternatives_api_coach_lesson_requests__request_token__alternatives_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_token",
+            "required": true,
+            "schema": {
+              "title": "Request Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachLessonRequestActionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Lesson Alternatives",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/lesson-requests/{request_token}/approve": {
+      "post": {
+        "operationId": "approve_lesson_request_api_coach_lesson_requests__request_token__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_token",
+            "required": true,
+            "schema": {
+              "title": "Request Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachLessonRequestActionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Lesson Request",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/lesson-requests/{request_token}/decline": {
+      "post": {
+        "operationId": "decline_lesson_request_api_coach_lesson_requests__request_token__decline_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_token",
+            "required": true,
+            "schema": {
+              "title": "Request Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachLessonRequestActionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decline Lesson Request",
         "tags": [
           "coach"
         ]

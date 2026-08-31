@@ -1,11 +1,13 @@
 from datetime import date, datetime, timedelta
 import re
+from typing import Optional
 
 from app import db, tools
 from app.api_errors import (
     GeocodingFailed as GeocodingFailedApiError,
     IdempotencyConflict,
     InvalidSchedulingRequest,
+    LessonRequestNotFound,
     ResourceNotFound,
     RoutingConfigurationError,
     RoutingEstimateFailed as RoutingEstimateFailedApiError,
@@ -22,6 +24,7 @@ from app.api_schemas import (
     CoachClientResponse,
     CoachCommandCenterSnapshot,
     CoachDistanceBufferTier,
+    CoachLessonRequestActionResponse,
     CoachLessonRequestResponse,
     CoachScheduleItemResponse,
     CoachScheduleResponse,
@@ -39,7 +42,7 @@ from app.api_schemas import (
     PublicRequestStatusResponse,
     TimeSlotResponse,
 )
-from app.models import TimeSlotDTO
+from app.models import AppointmentDB, LessonRequestDB, TimeSlotDTO
 from app.public_tokens import (
     InviteContext,
     create_lesson_request,
@@ -348,6 +351,85 @@ def book_coach_lesson(instructor_id: str, request: CoachBookLessonRequest) -> Bo
     return BookLessonResponse(**result)
 
 
+def approve_coach_lesson_request(
+    instructor_id: str,
+    request_token: str,
+) -> CoachLessonRequestActionResponse:
+    lesson_request, appointment = _load_coach_lesson_request(instructor_id, request_token)
+    if appointment is not None:
+        _mark_lesson_request_status(lesson_request.id, "accepted")
+        return CoachLessonRequestActionResponse(
+            id=lesson_request.request_token,
+            status="approved",
+            appointment_id=appointment.id,
+            message="Lesson request is confirmed.",
+        )
+    if lesson_request.status in {"declined", "cancelled"}:
+        raise InvalidSchedulingRequest("Only pending lesson requests can be approved.")
+    if db.has_active_schedule_conflict(
+        instructor_id=lesson_request.instructor_id,
+        start_time=lesson_request.slot_start,
+        end_time=lesson_request.slot_end,
+    ):
+        raise SchedulingConflict()
+    try:
+        appointment_id = db.save_appointment(
+            instructor_id=lesson_request.instructor_id,
+            client_id=lesson_request.client_id or _client_id_from_name(lesson_request.client_name),
+            title=f"Lesson with {lesson_request.client_name}",
+            start_time=lesson_request.slot_start,
+            end_time=lesson_request.slot_end,
+            location_address=lesson_request.client_address,
+            lat=lesson_request.lat,
+            lng=lesson_request.lng,
+            idempotency_key=f"lesson-request-approval:{lesson_request.id}",
+            request_id=lesson_request.id,
+        )
+    except db.ScheduleConflictError as exc:
+        raise SchedulingConflict() from exc
+    except db.IdempotencyKeyConflictError as exc:
+        raise IdempotencyConflict() from exc
+    _mark_lesson_request_status(lesson_request.id, "accepted")
+    return CoachLessonRequestActionResponse(
+        id=lesson_request.request_token,
+        status="approved",
+        appointment_id=appointment_id,
+        message="Lesson request is confirmed.",
+    )
+
+
+def request_alternatives_for_coach_lesson_request(
+    instructor_id: str,
+    request_token: str,
+) -> CoachLessonRequestActionResponse:
+    lesson_request, appointment = _load_coach_lesson_request(instructor_id, request_token)
+    if appointment is not None or lesson_request.status == "accepted":
+        raise InvalidSchedulingRequest("Confirmed lesson requests cannot be marked for new times.")
+    _mark_lesson_request_status(lesson_request.id, "declined")
+    return CoachLessonRequestActionResponse(
+        id=lesson_request.request_token,
+        status="needs_alternatives",
+        appointment_id=None,
+        message="Client should choose new lesson times.",
+    )
+
+
+def decline_coach_lesson_request(
+    instructor_id: str,
+    request_token: str,
+) -> CoachLessonRequestActionResponse:
+    lesson_request, appointment = _load_coach_lesson_request(instructor_id, request_token)
+    if appointment is not None or lesson_request.status == "accepted":
+        raise InvalidSchedulingRequest("Confirmed lesson requests cannot be declined.")
+    _mark_lesson_request_status(lesson_request.id, "declined")
+    return CoachLessonRequestActionResponse(
+        id=lesson_request.request_token,
+        status="declined",
+        appointment_id=None,
+        message="Lesson request was declined.",
+    )
+
+
 def public_invite_response(invite: InviteContext) -> PublicInviteResponse:
     return PublicInviteResponse(
         invite_token=invite.token,
@@ -458,11 +540,64 @@ def create_public_lesson_request(
 
 def get_public_request_status(request_token: str) -> PublicRequestStatusResponse:
     record = resolve_lesson_request(request_token)
+    status = _legacy_public_request_status(record.status)
     return PublicRequestStatusResponse(
         request_token=record.request_token,
-        status="pending",
-        message="Your lesson request is waiting for instructor confirmation.",
+        status=status,
+        message=_legacy_public_request_message(status),
     )
+
+
+def _load_coach_lesson_request(
+    instructor_id: str,
+    request_token: str,
+) -> tuple[LessonRequestDB, Optional[AppointmentDB]]:
+    session = db.SessionLocal()
+    try:
+        lesson_request = (
+            session.query(LessonRequestDB)
+            .filter(
+                LessonRequestDB.instructor_id == instructor_id,
+                LessonRequestDB.request_token == request_token,
+            )
+            .first()
+        )
+        if lesson_request is None:
+            raise LessonRequestNotFound()
+        appointment = session.query(AppointmentDB).filter_by(request_id=lesson_request.id).first()
+        session.expunge(lesson_request)
+        if appointment is not None:
+            session.expunge(appointment)
+        return lesson_request, appointment
+    finally:
+        session.close()
+
+
+def _mark_lesson_request_status(request_id: str, status: str) -> None:
+    session = db.SessionLocal()
+    try:
+        lesson_request = session.query(LessonRequestDB).filter_by(id=request_id).one()
+        lesson_request.status = status
+        lesson_request.updated_at = datetime.utcnow()
+        session.commit()
+    finally:
+        session.close()
+
+
+def _legacy_public_request_status(status: str) -> str:
+    if status == "accepted":
+        return "confirmed"
+    if status in {"declined", "cancelled"}:
+        return "needs_new_times"
+    return "pending"
+
+
+def _legacy_public_request_message(status: str) -> str:
+    if status == "confirmed":
+        return "Your lesson request was confirmed by the instructor."
+    if status == "needs_new_times":
+        return "The instructor needs you to choose new lesson times."
+    return "Your lesson request is waiting for instructor confirmation."
 
 
 def _find_slots(

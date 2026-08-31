@@ -183,6 +183,13 @@ class BookLessonResponse(BaseModel):
     message: str
 
 
+class CoachLessonRequestActionResponse(BaseModel):
+    id: str
+    status: Literal["approved", "needs_alternatives", "declined"]
+    appointment_id: Optional[str] = None
+    message: str
+
+
 class PublicInviteResponse(BaseModel):
     invite_token: str
     instructor_name: str
@@ -228,7 +235,7 @@ class PublicLessonRequestResponse(BaseModel):
 
 class PublicRequestStatusResponse(BaseModel):
     request_token: str
-    status: Literal["pending"]
+    status: Literal["pending", "confirmed", "needs_new_times"]
     message: str
 
 
