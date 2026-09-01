@@ -3,7 +3,7 @@ from datetime import date, datetime
 from typing import Optional
 from uuid import uuid4
 
-from app import db
+from app import db, timezones
 from app.api_errors import InviteExpired, InviteNotFound, LessonRequestNotFound
 from app.models import InviteTokenDB, LessonRequestDB
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -90,6 +90,8 @@ def create_lesson_request(
     lng: float,
     idempotency_key: Optional[str] = None,
 ) -> LessonRequestRecord:
+    selected_slot_start = timezones.to_utc_storage(selected_slot_start)
+    selected_slot_end = timezones.to_utc_storage(selected_slot_end)
     session = db.SessionLocal()
     try:
         if idempotency_key:

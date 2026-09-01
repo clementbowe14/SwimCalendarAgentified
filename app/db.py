@@ -6,6 +6,7 @@ from typing import Optional, List
 from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
+from app import timezones
 from app.models import (
     AppointmentDB,
     Base,
@@ -52,7 +53,8 @@ def seed_data():
             lat=30.2672,
             lng=-97.7431,
             work_start_time="08:00",
-            work_end_time="17:00"
+            work_end_time="17:00",
+            timezone=timezones.DEFAULT_INSTRUCTOR_TIMEZONE,
         )
         session.add(instructor)
         session.commit()
@@ -61,13 +63,19 @@ def seed_data():
         sample_date = datetime.date(2026, 8, 20)
 
         # 1. Morning Lesson at North Pool (30.3300, -97.7200) -> ~5 miles
+        app1_start = timezones.to_utc_storage(
+            timezones.validate_local_datetime(
+                datetime.datetime.combine(sample_date, datetime.time(9, 0)),
+                instructor.timezone,
+            )
+        )
         app1 = AppointmentDB(
             id="app_101",
             instructor_id="inst_001",
             client_id="client_alice",
             title="Lesson with Alice",
-            start_time=datetime.datetime.combine(sample_date, datetime.time(9, 0)),
-            end_time=datetime.datetime.combine(sample_date, datetime.time(10, 0)),
+            start_time=app1_start,
+            end_time=app1_start + datetime.timedelta(hours=1),
             location_address="450 North Blvd, Austin, TX",
             lat=30.3300,
             lng=-97.7200,
@@ -75,13 +83,19 @@ def seed_data():
         )
 
         # 2. Scheduled Lunch Break (12:00 PM - 1:00 PM) at Main Base
+        app2_start = timezones.to_utc_storage(
+            timezones.validate_local_datetime(
+                datetime.datetime.combine(sample_date, datetime.time(12, 0)),
+                instructor.timezone,
+            )
+        )
         app2 = AppointmentDB(
             id="app_break_1",
             instructor_id="inst_001",
             client_id="instructor_break",
             title="Lunch Break",
-            start_time=datetime.datetime.combine(sample_date, datetime.time(12, 0)),
-            end_time=datetime.datetime.combine(sample_date, datetime.time(13, 0)),
+            start_time=app2_start,
+            end_time=app2_start + datetime.timedelta(hours=1),
             location_address="100 Main St, Austin, TX",
             lat=30.2672,
             lng=-97.7431,
@@ -89,13 +103,19 @@ def seed_data():
         )
 
         # 3. Afternoon Lesson at West Pool (30.2700, -97.8200) -> ~8 miles
+        app3_start = timezones.to_utc_storage(
+            timezones.validate_local_datetime(
+                datetime.datetime.combine(sample_date, datetime.time(14, 30)),
+                instructor.timezone,
+            )
+        )
         app3 = AppointmentDB(
             id="app_102",
             instructor_id="inst_001",
             client_id="client_bob",
             title="Lesson with Bob",
-            start_time=datetime.datetime.combine(sample_date, datetime.time(14, 30)),
-            end_time=datetime.datetime.combine(sample_date, datetime.time(15, 30)),
+            start_time=app3_start,
+            end_time=app3_start + datetime.timedelta(hours=1),
             location_address="800 West Lake Dr, Austin, TX",
             lat=30.2700,
             lng=-97.8200,
@@ -201,8 +221,18 @@ def seed_data():
                 lat=30.289,
                 lng=-97.739,
                 requested_date=datetime.date(2026, 8, 20),
-                slot_start=datetime.datetime(2026, 8, 20, 16, 0),
-                slot_end=datetime.datetime(2026, 8, 20, 16, 45),
+                slot_start=timezones.to_utc_storage(
+                    timezones.validate_local_datetime(
+                        datetime.datetime(2026, 8, 20, 16, 0),
+                        instructor.timezone,
+                    )
+                ),
+                slot_end=timezones.to_utc_storage(
+                    timezones.validate_local_datetime(
+                        datetime.datetime(2026, 8, 20, 16, 45),
+                        instructor.timezone,
+                    )
+                ),
                 duration_mins=45,
                 travel_time_mins=12,
                 buffer_mins=10,
@@ -223,38 +253,43 @@ def get_instructor_info(instructor_id: str = "inst_001") -> Optional[InstructorD
     return inst
 
 def get_appointments_for_date(instructor_id: str, date_str: str) -> List[dict]:
+    return get_local_appointments_for_date(instructor_id, date_str)
+
+def get_local_appointments_for_date(instructor_id: str, date_str: str) -> List[dict]:
+    instructor = get_instructor_info(instructor_id)
+    if not instructor:
+        return []
+    rows = _get_appointment_rows_for_local_date(instructor_id, date_str, instructor.timezone)
+    return [_appointment_to_dict(row, timezone_name=instructor.timezone) for row in rows]
+
+def get_utc_appointment_events_for_date(instructor_id: str, date_str: str) -> List[dict]:
+    instructor = get_instructor_info(instructor_id)
+    if not instructor:
+        return []
+    rows = _get_appointment_rows_for_local_date(instructor_id, date_str, instructor.timezone)
+    return [_appointment_to_dict(row, aware_utc=True) for row in rows]
+
+def _get_appointment_rows_for_local_date(
+    instructor_id: str,
+    date_str: str,
+    timezone_name: str,
+) -> List[AppointmentDB]:
     session = SessionLocal()
-    target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-    
-    start_of_day = datetime.datetime.combine(target_date, datetime.time.min)
-    end_of_day = datetime.datetime.combine(target_date, datetime.time.max)
-
-    apps = session.query(AppointmentDB).filter(
-        AppointmentDB.instructor_id == instructor_id,
-        AppointmentDB.start_time >= start_of_day,
-        AppointmentDB.end_time <= end_of_day,
-        AppointmentDB.status.in_(ACTIVE_APPOINTMENT_STATUSES),
-        AppointmentDB.cancelled_at.is_(None),
-    ).order_by(AppointmentDB.start_time.asc()).all()
-
-    result = [
-        {
-            "id": a.id,
-            "title": a.title,
-            "client_id": a.client_id,
-            "start_time": a.start_time,
-            "end_time": a.end_time,
-            "location_address": a.location_address,
-            "lat": a.lat,
-            "lng": a.lng,
-            "is_break": a.is_break,
-            "event_type": a.event_type,
-            "status": a.status,
-        }
-        for a in apps
-    ]
-    session.close()
-    return result
+    try:
+        target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+        start_of_day, end_of_day = timezones.local_day_window_utc_storage(target_date, timezone_name)
+        apps = session.query(AppointmentDB).filter(
+            AppointmentDB.instructor_id == instructor_id,
+            AppointmentDB.start_time < end_of_day,
+            AppointmentDB.end_time > start_of_day,
+            AppointmentDB.status.in_(ACTIVE_APPOINTMENT_STATUSES),
+            AppointmentDB.cancelled_at.is_(None),
+        ).order_by(AppointmentDB.start_time.asc()).all()
+        for appointment in apps:
+            session.expunge(appointment)
+        return apps
+    finally:
+        session.close()
 
 def get_clients_for_instructor(instructor_id: str) -> List[dict]:
     session = SessionLocal()
@@ -295,6 +330,7 @@ def get_pending_lesson_requests_for_instructor(instructor_id: str) -> List[dict]
             "id": request.id,
             "request_token": request.request_token,
             "invite_token": request.invite_token,
+            "instructor_id": request.instructor_id,
             "client_id": request.client_id,
             "client_name": request.client_name,
             "client_email": request.client_email,
@@ -379,16 +415,30 @@ def get_appointment_by_idempotency_key(idempotency_key: Optional[str]) -> Option
     session.close()
     return result
 
-def _appointment_to_dict(appointment: Optional[AppointmentDB]) -> Optional[dict]:
+def _appointment_to_dict(
+    appointment: Optional[AppointmentDB],
+    *,
+    timezone_name: Optional[str] = None,
+    aware_utc: bool = False,
+) -> Optional[dict]:
     if not appointment:
         return None
+    if timezone_name:
+        start_time = timezones.storage_to_local(appointment.start_time, timezone_name)
+        end_time = timezones.storage_to_local(appointment.end_time, timezone_name)
+    elif aware_utc:
+        start_time = timezones.storage_to_aware_utc(appointment.start_time)
+        end_time = timezones.storage_to_aware_utc(appointment.end_time)
+    else:
+        start_time = appointment.start_time
+        end_time = appointment.end_time
     return {
         "id": appointment.id,
         "instructor_id": appointment.instructor_id,
         "client_id": appointment.client_id,
         "title": appointment.title,
-        "start_time": appointment.start_time,
-        "end_time": appointment.end_time,
+        "start_time": start_time,
+        "end_time": end_time,
         "location_address": appointment.location_address,
         "lat": appointment.lat,
         "lng": appointment.lng,
@@ -405,6 +455,8 @@ def has_active_schedule_conflict(
     end_time: datetime.datetime,
     exclude_appointment_id: Optional[str] = None,
 ) -> bool:
+    start_time = timezones.to_utc_storage(start_time)
+    end_time = timezones.to_utc_storage(end_time)
     session = SessionLocal()
     query = session.query(AppointmentDB).filter(
         AppointmentDB.instructor_id == instructor_id,
@@ -434,6 +486,8 @@ def save_appointment(
     status: str = "scheduled",
     request_id: Optional[str] = None,
 ) -> str:
+    start_time = timezones.to_utc_storage(start_time)
+    end_time = timezones.to_utc_storage(end_time)
     if end_time <= start_time:
         raise ValueError("Appointment end time must be after start time.")
 

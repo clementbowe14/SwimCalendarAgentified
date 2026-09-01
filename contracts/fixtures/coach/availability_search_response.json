@@ -4,8 +4,8 @@
       "buffer_mins": 10,
       "display": "10:30 AM - 11:30 AM (Travel: 0m, Buffer: 10m, Dist: 0.0mi)",
       "distance_miles": 0.0,
-      "end_iso": "2026-08-20T11:30:00",
-      "start_iso": "2026-08-20T10:30:00",
+      "end_iso": "2026-08-20T11:30:00-05:00",
+      "start_iso": "2026-08-20T10:30:00-05:00",
       "travel_time_mins": 0
     }
   ],

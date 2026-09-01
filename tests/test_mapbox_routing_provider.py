@@ -43,7 +43,7 @@ def test_mapbox_route_uses_traffic_profile_departure_and_parses_response():
         return {"routes": [{"distance": 3218.688, "duration": 780.1}]}
 
     provider = MapboxRoutingProvider(access_token="test-token", fetch_json=fetch_json)
-    departure = datetime.datetime(2026, 8, 20, 9, 15)
+    departure = datetime.datetime.fromisoformat("2026-08-20T09:15:00-05:00")
 
     estimate = provider.estimate_route(
         (30.2672, -97.7431),
@@ -55,7 +55,7 @@ def test_mapbox_route_uses_traffic_profile_departure_and_parses_response():
     parsed = urlparse(calls[0])
     query = parse_qs(parsed.query)
     assert "/directions/v5/mapbox/driving-traffic/" in calls[0]
-    assert query["depart_at"] == [departure.isoformat()]
+    assert query["depart_at"] == ["2026-08-20T14:15:00Z"]
     assert estimate.distance_miles == 2.0
     assert estimate.travel_time_mins == 14
     assert estimate.duration_seconds == 781

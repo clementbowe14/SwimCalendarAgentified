@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import datetime
 import pytest
 
 from app import db
@@ -45,6 +46,55 @@ def test_coach_can_search_availability(client):
     assert {"travel_time_mins", "buffer_mins", "distance_miles"}.issubset(
         payload["available_slots"][0].keys()
     )
+    assert payload["available_slots"][0]["start_iso"].endswith("-05:00")
+
+
+def test_coach_schedule_returns_local_aware_cross_midnight_events(client):
+    db.save_appointment(
+        instructor_id="inst_001",
+        client_id="client_late_api",
+        title="Lesson with Late API",
+        start_time=datetime.datetime.fromisoformat("2026-08-21T23:30:00-05:00"),
+        end_time=datetime.datetime.fromisoformat("2026-08-22T00:30:00-05:00"),
+        location_address="450 North Blvd, Austin, TX",
+        lat=30.3300,
+        lng=-97.7200,
+    )
+
+    response = client.get("/api/coach/schedule?date=2026-08-22")
+
+    assert response.status_code == 200
+    appointment = next(item for item in response.json()["appointments"] if item["title"] == "Lesson with Late API")
+    assert appointment["start_time"] == "2026-08-21T23:30:00-05:00"
+    assert appointment["end_time"] == "2026-08-22T00:30:00-05:00"
+
+
+def test_availability_skips_nonexistent_spring_forward_local_hour(client):
+    session = db.SessionLocal()
+    try:
+        instructor = session.query(db.InstructorDB).filter_by(id="inst_001").one()
+        instructor.work_start_time = "01:00"
+        instructor.work_end_time = "04:00"
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.post(
+        "/api/coach/availability",
+        json={
+            "client_name": "Charlie",
+            "client_address": "100 Main St, Austin, TX",
+            "requested_date": "2026-03-08",
+            "duration_mins": 60,
+            "is_instructor_facility": True,
+        },
+    )
+
+    assert response.status_code == 200
+    starts = [slot["start_iso"] for slot in response.json()["available_slots"]]
+    assert starts
+    assert not any("T02:" in start for start in starts)
+    assert any(start.endswith("-05:00") for start in starts)
 
 
 def test_public_invite_is_token_scoped(client):
@@ -123,6 +173,22 @@ def test_unavailable_booking_returns_scheduling_conflict(client):
     payload = response.json()
     assert payload["error"]["code"] == "SCHEDULING_CONFLICT"
     assert payload["error"]["message"] == "The requested time is unavailable."
+
+
+def test_ambiguous_fall_back_booking_time_returns_validation_error(client):
+    response = client.post(
+        "/api/coach/bookings",
+        json={
+            "client_name": "Charlie",
+            "client_address": "450 North Blvd, Austin, TX",
+            "start_time": "2026-11-01T01:30:00",
+            "duration_mins": 60,
+            "is_instructor_facility": False,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_SCHEDULING_REQUEST"
 
 
 def test_public_lesson_request_creates_pending_request(client):

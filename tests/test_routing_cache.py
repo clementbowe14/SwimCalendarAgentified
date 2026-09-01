@@ -51,7 +51,7 @@ def test_route_cache_reuses_same_provider_bucket_and_traffic_mode():
 
     assert first == second
     assert len(provider.route_calls) == 1
-    assert provider.route_calls[0][2] == datetime.datetime(2026, 8, 20, 9, 0)
+    assert provider.route_calls[0][2] == datetime.datetime(2026, 8, 20, 9, 0, tzinfo=datetime.timezone.utc)
     assert provider.route_calls[0][3] == "live"
 
 
@@ -125,3 +125,18 @@ def test_coordinate_keys_and_departure_buckets_are_stable():
         datetime.datetime(2026, 8, 20, 9, 29, 59),
         15,
     ) == datetime.datetime(2026, 8, 20, 9, 15)
+
+
+def test_route_cache_canonicalizes_aware_departure_time_to_utc_bucket():
+    provider = CountingProvider()
+    cached = CachingRoutingProvider(provider, InMemoryRouteEstimateCache(), bucket_minutes=15)
+    central_departure = datetime.datetime.fromisoformat("2026-08-20T09:07:00-05:00")
+    utc_departure = datetime.datetime(2026, 8, 20, 14, 7, tzinfo=datetime.timezone.utc)
+
+    first = cached.estimate_route((30.0, -97.0), (30.1, -97.1), departure_time=central_departure)
+    second = cached.estimate_route((30.0, -97.0), (30.1, -97.1), departure_time=utc_departure)
+
+    assert first == second
+    assert len(provider.route_calls) == 1
+    assert provider.route_calls[0][2] == datetime.datetime(2026, 8, 20, 14, 0, tzinfo=datetime.timezone.utc)
+    assert bucket_departure_time(central_departure, 15) == datetime.datetime(2026, 8, 20, 14, 0)

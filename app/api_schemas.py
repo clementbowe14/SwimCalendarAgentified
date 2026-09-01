@@ -50,6 +50,7 @@ class InstructorProfileResponse(BaseModel):
     lng: float
     work_start_time: str
     work_end_time: str
+    timezone: str
 
 
 class CoachInstructorProfileResponse(InstructorProfileResponse):

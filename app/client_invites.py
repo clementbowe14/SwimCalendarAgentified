@@ -5,7 +5,7 @@ from typing import Optional
 
 from sqlalchemy.exc import IntegrityError
 
-from app import db, tools
+from app import db, timezones, tools
 from app.api_errors import (
     CalendarLinksUnavailable,
     GeocodingFailed as GeocodingFailedApiError,
@@ -277,20 +277,22 @@ def _store_and_shape_slot(
     slot: TimeSlotDTO,
     is_facility: bool,
 ) -> ClientInviteSchedulerSlot:
+    local_start = _instructor_local(slot.start_time, invite.instructor_id)
+    local_end = _instructor_local(slot.end_time, invite.instructor_id)
     slot_id = _slot_id(invite.token, request, slot.start_time)
     shaped = ClientInviteSchedulerSlot(
         id=slot_id,
-        start_iso=slot.start_time,
-        end_iso=slot.end_time,
-        display=_display_slot(slot.start_time),
+        start_iso=local_start,
+        end_iso=local_end,
+        display=_display_slot(local_start),
         location_address=location.address,
         travel_time_mins=slot.travel_time_mins,
         buffer_mins=slot.buffer_mins,
         distance_miles=slot.distance_miles,
-        previous_event="Prior commitment" if slot.start_time.hour > 8 else "Start of instructor day",
+        previous_event="Prior commitment" if local_start.hour > 8 else "Start of instructor day",
         next_event="Next commitment",
         safety_reason="Travel and buffer time fit before the next protected schedule item.",
-        recurrence_available=request.recurrence == "single" or _weekly_candidate(slot.start_time),
+        recurrence_available=request.recurrence == "single" or _weekly_candidate(local_start),
     )
     _save_slot_offer(invite, request, location, slot, shaped, is_facility)
     return shaped
@@ -334,8 +336,8 @@ def _upsert_slot_offer(
     existing.client_name = request.client_name
     existing.client_address = location.address
     existing.requested_date = request.requested_date
-    existing.slot_start = slot.start_time
-    existing.slot_end = slot.end_time
+    existing.slot_start = timezones.to_utc_storage(slot.start_time)
+    existing.slot_end = timezones.to_utc_storage(slot.end_time)
     existing.duration_mins = request.duration_mins
     existing.location_type = "facility" if is_facility else "home"
     existing.location_address = location.address
@@ -372,11 +374,14 @@ def _load_active_offer(invite_token: str, slot_id: str) -> InviteSlotOfferDB:
 
 def _lesson_request_response(request_token: str) -> ClientInviteLessonRequestResponse:
     request, appointment = _load_request_and_appointment(request_token)
+    timezone_name = _instructor_timezone(request.instructor_id)
+    local_start = timezones.storage_to_local(request.slot_start, timezone_name)
+    local_end = timezones.storage_to_local(request.slot_end, timezone_name)
     slot = ClientInviteSchedulerSlot(
         id=_slot_id_from_request(request),
-        start_iso=request.slot_start,
-        end_iso=request.slot_end,
-        display=_display_slot(request.slot_start),
+        start_iso=local_start,
+        end_iso=local_end,
+        display=_display_slot(local_start),
         location_address=request.client_address,
         travel_time_mins=request.travel_time_mins,
         buffer_mins=request.buffer_mins,
@@ -418,9 +423,10 @@ def _confirmation_response(
     appointment: AppointmentDB,
 ) -> ClientInviteLessonConfirmation:
     links = _calendar_links(request, appointment)
+    local_start = timezones.storage_to_local(appointment.start_time, _instructor_timezone(request.instructor_id))
     return ClientInviteLessonConfirmation(
         appointment_id=request.request_token,
-        message=f"Your swim lesson is confirmed for {_display_slot(appointment.start_time)}.",
+        message=f"Your swim lesson is confirmed for {_display_slot(local_start)}.",
         confirmed_at_iso=appointment.created_at,
         calendar_links=links,
     )
@@ -496,7 +502,7 @@ def _slot_id(invite_token: str, request: ClientInviteAvailabilityRequest, slot_s
             request.client_name.strip().lower(),
             request.location.address.strip().lower(),
             request.requested_date.isoformat(),
-            slot_start.isoformat(),
+            timezones.canonical_instant_text(slot_start),
             str(request.duration_mins),
             request.recurrence,
         ]
@@ -511,7 +517,7 @@ def _slot_id_from_request(request: LessonRequestDB) -> str:
             request.client_name.strip().lower(),
             request.client_address.strip().lower(),
             request.requested_date.isoformat(),
-            request.slot_start.isoformat(),
+            timezones.canonical_instant_text(request.slot_start),
             str(request.duration_mins),
             "single",
         ]
@@ -529,11 +535,20 @@ def _display_slot(start_time: datetime.datetime) -> str:
 
 
 def _calendar_timestamp(value: datetime.datetime) -> str:
-    return value.strftime("%Y%m%dT%H%M%S")
+    return timezones.calendar_utc_timestamp(value)
 
 
 def _weekly_candidate(start_time: datetime.datetime) -> bool:
     return start_time.weekday() < 5 or start_time.hour < 17
+
+
+def _instructor_timezone(instructor_id: str) -> str:
+    instructor = db.get_instructor_info(instructor_id)
+    return instructor.timezone if instructor else timezones.DEFAULT_INSTRUCTOR_TIMEZONE
+
+
+def _instructor_local(value: datetime.datetime, instructor_id: str) -> datetime.datetime:
+    return timezones.aware_to_local(value, _instructor_timezone(instructor_id))
 
 
 def _public_request_status(status: str) -> str:

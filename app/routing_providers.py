@@ -7,6 +7,7 @@ import urllib.request
 from datetime import datetime
 from typing import Callable, Optional, Tuple
 
+from app import timezones
 from app.routing import (
     BaseRoutingProvider,
     GeocodeFailed,
@@ -66,7 +67,7 @@ class MapboxRoutingProvider(BaseRoutingProvider):
         )
         params = {"access_token": self.access_token, "overview": "false"}
         if profile == "mapbox/driving-traffic" and departure_time is not None:
-            params["depart_at"] = departure_time.isoformat()
+            params["depart_at"] = timezones.canonical_instant_text(departure_time)
         query = urllib.parse.urlencode(params)
         url = f"https://api.mapbox.com/directions/v5/{profile}/{coordinates}?{query}"
         payload = self._fetch(url)

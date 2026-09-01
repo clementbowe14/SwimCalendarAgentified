@@ -994,6 +994,10 @@
             "title": "Name",
             "type": "string"
           },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
           "work_end_time": {
             "title": "Work End Time",
             "type": "string"
@@ -1011,6 +1015,7 @@
           "lng",
           "work_start_time",
           "work_end_time",
+          "timezone",
           "business_name"
         ],
         "title": "CoachInstructorProfileResponse",
@@ -1498,6 +1503,10 @@
             "title": "Name",
             "type": "string"
           },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
           "work_end_time": {
             "title": "Work End Time",
             "type": "string"
@@ -1514,7 +1523,8 @@
           "lat",
           "lng",
           "work_start_time",
-          "work_end_time"
+          "work_end_time",
+          "timezone"
         ],
         "title": "InstructorProfileResponse",
         "type": "object"

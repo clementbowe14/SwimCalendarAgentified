@@ -5,7 +5,7 @@ from typing import Dict, Optional, Protocol, Tuple
 
 from sqlalchemy.exc import IntegrityError
 
-from app import db
+from app import db, timezones
 from app.models import RouteEstimateDB
 from app.routing import BaseRoutingProvider, RouteEstimate
 
@@ -42,6 +42,7 @@ class InMemoryRouteEstimateCache:
         self._entries: Dict[RouteCacheKey, tuple[RouteEstimate, datetime.datetime]] = {}
 
     def get(self, key: RouteCacheKey, now: datetime.datetime) -> Optional[RouteEstimate]:
+        now = timezones.to_utc_storage(now)
         cached = self._entries.get(key)
         if not cached:
             return None
@@ -59,12 +60,14 @@ class InMemoryRouteEstimateCache:
         destination_coords: Tuple[float, float],
         expires_at: datetime.datetime,
     ) -> RouteEstimate:
+        expires_at = timezones.to_utc_storage(expires_at)
         self._entries[key] = (estimate, expires_at)
         return estimate
 
 
 class DatabaseRouteEstimateCache:
     def get(self, key: RouteCacheKey, now: datetime.datetime) -> Optional[RouteEstimate]:
+        now = timezones.to_utc_storage(now)
         session = db.SessionLocal()
         try:
             row = _query_cache_row(session, key)
@@ -82,6 +85,7 @@ class DatabaseRouteEstimateCache:
         destination_coords: Tuple[float, float],
         expires_at: datetime.datetime,
     ) -> RouteEstimate:
+        expires_at = timezones.to_utc_storage(expires_at)
         session = db.SessionLocal()
         try:
             row = RouteEstimateDB(
@@ -153,7 +157,7 @@ class CachingRoutingProvider(BaseRoutingProvider):
         estimate = self.provider.estimate_route(
             origin_coords,
             dest_coords,
-            departure_time=departure_bucket,
+            departure_time=_provider_departure_time(departure_bucket),
             traffic_mode=resolved_traffic_mode,
         )
         expires_at = now + datetime.timedelta(hours=self.ttl_hours)
@@ -173,12 +177,19 @@ def bucket_departure_time(
 ) -> datetime.datetime:
     if departure_time is None:
         return NO_DEPARTURE_BUCKET
+    departure_time = timezones.to_utc_storage(departure_time)
     discard = datetime.timedelta(
         minutes=departure_time.minute % bucket_minutes,
         seconds=departure_time.second,
         microseconds=departure_time.microsecond,
     )
     return departure_time - discard
+
+
+def _provider_departure_time(departure_bucket: datetime.datetime) -> Optional[datetime.datetime]:
+    if departure_bucket == NO_DEPARTURE_BUCKET:
+        return None
+    return timezones.storage_to_aware_utc(departure_bucket)
 
 
 def _query_cache_row(session, key: RouteCacheKey) -> Optional[RouteEstimateDB]:

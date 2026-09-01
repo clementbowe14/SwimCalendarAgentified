@@ -29,6 +29,7 @@ class InstructorDB(Base):
     lng = Column(Float, nullable=False)
     work_start_time = Column(String, default="08:00") # HH:MM format
     work_end_time = Column(String, default="18:00")   # HH:MM format
+    timezone = Column(String, nullable=False, default="America/Chicago")
 
     appointments = relationship("AppointmentDB", back_populates="instructor")
     clients = relationship("ClientDB", back_populates="instructor")
