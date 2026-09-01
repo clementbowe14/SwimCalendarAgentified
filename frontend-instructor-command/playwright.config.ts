@@ -12,10 +12,10 @@ export default defineConfig({
     env: {
       ...process.env,
       VITE_INSTRUCTOR_API_URL: process.env.VITE_INSTRUCTOR_API_URL ?? "",
-      VITE_INSTRUCTOR_COMMAND_DATE: process.env.VITE_INSTRUCTOR_COMMAND_DATE ?? "",
+      VITE_INSTRUCTOR_COMMAND_DATE: process.env.VITE_INSTRUCTOR_COMMAND_DATE || "2026-08-27",
     },
     url: "http://127.0.0.1:5174",
-    reuseExistingServer: true,
+    reuseExistingServer: !process.env.CI,
   },
   projects: [
     {
