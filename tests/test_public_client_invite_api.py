@@ -132,6 +132,7 @@ def test_client_invite_lesson_request_uses_server_issued_slot_offer(client):
     assert payload["id"].startswith("req_")
     assert payload["status"] == "requested"
     assert payload["slot"]["id"] == slot_id
+    assert payload["slot"]["start_iso"].endswith("-05:00")
     assert payload["confirmation"] is None
 
     status_response = client.get(f"/api/public/lesson-requests/{payload['id']}")
@@ -186,6 +187,12 @@ def test_confirmed_request_returns_public_calendar_links(client):
     assert set(payload.keys()) == {"google", "apple", "ics"}
     assert request_token in payload["ics"]
     assert "app_" not in payload["google"]
+    assert "Z/" in payload["google"]
+
+    ics_response = client.get(payload["ics"])
+    assert ics_response.status_code == 200
+    assert "DTSTART:" in ics_response.text
+    assert "Z\r\n" in ics_response.text
 
 
 def _create_slot_offer(client: TestClient) -> dict[str, Any]:

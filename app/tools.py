@@ -1,5 +1,6 @@
 import datetime
 from typing import List, Optional
+from app import timezones
 from app.routing import BaseRoutingProvider, RoutingProviderNotConfigured
 from app.engine import SwimSchedulerConstraintEngine
 from app.models import LocationInfo, TimeSlotDTO
@@ -75,19 +76,28 @@ def find_available_swim_slots(
             is_instructor_facility=False
         )
 
-    # 3. Parse day working bounds
+    # 3. Parse instructor-local working bounds, then run the engine in UTC.
     target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-    work_start_h, work_start_m = map(int, instructor.work_start_time.split(":"))
-    work_end_h, work_end_m = map(int, instructor.work_end_time.split(":"))
-
-    day_start = datetime.datetime.combine(target_date, datetime.time(work_start_h, work_start_m))
-    day_end = datetime.datetime.combine(target_date, datetime.time(work_end_h, work_end_m))
+    day_start_local = timezones.parse_local_date_time(
+        target_date,
+        instructor.work_start_time,
+        instructor.timezone,
+    )
+    day_end_local = timezones.parse_local_date_time(
+        target_date,
+        instructor.work_end_time,
+        instructor.timezone,
+    )
+    if day_end_local <= day_start_local:
+        day_end_local = day_end_local + datetime.timedelta(days=1)
+    day_start = timezones.ensure_aware_utc(day_start_local)
+    day_end = timezones.ensure_aware_utc(day_end_local)
 
     # 4. Fetch existing appointments & breaks
-    existing_events = db.get_appointments_for_date(instructor_id, date_str)
+    existing_events = db.get_utc_appointment_events_for_date(instructor_id, date_str)
 
     # 5. Run constraint engine
-    slots = constraint_engine.find_available_slots_for_day(
+    utc_slots = constraint_engine.find_available_slots_for_day(
         day_start=day_start,
         day_end=day_end,
         instructor_main_location=instructor_main_loc,
@@ -96,7 +106,15 @@ def find_available_swim_slots(
         duration_mins=duration_mins
     )
 
-    return slots
+    return [
+        slot.model_copy(
+            update={
+                "start_time": timezones.aware_to_local(slot.start_time, instructor.timezone),
+                "end_time": timezones.aware_to_local(slot.end_time, instructor.timezone),
+            }
+        )
+        for slot in utc_slots
+    ]
 
 def book_swim_lesson(
     instructor_id: str,
@@ -111,8 +129,16 @@ def book_swim_lesson(
     """
     Books an appointment slot after validating inputs.
     """
-    start_time = datetime.datetime.fromisoformat(start_time_iso)
-    end_time = start_time + datetime.timedelta(minutes=duration_mins)
+    instructor = db.get_instructor_info(instructor_id)
+    if not instructor:
+        raise ValueError(f"Instructor {instructor_id} not found.")
+    parsed_start = datetime.datetime.fromisoformat(start_time_iso)
+    if parsed_start.tzinfo is None or parsed_start.utcoffset() is None:
+        start_time = timezones.validate_local_datetime(parsed_start, instructor.timezone)
+    else:
+        start_time = parsed_start
+    start_time_storage = timezones.to_utc_storage(start_time)
+    end_time_storage = start_time_storage + datetime.timedelta(minutes=duration_mins)
 
     lat, lng = routing_provider.geocode(location_address)
 
@@ -120,8 +146,8 @@ def book_swim_lesson(
         instructor_id=instructor_id,
         client_id=client_id,
         title=f"Lesson with {client_name}",
-        start_time=start_time,
-        end_time=end_time,
+        start_time=start_time_storage,
+        end_time=end_time_storage,
         location_address=location_address,
         lat=lat,
         lng=lng,
@@ -132,5 +158,5 @@ def book_swim_lesson(
     return {
         "success": True,
         "appointment_id": app_id,
-        "message": f"Successfully booked swim lesson for {client_name} on {start_time.strftime('%b %d, %Y at %I:%M %p')}!"
+        "message": f"Successfully booked swim lesson for {client_name} on {timezones.aware_to_local(start_time, instructor.timezone).strftime('%b %d, %Y at %I:%M %p')}!"
     }

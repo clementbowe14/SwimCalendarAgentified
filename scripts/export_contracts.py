@@ -44,8 +44,8 @@ def build_contract_artifacts() -> dict[str, Any]:
             "slots": [
                 {
                     "id": "slot_contract_0829_1230",
-                    "start_iso": "2026-08-29T12:30:00",
-                    "end_iso": "2026-08-29T13:15:00",
+                    "start_iso": "2026-08-29T12:30:00-05:00",
+                    "end_iso": "2026-08-29T13:15:00-05:00",
                     "display": "Sat, Aug 29 at 12:30 PM",
                     "location_address": "820 Lakeview Dr, Austin, TX",
                     "travel_time_mins": 12,
@@ -64,8 +64,8 @@ def build_contract_artifacts() -> dict[str, Any]:
             "invite_token": "invite_sofia_0826",
             "slot": {
                 "id": "slot_contract_0829_1230",
-                "start_iso": "2026-08-29T12:30:00",
-                "end_iso": "2026-08-29T13:15:00",
+                "start_iso": "2026-08-29T12:30:00-05:00",
+                "end_iso": "2026-08-29T13:15:00-05:00",
                 "display": "Sat, Aug 29 at 12:30 PM",
                 "location_address": "820 Lakeview Dr, Austin, TX",
                 "travel_time_mins": 12,
@@ -85,8 +85,8 @@ def build_contract_artifacts() -> dict[str, Any]:
             "invite_token": "invite_sofia_0826",
             "slot": {
                 "id": "slot_contract_0829_1230",
-                "start_iso": "2026-08-29T12:30:00",
-                "end_iso": "2026-08-29T13:15:00",
+                "start_iso": "2026-08-29T12:30:00-05:00",
+                "end_iso": "2026-08-29T13:15:00-05:00",
                 "display": "Sat, Aug 29 at 12:30 PM",
                 "location_address": "820 Lakeview Dr, Austin, TX",
                 "travel_time_mins": 12,
@@ -104,7 +104,7 @@ def build_contract_artifacts() -> dict[str, Any]:
                 "message": "Your swim lesson is confirmed for Sat, Aug 29 at 12:30 PM.",
                 "confirmed_at_iso": "2026-08-28T16:35:00",
                 "calendar_links": {
-                    "google": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Swim%20lesson&dates=20260829T123000/20260829T131500&location=820%20Lakeview%20Dr%2C%20Austin%2C%20TX",
+                    "google": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Swim%20lesson&dates=20260829T173000Z/20260829T181500Z&location=820%20Lakeview%20Dr%2C%20Austin%2C%20TX",
                     "apple": "/api/public/calendar/req_contract_confirmed.ics",
                     "ics": "/api/public/calendar/req_contract_confirmed.ics",
                 },
@@ -115,8 +115,8 @@ def build_contract_artifacts() -> dict[str, Any]:
             "invite_token": "invite_sofia_0826",
             "slot": {
                 "id": "slot_contract_0829_1230",
-                "start_iso": "2026-08-29T12:30:00",
-                "end_iso": "2026-08-29T13:15:00",
+                "start_iso": "2026-08-29T12:30:00-05:00",
+                "end_iso": "2026-08-29T13:15:00-05:00",
                 "display": "Sat, Aug 29 at 12:30 PM",
                 "location_address": "820 Lakeview Dr, Austin, TX",
                 "travel_time_mins": 12,
@@ -132,7 +132,7 @@ def build_contract_artifacts() -> dict[str, Any]:
             "confirmation": None,
         },
         "fixtures/public/calendar_links.json": {
-            "google": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Swim%20lesson&dates=20260829T123000/20260829T131500&location=820%20Lakeview%20Dr%2C%20Austin%2C%20TX",
+            "google": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Swim%20lesson&dates=20260829T173000Z/20260829T181500Z&location=820%20Lakeview%20Dr%2C%20Austin%2C%20TX",
             "apple": "/api/public/calendar/req_contract_confirmed.ics",
             "ics": "/api/public/calendar/req_contract_confirmed.ics",
         },
@@ -164,8 +164,8 @@ def build_contract_artifacts() -> dict[str, Any]:
             },
             "available_slots": [
                 {
-                    "start_iso": "2026-08-20T10:30:00",
-                    "end_iso": "2026-08-20T11:30:00",
+                    "start_iso": "2026-08-20T10:30:00-05:00",
+                    "end_iso": "2026-08-20T11:30:00-05:00",
                     "display": "10:30 AM - 11:30 AM (Travel: 0m, Buffer: 10m, Dist: 0.0mi)",
                     "travel_time_mins": 0,
                     "buffer_mins": 10,
@@ -182,14 +182,15 @@ def build_contract_artifacts() -> dict[str, Any]:
                 "lng": -97.7431,
                 "work_start_time": "08:00",
                 "work_end_time": "17:00",
+                "timezone": "America/Chicago",
             },
             "date": "2026-08-20",
             "appointments": [
                 {
                     "id": "app_101",
                     "title": "Lesson with Alice",
-                    "start_time": "2026-08-20T09:00:00",
-                    "end_time": "2026-08-20T10:00:00",
+                    "start_time": "2026-08-20T09:00:00-05:00",
+                    "end_time": "2026-08-20T10:00:00-05:00",
                     "location_address": "450 North Blvd, Austin, TX",
                     "lat": 30.33,
                     "lng": -97.72,
@@ -262,6 +263,7 @@ def _coach_command_center_snapshot_fixture(rules: dict[str, Any]) -> dict[str, A
                 "lng": -97.7431,
                 "work_start_time": "08:00",
                 "work_end_time": "17:00",
+                "timezone": "America/Chicago",
             },
             "date": "2026-08-20",
             "clients": [
@@ -290,8 +292,8 @@ def _coach_command_center_snapshot_fixture(rules: dict[str, Any]) -> dict[str, A
                     "kind": "lesson",
                     "client_id": "client_alice",
                     "title": "Alice",
-                    "start_time": "2026-08-20T09:00:00",
-                    "end_time": "2026-08-20T10:00:00",
+                    "start_time": "2026-08-20T09:00:00-05:00",
+                    "end_time": "2026-08-20T10:00:00-05:00",
                     "location": {
                         "address": "450 North Blvd, Austin, TX",
                         "lat": 30.33,
@@ -308,8 +310,8 @@ def _coach_command_center_snapshot_fixture(rules: dict[str, Any]) -> dict[str, A
                     "client_name": "Sofia Martinez",
                     "requested_slot": {
                         "id": "slot_req_sofia_pending_0820",
-                        "start_time": "2026-08-20T16:00:00",
-                        "end_time": "2026-08-20T16:45:00",
+                        "start_time": "2026-08-20T16:00:00-05:00",
+                        "end_time": "2026-08-20T16:45:00-05:00",
                         "travel_time_mins": 12,
                         "buffer_mins": 10,
                         "distance_miles": 2.1,
