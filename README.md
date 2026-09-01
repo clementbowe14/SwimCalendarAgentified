@@ -122,6 +122,7 @@ By default, the API allows local frontend development origins on common ports:
 - `http://127.0.0.1:3002`
 - `http://127.0.0.1:4173`
 - `http://127.0.0.1:5173`
+- `http://127.0.0.1:5174`
 - matching `localhost` origins
 
 Override the list with a comma-separated environment variable:
