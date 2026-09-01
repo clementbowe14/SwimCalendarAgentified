@@ -7,7 +7,8 @@ from app.public_tokens import DEMO_INVITE_TOKEN
 pytestmark = pytest.mark.integration
 
 
-def test_instructor_command_workflow_uses_real_backend_data(api_client):
+def test_instructor_command_workflow_uses_real_backend_data(authenticated_api_client):
+    api_client = authenticated_api_client
     coach = api_client.get("/api/coach/me")
     assert coach.status_code == 200
     assert coach.json() == {"instructor_id": "inst_001", "display_name": "Coach Sarah"}

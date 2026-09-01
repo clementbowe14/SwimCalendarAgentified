@@ -9,6 +9,11 @@ export default defineConfig({
   },
   webServer: {
     command: "npm run dev",
+    env: {
+      ...process.env,
+      VITE_INSTRUCTOR_API_URL: process.env.VITE_INSTRUCTOR_API_URL ?? "",
+      VITE_INSTRUCTOR_COMMAND_DATE: process.env.VITE_INSTRUCTOR_COMMAND_DATE ?? "",
+    },
     url: "http://127.0.0.1:5174",
     reuseExistingServer: true,
   },

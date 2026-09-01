@@ -665,6 +665,35 @@
         "title": "ClientInviteUnavailableWindow",
         "type": "object"
       },
+      "CoachAuthResponse": {
+        "properties": {
+          "access_token": {
+            "title": "Access Token",
+            "type": "string"
+          },
+          "coach": {
+            "$ref": "#/components/schemas/CoachContext"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "token_type": {
+            "const": "bearer",
+            "default": "bearer",
+            "title": "Token Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "access_token",
+          "expires_at",
+          "coach"
+        ],
+        "title": "CoachAuthResponse",
+        "type": "object"
+      },
       "CoachAvailabilityWindow": {
         "properties": {
           "days": {
@@ -1101,6 +1130,46 @@
         "title": "CoachLessonRequestResponse",
         "type": "object"
       },
+      "CoachLoginRequest": {
+        "properties": {
+          "email": {
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "CoachLoginRequest",
+        "type": "object"
+      },
+      "CoachLogoutResponse": {
+        "properties": {
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success",
+          "message"
+        ],
+        "title": "CoachLogoutResponse",
+        "type": "object"
+      },
       "CoachScheduleItemResponse": {
         "properties": {
           "buffer_mins": {
@@ -1294,6 +1363,24 @@
           "distance_buffer_tiers"
         ],
         "title": "CoachSchedulerRules",
+        "type": "object"
+      },
+      "CoachSessionResponse": {
+        "properties": {
+          "authenticated": {
+            "const": true,
+            "default": true,
+            "title": "Authenticated",
+            "type": "boolean"
+          },
+          "coach": {
+            "$ref": "#/components/schemas/CoachContext"
+          }
+        },
+        "required": [
+          "coach"
+        ],
+        "title": "CoachSessionResponse",
         "type": "object"
       },
       "CoachTimeSlotResponse": {
@@ -1790,6 +1877,12 @@
         "title": "ValidationError",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "scheme": "bearer",
+        "type": "http"
+      }
     }
   },
   "info": {
@@ -1799,6 +1892,156 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/auth/coach/login": {
+      "post": {
+        "operationId": "login_coach_api_auth_coach_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoachLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachAuthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login Coach",
+        "tags": [
+          "coach-auth"
+        ]
+      }
+    },
+    "/api/auth/coach/logout": {
+      "post": {
+        "operationId": "logout_coach_api_auth_coach_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachLogoutResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Logout Coach",
+        "tags": [
+          "coach-auth"
+        ]
+      }
+    },
+    "/api/auth/coach/session": {
+      "get": {
+        "operationId": "read_coach_session_api_auth_coach_session_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Coach Session",
+        "tags": [
+          "coach-auth"
+        ]
+      }
+    },
+    "/api/auth/coach/sign-in": {
+      "post": {
+        "operationId": "login_coach_api_auth_coach_sign_in_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoachLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachAuthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login Coach",
+        "tags": [
+          "coach-auth"
+        ]
+      }
+    },
+    "/api/auth/coach/sign-out": {
+      "post": {
+        "operationId": "logout_coach_api_auth_coach_sign_out_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachLogoutResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Logout Coach",
+        "tags": [
+          "coach-auth"
+        ]
+      }
+    },
     "/api/coach/availability": {
       "post": {
         "operationId": "find_availability_api_coach_availability_post",
@@ -1834,6 +2077,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Find Availability",
         "tags": [
           "coach"
@@ -1875,6 +2123,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Create Booking",
         "tags": [
           "coach"
@@ -1918,6 +2171,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Read Command Center Snapshot",
         "tags": [
           "coach"
@@ -1960,6 +2218,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Request Lesson Alternatives",
         "tags": [
           "coach"
@@ -2002,6 +2265,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Approve Lesson Request",
         "tags": [
           "coach"
@@ -2044,6 +2312,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Decline Lesson Request",
         "tags": [
           "coach"
@@ -2065,6 +2338,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Read Current Coach",
         "tags": [
           "coach"
@@ -2108,6 +2386,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Read Schedule",
         "tags": [
           "coach"
@@ -2129,6 +2412,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Read Scheduler Settings",
         "tags": [
           "coach"
@@ -2168,6 +2456,11 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Save Scheduler Settings",
         "tags": [
           "coach"

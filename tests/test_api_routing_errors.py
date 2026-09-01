@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from app import db, tools
 from app.api import create_app
 from app.routing import BaseRoutingProvider, GeocodeFailed, RouteEstimate, RoutingTimeout
+from tests.conftest import login_coach
 from tests.db_test_utils import reset_postgres_database
 
 
@@ -36,6 +37,7 @@ def test_coach_availability_geocode_failure_returns_stable_error():
     tools.configure_routing_provider(FailingGeocodeProvider())
     try:
         with TestClient(create_app(), raise_server_exceptions=False) as client:
+            client.headers.update(login_coach(client))
             response = client.post(
                 "/api/coach/availability",
                 json={

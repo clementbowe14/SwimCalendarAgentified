@@ -11,9 +11,10 @@ SEEDED_REQUEST_TOKEN = "req_sofia_pending_0820"
 
 
 def test_coach_approves_pending_request_into_scheduled_appointment(
-    api_client,
+    authenticated_api_client,
     assert_public_payload_safe,
 ):
+    api_client = authenticated_api_client
     locked_links = api_client.get(f"/api/public/lesson-requests/{SEEDED_REQUEST_TOKEN}/calendar-links")
     assert locked_links.status_code == 409
     assert locked_links.json()["error"]["code"] == "CALENDAR_LINKS_UNAVAILABLE"
@@ -49,7 +50,8 @@ def test_coach_approves_pending_request_into_scheduled_appointment(
     assert set(calendar_links.json()) == {"google", "apple", "ics"}
 
 
-def test_coach_request_approval_is_idempotent(api_client):
+def test_coach_request_approval_is_idempotent(authenticated_api_client):
+    api_client = authenticated_api_client
     first = api_client.post(f"/api/coach/lesson-requests/{SEEDED_REQUEST_TOKEN}/approve")
     second = api_client.post(f"/api/coach/lesson-requests/{SEEDED_REQUEST_TOKEN}/approve")
 
@@ -60,9 +62,10 @@ def test_coach_request_approval_is_idempotent(api_client):
 
 
 def test_coach_request_approval_conflict_does_not_confirm_request(
-    api_client,
+    authenticated_api_client,
     assert_public_payload_safe,
 ):
+    api_client = authenticated_api_client
     _add_conflicting_appointment(SEEDED_REQUEST_TOKEN)
 
     approval = api_client.post(f"/api/coach/lesson-requests/{SEEDED_REQUEST_TOKEN}/approve")
@@ -79,9 +82,10 @@ def test_coach_request_approval_conflict_does_not_confirm_request(
 
 
 def test_coach_can_request_alternatives_without_exposing_private_schedule(
-    api_client,
+    authenticated_api_client,
     assert_public_payload_safe,
 ):
+    api_client = authenticated_api_client
     alternatives = api_client.post(f"/api/coach/lesson-requests/{SEEDED_REQUEST_TOKEN}/alternatives")
 
     assert alternatives.status_code == 200
@@ -108,9 +112,10 @@ def test_coach_can_request_alternatives_without_exposing_private_schedule(
 
 
 def test_coach_can_decline_request_without_exposing_private_schedule(
-    api_client,
+    authenticated_api_client,
     assert_public_payload_safe,
 ):
+    api_client = authenticated_api_client
     decline = api_client.post(f"/api/coach/lesson-requests/{SEEDED_REQUEST_TOKEN}/decline")
 
     assert decline.status_code == 200

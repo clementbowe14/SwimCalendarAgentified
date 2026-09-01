@@ -1,6 +1,14 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("client invite self-booking flow", () => {
+  test("remains public-token scoped without coach authentication UI", async ({ page }) => {
+    await page.goto("/");
+
+    await expect(page.getByRole("heading", { name: "Tell us when you can swim" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /sign in/i })).toHaveCount(0);
+    await expect(page.getByLabel(/password/i)).toHaveCount(0);
+  });
+
   test("renders intake landing and moves to availability preferences", async ({ page }) => {
     await page.goto("/");
 
@@ -49,4 +57,3 @@ test.describe("client invite self-booking flow", () => {
     await expect(page.getByText("Added to Google Calendar.")).toBeVisible();
   });
 });
-

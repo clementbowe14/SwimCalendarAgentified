@@ -1,6 +1,6 @@
 import "./styles.css";
 import { InstructorCommandApiError, instructorCommandApi } from "./api/instructorApi.js";
-import type { CommandCenterSnapshot, TimeSlotDTO } from "./api/types.js";
+import type { CommandCenterSnapshot, InstructorAuthSession, TimeSlotDTO } from "./api/types.js";
 import { renderAvailabilityFinder } from "./components/AvailabilityFinder.js";
 import { renderClientDetail } from "./components/ClientDetail.js";
 import { renderShell, type ScreenId } from "./components/Layout.js";
@@ -21,6 +21,8 @@ const app = root;
 type AppState = {
   activeScreen: ScreenId;
   selectedClientId: string;
+  authStatus: "checking" | "locked" | "expired" | "signed_in";
+  authSession: InstructorAuthSession | null;
   snapshot: CommandCenterSnapshot | null;
   recommendedSlots: TimeSlotDTO[];
   toast: string;
@@ -30,18 +32,48 @@ type AppState = {
 const state: AppState = {
   activeScreen: "today",
   selectedClientId: "client_maya",
+  authStatus: instructorCommandApi.authMode === "live" ? "checking" : "signed_in",
+  authSession: instructorCommandApi.getStoredSession(),
   snapshot: null,
   recommendedSlots: [],
   toast: "",
   error: "",
 };
 
-const instructorId = readFrontendEnv("VITE_INSTRUCTOR_ID") ?? "inst_riley_001";
-const commandDate = readFrontendEnv("VITE_INSTRUCTOR_COMMAND_DATE") ?? "2026-08-27";
+const instructorId = import.meta.env?.VITE_INSTRUCTOR_ID || "inst_riley_001";
+const commandDate = import.meta.env?.VITE_INSTRUCTOR_COMMAND_DATE || "2026-08-27";
 
 void boot();
 
 async function boot(): Promise<void> {
+  if (instructorCommandApi.authMode === "live") {
+    const storedSession = instructorCommandApi.getStoredSession();
+    if (!storedSession) {
+      state.authStatus = "locked";
+      render();
+      return;
+    }
+
+    try {
+      state.authSession = {
+        ...storedSession,
+        coach: await instructorCommandApi.validateSession(),
+      };
+    } catch (error) {
+      if (!handleAuthFailure(error)) {
+        state.authStatus = "locked";
+        state.error = formatApiError(error);
+      }
+      render();
+      return;
+    }
+  }
+
+  state.authStatus = "signed_in";
+  await loadCommandCenter();
+}
+
+async function loadCommandCenter(): Promise<void> {
   try {
     state.snapshot = await instructorCommandApi.getSnapshot(instructorId, commandDate);
     if (!state.snapshot.clients.some((client) => client.id === state.selectedClientId)) {
@@ -52,20 +84,69 @@ async function boot(): Promise<void> {
       buildFindSlotsRequest(state.snapshot.instructor.id, selectedClient, state.snapshot.date),
     );
   } catch (error) {
-    state.error = formatApiError(error);
+    if (!handleAuthFailure(error)) {
+      state.error = formatApiError(error);
+    }
   }
   render();
 }
 
 function render(): void {
+  if (instructorCommandApi.authMode === "live" && state.authStatus !== "signed_in") {
+    app.innerHTML = renderLockedScreen();
+    wireAuthEvents();
+    return;
+  }
+
   if (!state.snapshot) {
     app.innerHTML = `<main class="loading-screen">Loading command center${renderError()}</main>`;
     return;
   }
 
   const body = renderActiveScreen(state.snapshot);
-  app.innerHTML = `${renderShell(state.snapshot, state.activeScreen, `${renderError()}${body}`)}${renderToast()}`;
+  app.innerHTML = `${renderShell(state.snapshot, state.activeScreen, `${renderError()}${body}`, {
+    showSignOut: instructorCommandApi.authMode === "live",
+  })}${renderToast()}`;
   wireEvents();
+}
+
+function renderLockedScreen(): string {
+  const isExpired = state.authStatus === "expired";
+  const heading = isExpired ? "Session expired" : "Swim Command locked";
+  const body = isExpired
+    ? "Sign in again to continue managing protected coach data."
+    : "Sign in to open the instructor command center.";
+
+  return `
+    <main class="auth-shell">
+      <section class="auth-panel" aria-labelledby="auth-title">
+        <div class="brand-lockup">
+          <span class="brand-mark">SC</span>
+          <div>
+            <strong>Swim Command</strong>
+            <span>Instructor access</span>
+          </div>
+        </div>
+        <div class="auth-copy">
+          <p class="eyebrow">Protected workspace</p>
+          <h1 id="auth-title">${escapeHtml(heading)}</h1>
+          <p>${escapeHtml(body)}</p>
+        </div>
+        ${renderError()}
+        <form class="auth-form" data-sign-in-form>
+          <label>
+            <span>Email</span>
+            <input name="email" type="email" autocomplete="username" required />
+          </label>
+          <label>
+            <span>Password</span>
+            <input name="password" type="password" autocomplete="current-password" required />
+          </label>
+          <button class="primary-action" type="submit">Sign in</button>
+        </form>
+      </section>
+    </main>
+  `;
 }
 
 function renderActiveScreen(snapshot: CommandCenterSnapshot): string {
@@ -79,6 +160,10 @@ function renderActiveScreen(snapshot: CommandCenterSnapshot): string {
 }
 
 function wireEvents(): void {
+  app.querySelector<HTMLButtonElement>("[data-sign-out]")?.addEventListener("click", async () => {
+    await signOut();
+  });
+
   app.querySelectorAll<HTMLButtonElement>("[data-screen]").forEach((button) => {
     button.addEventListener("click", () => {
       state.activeScreen = button.dataset.screen as ScreenId;
@@ -138,6 +223,61 @@ function wireEvents(): void {
   });
 }
 
+function wireAuthEvents(): void {
+  app.querySelector<HTMLFormElement>("[data-sign-in-form]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (event.currentTarget instanceof HTMLFormElement) {
+      await signIn(event.currentTarget);
+    }
+  });
+}
+
+async function signIn(form: HTMLFormElement): Promise<void> {
+  const formData = new FormData(form);
+  const email = String(formData.get("email") ?? "").trim();
+  const password = String(formData.get("password") ?? "");
+
+  state.error = "";
+  if (!email || !password) {
+    state.error = "Email and password are required.";
+    render();
+    return;
+  }
+
+  state.authStatus = "checking";
+  render();
+
+  try {
+    state.authSession = await instructorCommandApi.signIn({ email, password });
+    state.snapshot = null;
+    state.recommendedSlots = [];
+    state.authStatus = "signed_in";
+    state.toast = "Signed in.";
+    await loadCommandCenter();
+  } catch (error) {
+    state.authStatus = "locked";
+    state.authSession = null;
+    state.error = formatApiError(error);
+    render();
+  }
+}
+
+async function signOut(): Promise<void> {
+  state.error = "";
+  try {
+    await instructorCommandApi.signOut();
+  } catch (error) {
+    state.error = formatApiError(error);
+  } finally {
+    state.authSession = null;
+    state.snapshot = null;
+    state.recommendedSlots = [];
+    state.authStatus = "locked";
+    state.toast = "";
+    render();
+  }
+}
+
 async function refreshSlots(): Promise<void> {
   if (!state.snapshot) return;
   const selectedClient = findFeaturedClient(state.snapshot, state.selectedClientId);
@@ -175,9 +315,24 @@ async function runAction(action: () => Promise<void>): Promise<void> {
     await action();
     render();
   } catch (error) {
-    state.error = formatApiError(error);
+    if (!handleAuthFailure(error)) {
+      state.error = formatApiError(error);
+    }
     render();
   }
+}
+
+function handleAuthFailure(error: unknown): boolean {
+  if (instructorCommandApi.authMode !== "live") return false;
+  if (!(error instanceof InstructorCommandApiError) || !error.isAuthFailure) return false;
+
+  instructorCommandApi.clearSession();
+  state.authSession = null;
+  state.snapshot = null;
+  state.recommendedSlots = [];
+  state.authStatus = "expired";
+  state.error = "Your session expired. Sign in again to continue.";
+  return true;
 }
 
 function renderToast(): string {
@@ -203,9 +358,4 @@ function formatApiError(error: unknown): string {
     return error.message;
   }
   return "Something went wrong while talking to the scheduling API.";
-}
-
-function readFrontendEnv(name: string): string | undefined {
-  const maybeImportMeta = import.meta as ImportMeta & { env?: Record<string, string | undefined> };
-  return maybeImportMeta.env?.[name];
 }

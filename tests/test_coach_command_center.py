@@ -5,6 +5,7 @@ import pytest
 from app import db
 from app.api import create_app
 from app.dependencies import get_current_coach
+from tests.conftest import login_coach
 from tests.db_test_utils import reset_postgres_database
 
 
@@ -12,6 +13,7 @@ from tests.db_test_utils import reset_postgres_database
 def client():
     reset_postgres_database()
     with TestClient(create_app(), raise_server_exceptions=False) as test_client:
+        test_client.headers.update(login_coach(test_client))
         yield test_client
     db.configure_database()
 

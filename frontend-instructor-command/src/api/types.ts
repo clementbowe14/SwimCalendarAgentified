@@ -62,6 +62,30 @@ export type BookLessonResponse = {
   message: string;
 };
 
+export type InstructorAuthCredentials = {
+  email: string;
+  password: string;
+};
+
+export type InstructorAuthCoach = {
+  instructor_id: Id;
+  display_name: string;
+};
+
+export type InstructorAuthSession = {
+  access_token: string;
+  token_type: "bearer";
+  coach: InstructorAuthCoach;
+  expires_at?: string;
+};
+
+export type CoachLessonRequestActionResponse = {
+  id: Id;
+  status: "approved" | "needs_alternatives" | "declined";
+  appointment_id?: Id | null;
+  message: string;
+};
+
 export type InstructorProfile = {
   id: Id;
   name: string;
@@ -152,10 +176,16 @@ export type NewClientDraft = {
 };
 
 export type InstructorCommandApi = {
+  readonly authMode: "mock" | "live";
+  getStoredSession(): InstructorAuthSession | null;
+  validateSession(): Promise<InstructorAuthCoach>;
+  signIn(credentials: InstructorAuthCredentials): Promise<InstructorAuthSession>;
+  signOut(): Promise<void>;
+  clearSession(): void;
   getSnapshot(instructor_id: Id, date: string): Promise<CommandCenterSnapshot>;
   findAvailableSlots(request: BookingRequestDTO): Promise<TimeSlotDTO[]>;
   bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse>;
-  approveRequest(request_id: Id, slot_id: Id): Promise<LessonRequest>;
-  requestAlternatives(request_id: Id, preferred_slot_ids: Id[]): Promise<LessonRequest>;
+  approveRequest(request_id: Id, slot_id: Id): Promise<LessonRequest | CoachLessonRequestActionResponse>;
+  requestAlternatives(request_id: Id, preferred_slot_ids: Id[]): Promise<LessonRequest | CoachLessonRequestActionResponse>;
   saveRules(rules: SchedulerRules): Promise<SchedulerRules>;
 };

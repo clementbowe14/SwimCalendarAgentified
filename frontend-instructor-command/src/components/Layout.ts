@@ -12,7 +12,16 @@ const navItems: Array<{ id: ScreenId; label: string }> = [
   { id: "settings", label: "Rules" },
 ];
 
-export function renderShell(snapshot: CommandCenterSnapshot, activeScreen: ScreenId, body: string): string {
+type ShellOptions = {
+  showSignOut?: boolean;
+};
+
+export function renderShell(
+  snapshot: CommandCenterSnapshot,
+  activeScreen: ScreenId,
+  body: string,
+  options: ShellOptions = {},
+): string {
   const requestSummary = summarizeRequests(snapshot.requests);
 
   return `
@@ -51,6 +60,7 @@ export function renderShell(snapshot: CommandCenterSnapshot, activeScreen: Scree
           <div class="topbar-actions">
             <span class="metric-pill">${requestSummary.totalPending} pending</span>
             <button class="primary-compact" data-screen="finder" type="button">New client</button>
+            ${options.showSignOut ? `<button class="secondary-compact" data-sign-out type="button">Sign out</button>` : ""}
           </div>
         </header>
         ${body}

@@ -25,7 +25,9 @@ Public errors use the shared `{ "error": { "code", "message", "details" } }` env
 include private coach schedule identifiers or route provider payloads.
 
 Coach fixtures may include coach-only operational data and should only be consumed by authenticated
-instructor experiences.
+instructor experiences. Instructor apps sign in with `POST /api/auth/coach/sign-in` or
+`POST /api/auth/coach/login`, persist the returned bearer token locally, and send it on `/api/coach/*`
+requests as `Authorization: Bearer <token>`.
 
 Regenerate contracts with:
 

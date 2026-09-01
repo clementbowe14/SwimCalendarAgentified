@@ -9,6 +9,7 @@ from app.api_schemas import (
     ClientInviteEnvelopeResponse,
     ClientInviteLessonRequestResponse,
     CoachCommandCenterSnapshot,
+    CoachAuthResponse,
     CoachScheduleResponse,
     CoachSchedulerRules,
     ErrorResponse,
@@ -24,6 +25,7 @@ FIXTURE_SCHEMAS = {
     "fixtures/public/lesson_request_needs_new_times.json": ClientInviteLessonRequestResponse,
     "fixtures/public/calendar_links.json": ClientInviteCalendarLinks,
     "fixtures/public/error_invalid_token.json": ErrorResponse,
+    "fixtures/coach/auth_response.json": CoachAuthResponse,
     "fixtures/coach/availability_search_response.json": AvailabilitySearchResponse,
     "fixtures/coach/schedule_response.json": CoachScheduleResponse,
     "fixtures/coach/settings.json": CoachSchedulerRules,
@@ -45,6 +47,9 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/public/client-invites/{token}" in paths
     assert "/api/public/client-invites/{token}/slots" in paths
     assert "/api/public/lesson-requests/{request_token}/calendar-links" in paths
+    assert "/api/auth/coach/sign-in" in paths
+    assert "/api/auth/coach/session" in paths
+    assert "/api/auth/coach/sign-out" in paths
     assert "/api/coach/availability" in paths
     assert "/api/coach/command-center/snapshot" in paths
     assert "/api/coach/lesson-requests/{request_token}/approve" in paths
