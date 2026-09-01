@@ -3,13 +3,18 @@ import type {
   BookLessonPayload,
   BookLessonResponse,
   BookingRequestDTO,
+  CoachLessonRequestActionResponse,
   CommandCenterSnapshot,
   Id,
+  InstructorAuthCredentials,
+  InstructorAuthSession,
   InstructorCommandApi,
   LessonRequest,
   SchedulerRules,
   TimeSlotDTO,
 } from "./types.js";
+
+const AUTH_STORAGE_KEY = "swim-command:coach-session:v1";
 
 function clone<T>(value: T): T {
   return structuredClone(value);
@@ -20,7 +25,39 @@ function sameDate(isoDateTime: string, date: string): boolean {
 }
 
 export class MockInstructorCommandApi implements InstructorCommandApi {
+  readonly authMode = "mock" as const;
+
   private currentSnapshot: CommandCenterSnapshot = clone(snapshot);
+
+  getStoredSession(): InstructorAuthSession | null {
+    return null;
+  }
+
+  async validateSession(): Promise<InstructorAuthSession["coach"]> {
+    return {
+      instructor_id: this.currentSnapshot.instructor.id,
+      display_name: this.currentSnapshot.instructor.name,
+    };
+  }
+
+  async signIn(_credentials: InstructorAuthCredentials): Promise<InstructorAuthSession> {
+    return {
+      access_token: "mock-token",
+      token_type: "bearer",
+      coach: {
+        instructor_id: this.currentSnapshot.instructor.id,
+        display_name: this.currentSnapshot.instructor.name,
+      },
+    };
+  }
+
+  async signOut(): Promise<void> {
+    return;
+  }
+
+  clearSession(): void {
+    return;
+  }
 
   async getSnapshot(instructor_id: Id, date: string): Promise<CommandCenterSnapshot> {
     const fullSnapshot = clone(this.currentSnapshot);
@@ -104,10 +141,50 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
 }
 
 export class HttpInstructorCommandApi implements InstructorCommandApi {
-  private readonly baseUrl: string;
+  readonly authMode = "live" as const;
 
-  constructor(baseUrl = "/api") {
+  private readonly baseUrl: string;
+  private readonly authStore: InstructorAuthStore;
+
+  constructor(baseUrl = "/api", authStore: InstructorAuthStore = createBrowserInstructorAuthStore()) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.authStore = authStore;
+  }
+
+  getStoredSession(): InstructorAuthSession | null {
+    return this.authStore.get();
+  }
+
+  async validateSession(): Promise<InstructorAuthSession["coach"]> {
+    const response = await fetch(`${this.baseUrl}/auth/coach/session`, authenticatedInit("GET", this.authStore.get()));
+    const session = await parseResponse<CoachSessionResponse>(response, this.authStore);
+    if (!session.authenticated) {
+      this.authStore.clear();
+      throw new InstructorCommandApiError(401, "AUTHENTICATION_REQUIRED", "Coach authentication is required.");
+    }
+    return session.coach;
+  }
+
+  async signIn(credentials: InstructorAuthCredentials): Promise<InstructorAuthSession> {
+    const response = await fetch(`${this.baseUrl}/auth/coach/sign-in`, requestInit("POST", credentials));
+    const session = await parseResponse<InstructorAuthSession>(response, this.authStore);
+    this.authStore.set(session);
+    return session;
+  }
+
+  async signOut(): Promise<void> {
+    const session = this.authStore.get();
+    this.authStore.clear();
+    if (!session) return;
+
+    const response = await fetch(`${this.baseUrl}/auth/coach/sign-out`, requestInit("POST", {}, session));
+    if (!response.ok && response.status !== 404) {
+      throw await toApiError(response);
+    }
+  }
+
+  clearSession(): void {
+    this.authStore.clear();
   }
 
   async getSnapshot(_instructor_id: Id, date: string): Promise<CommandCenterSnapshot> {
@@ -136,12 +213,14 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     });
   }
 
-  approveRequest(_request_id: Id, _slot_id: Id): Promise<LessonRequest> {
-    throw new InstructorCommandApiError(501, "ENDPOINT_NOT_AVAILABLE", "Coach request approval is not exposed by the current API contract.");
+  approveRequest(_request_id: Id, _slot_id: Id): Promise<CoachLessonRequestActionResponse> {
+    return this.post(`/coach/lesson-requests/${encodeURIComponent(_request_id)}/approve`, {});
   }
 
-  requestAlternatives(_request_id: Id, _preferred_slot_ids: Id[]): Promise<LessonRequest> {
-    throw new InstructorCommandApiError(501, "ENDPOINT_NOT_AVAILABLE", "Coach request alternatives are not exposed by the current API contract.");
+  requestAlternatives(_request_id: Id, _preferred_slot_ids: Id[]): Promise<CoachLessonRequestActionResponse> {
+    return this.post(`/coach/lesson-requests/${encodeURIComponent(_request_id)}/alternatives`, {
+      preferred_slot_ids: _preferred_slot_ids,
+    });
   }
 
   saveRules(rules: SchedulerRules): Promise<SchedulerRules> {
@@ -149,28 +228,34 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
   }
 
   private async get<T>(path: string): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`);
-    return parseResponse<T>(response);
+    const response = await fetch(`${this.baseUrl}${path}`, authenticatedInit("GET", this.authStore.get()));
+    return parseResponse<T>(response, this.authStore);
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, requestInit("POST", body));
-    return parseResponse<T>(response);
+    const response = await fetch(`${this.baseUrl}${path}`, requestInit("POST", body, this.authStore.get()));
+    return parseResponse<T>(response, this.authStore);
   }
 
   private async put<T>(path: string, body: unknown): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, requestInit("PUT", body));
-    return parseResponse<T>(response);
+    const response = await fetch(`${this.baseUrl}${path}`, requestInit("PUT", body, this.authStore.get()));
+    return parseResponse<T>(response, this.authStore);
   }
 
 }
 
 export const createInstructorCommandApi = (): InstructorCommandApi => {
-  const baseUrl = readFrontendEnv("VITE_INSTRUCTOR_API_URL");
+  const baseUrl = import.meta.env?.VITE_INSTRUCTOR_API_URL;
   return baseUrl ? new HttpInstructorCommandApi(baseUrl) : new MockInstructorCommandApi();
 };
 
 export const instructorCommandApi: InstructorCommandApi = createInstructorCommandApi();
+
+export type InstructorAuthStore = {
+  get(): InstructorAuthSession | null;
+  set(session: InstructorAuthSession): void;
+  clear(): void;
+};
 
 type ApiErrorResponse = {
   error?: {
@@ -189,6 +274,10 @@ export class InstructorCommandApiError extends Error {
   ) {
     super(message);
     this.name = "InstructorCommandApiError";
+  }
+
+  get isAuthFailure(): boolean {
+    return this.status === 401 || this.status === 403;
   }
 }
 
@@ -213,17 +302,41 @@ type CoachAvailabilityResponse = {
   }>;
 };
 
-function requestInit(method: "POST" | "PUT", body: unknown): RequestInit {
+type CoachSessionResponse = {
+  authenticated: boolean;
+  coach: InstructorAuthSession["coach"];
+};
+
+function requestInit(method: "POST" | "PUT", body: unknown, session?: InstructorAuthSession | null): RequestInit {
   return {
     method,
-    headers: { "content-type": "application/json" },
+    headers: requestHeaders(session),
     body: JSON.stringify(body),
   };
 }
 
-async function parseResponse<T>(response: Response): Promise<T> {
+function authenticatedInit(method: "GET", session: InstructorAuthSession | null): RequestInit {
+  return {
+    method,
+    headers: requestHeaders(session),
+  };
+}
+
+function requestHeaders(session?: InstructorAuthSession | null): HeadersInit {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (session?.access_token) {
+    headers.authorization = `Bearer ${session.access_token}`;
+  }
+  return headers;
+}
+
+async function parseResponse<T>(response: Response, authStore?: InstructorAuthStore): Promise<T> {
   if (!response.ok) {
-    throw await toApiError(response);
+    const error = await toApiError(response);
+    if (error.isAuthFailure) {
+      authStore?.clear();
+    }
+    throw error;
   }
 
   return response.json() as Promise<T>;
@@ -258,9 +371,48 @@ function mapAvailabilitySlot(
   };
 }
 
-function readFrontendEnv(name: string): string | undefined {
-  const maybeImportMeta = import.meta as ImportMeta & { env?: Record<string, string | undefined> };
-  return maybeImportMeta.env?.[name];
+export function createMemoryInstructorAuthStore(initialSession: InstructorAuthSession | null = null): InstructorAuthStore {
+  let session = initialSession ? clone(initialSession) : null;
+  return {
+    get: () => (session ? clone(session) : null),
+    set: (nextSession) => {
+      session = clone(nextSession);
+    },
+    clear: () => {
+      session = null;
+    },
+  };
+}
+
+function createBrowserInstructorAuthStore(): InstructorAuthStore {
+  if (typeof window === "undefined" || !window.localStorage) {
+    return createMemoryInstructorAuthStore();
+  }
+
+  return {
+    get: () => readStoredSession(window.localStorage.getItem(AUTH_STORAGE_KEY)),
+    set: (session) => {
+      // MVP persistence keeps local development and CI demos stable across reloads;
+      // the backend remains responsible for token lifetime and revocation.
+      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
+    },
+    clear: () => {
+      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    },
+  };
+}
+
+function readStoredSession(raw: string | null): InstructorAuthSession | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<InstructorAuthSession>;
+    if (parsed.token_type === "bearer" && typeof parsed.access_token === "string" && parsed.coach) {
+      return parsed as InstructorAuthSession;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function addMinutes(isoDateTime: string, minutes: number): string {

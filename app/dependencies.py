@@ -1,7 +1,14 @@
 from dataclasses import dataclass
+from typing import Optional
 
-from app import db
-from app.api_errors import ResourceNotFound
+from fastapi import Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from app.api_errors import AuthenticationRequired
+from app.auth import verify_access_token
+
+
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 @dataclass(frozen=True)
@@ -10,14 +17,10 @@ class CoachContext:
     display_name: str
 
 
-def get_current_coach() -> CoachContext:
-    """
-    MVP coach resolver.
-
-    Future auth can replace this dependency centrally without changing route
-    handler signatures.
-    """
-    instructor = db.get_instructor_info("inst_001")
-    if not instructor:
-        raise ResourceNotFound("The development coach profile could not be found.")
-    return CoachContext(instructor_id=instructor.id, display_name=instructor.name)
+def get_current_coach(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(bearer_scheme),
+) -> CoachContext:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise AuthenticationRequired()
+    principal = verify_access_token(credentials.credentials)
+    return CoachContext(instructor_id=principal.instructor_id, display_name=principal.display_name)

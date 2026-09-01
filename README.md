@@ -74,6 +74,45 @@ Interactive FastAPI docs are available at:
 http://127.0.0.1:8000/docs
 ```
 
+### Coach Authentication
+
+Coach command-center routes under `/api/coach/*` require bearer authentication. Local development
+ships with a safe demo credential only:
+
+```text
+email: coach@example.com
+password: swim-dev-pass
+```
+
+Sign in before calling protected coach routes:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/auth/coach/sign-in \
+  -H 'content-type: application/json' \
+  -d '{"email":"coach@example.com","password":"swim-dev-pass"}'
+```
+
+Use the returned token on coach requests:
+
+```bash
+curl http://127.0.0.1:8000/api/coach/me \
+  -H 'authorization: Bearer <access_token>'
+```
+
+For shared or deployed environments, configure a non-demo secret and credentials:
+
+```bash
+SWIM_COACH_AUTH_SECRET='replace-with-random-secret'
+SWIM_COACH_CREDENTIALS='[{"email":"coach@example.com","password_sha256":"<sha256>","instructor_id":"inst_001"}]'
+```
+
+`SWIM_COACH_CREDENTIALS` is a JSON array. Each entry needs `email`, `instructor_id`, and either
+`password` for local-only development or `password_sha256` when plaintext passwords should not be
+stored in process configuration. The SHA-256 option is an MVP configuration convenience, not
+production-grade password storage. `SWIM_ENV=production` and `SWIM_ENV=staging` require explicit
+credentials and `SWIM_COACH_AUTH_SECRET`; the demo login is local-development only. Public routes,
+`/health`, and `/openapi.json` remain unauthenticated.
+
 ### Local Frontend CORS
 
 By default, the API allows local frontend development origins on common ports:
@@ -83,6 +122,7 @@ By default, the API allows local frontend development origins on common ports:
 - `http://127.0.0.1:3002`
 - `http://127.0.0.1:4173`
 - `http://127.0.0.1:5173`
+- `http://127.0.0.1:5174`
 - matching `localhost` origins
 
 Override the list with a comma-separated environment variable:

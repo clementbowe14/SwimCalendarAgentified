@@ -24,6 +24,42 @@ class ResourceNotFound(ApiException):
         super().__init__("RESOURCE_NOT_FOUND", message, status_code=404)
 
 
+class AuthenticationRequired(ApiException):
+    def __init__(self):
+        super().__init__(
+            "AUTHENTICATION_REQUIRED",
+            "Coach authentication is required.",
+            status_code=401,
+        )
+
+
+class InvalidCredentials(ApiException):
+    def __init__(self):
+        super().__init__(
+            "INVALID_CREDENTIALS",
+            "The coach credentials are invalid.",
+            status_code=401,
+        )
+
+
+class InvalidAuthToken(ApiException):
+    def __init__(self):
+        super().__init__(
+            "INVALID_AUTH_TOKEN",
+            "The coach session is invalid or expired.",
+            status_code=401,
+        )
+
+
+class AuthorizationForbidden(ApiException):
+    def __init__(self):
+        super().__init__(
+            "AUTHORIZATION_FORBIDDEN",
+            "The authenticated coach is not allowed to access this resource.",
+            status_code=403,
+        )
+
+
 class InviteNotFound(ApiException):
     def __init__(self):
         super().__init__("INVITE_NOT_FOUND", "The invite could not be found.", status_code=404)

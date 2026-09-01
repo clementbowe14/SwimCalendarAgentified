@@ -142,6 +142,15 @@ def build_contract_artifacts() -> dict[str, Any]:
                 "message": "The invite could not be found.",
             }
         },
+        "fixtures/coach/auth_response.json": {
+            "access_token": "contract-coach-access-token",
+            "token_type": "bearer",
+            "expires_at": "2026-08-31T18:00:00Z",
+            "coach": {
+                "instructor_id": "inst_001",
+                "display_name": "Coach Sarah",
+            },
+        },
         "fixtures/coach/availability_search_response.json": {
             "status": "PRESENTING",
             "client_name": "Charlie",
@@ -352,7 +361,9 @@ Public errors use the shared `{ "error": { "code", "message", "details" } }` env
 include private coach schedule identifiers or route provider payloads.
 
 Coach fixtures may include coach-only operational data and should only be consumed by authenticated
-instructor experiences.
+instructor experiences. Instructor apps sign in with `POST /api/auth/coach/sign-in` or
+`POST /api/auth/coach/login`, persist the returned bearer token locally, and send it on `/api/coach/*`
+requests as `Authorization: Bearer <token>`.
 
 Regenerate contracts with:
 

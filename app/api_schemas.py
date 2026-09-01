@@ -13,6 +13,28 @@ class CoachContext(BaseModel):
     display_name: str
 
 
+class CoachLoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class CoachAuthResponse(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_at: datetime
+    coach: CoachContext
+
+
+class CoachSessionResponse(BaseModel):
+    authenticated: Literal[True] = True
+    coach: CoachContext
+
+
+class CoachLogoutResponse(BaseModel):
+    success: bool
+    message: str
+
+
 class LocationResponse(BaseModel):
     address: str
     lat: float

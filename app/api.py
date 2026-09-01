@@ -13,7 +13,7 @@ from app.api_errors import (
     unexpected_exception_handler,
     validation_exception_handler,
 )
-from app.routes import coach, health, public
+from app.routes import auth, coach, health, public
 
 
 DEFAULT_CORS_ORIGINS = (
@@ -27,6 +27,8 @@ DEFAULT_CORS_ORIGINS = (
     "http://localhost:4173",
     "http://127.0.0.1:5173",
     "http://localhost:5173",
+    "http://127.0.0.1:5174",
+    "http://localhost:5174",
 )
 
 
@@ -57,6 +59,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(Exception, unexpected_exception_handler)
 
     app.include_router(health.router)
+    app.include_router(auth.router)
     app.include_router(coach.router)
     app.include_router(public.router)
     return app

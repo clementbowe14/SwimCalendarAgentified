@@ -29,6 +29,32 @@ def api_client(migrated_postgres_db: None) -> Iterator[TestClient]:
 
 
 @pytest.fixture()
+def coach_auth_headers(api_client: TestClient) -> dict[str, str]:
+    return login_coach(api_client)
+
+
+@pytest.fixture()
+def authenticated_api_client(api_client: TestClient, coach_auth_headers: dict[str, str]) -> Iterator[TestClient]:
+    api_client.headers.update(coach_auth_headers)
+    yield api_client
+
+
+def login_coach(
+    client: TestClient,
+    *,
+    email: str = "coach@example.com",
+    password: str = "swim-dev-pass",
+) -> dict[str, str]:
+    response = client.post(
+        "/api/auth/coach/login",
+        json={"email": email, "password": password},
+    )
+    assert response.status_code == 200, response.text
+    token = response.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture()
 def assert_public_payload_safe():
     return assert_public_payload_has_no_internal_identifiers
 

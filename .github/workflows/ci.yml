@@ -158,6 +158,10 @@ jobs:
         working-directory: frontend-instructor-command
         run: npm run test:e2e
 
+      - name: Run instructor auth Playwright smoke tests
+        working-directory: frontend-instructor-command
+        run: npm run test:e2e:auth
+
       - name: Run client invite Playwright smoke tests
         working-directory: frontend-client-invite
         run: npm run test:e2e

@@ -6,16 +6,22 @@ This note tracks what the two frontend prototypes need from the backend before m
 
 Current API calls wired or expected:
 
+- `POST /api/auth/coach/sign-in` for MVP coach login. The response includes `access_token`,
+  `token_type`, `expires_at`, and a coach display object.
+- `GET /api/auth/coach/session` for validating a stored bearer session.
+- `POST /api/auth/coach/sign-out` for the frontend sign-out action. The MVP backend is stateless, so
+  clients should clear local browser storage before or after this call.
 - `GET /api/coach/schedule?date=YYYY-MM-DD` for the Today schedule shell and a partial command snapshot.
 - `POST /api/coach/availability` for the Availability Finder.
 - `POST /api/coach/bookings` for coach-created bookings, with `idempotency_key` when available.
 
+All `/api/coach/*` requests must send `Authorization: Bearer <access_token>`. The live frontend must
+not authorize by `VITE_INSTRUCTOR_ID`; the backend scopes protected data from the authenticated coach
+session.
+
 Needed but not yet covered by the current backend contract:
 
-- Coach command-center snapshot with clients, requests, settings, schedule, open gaps, travel rows, and buffer rows.
 - Coach client list/detail endpoint for Client Detail.
-- Coach scheduler settings read/write endpoints for Settings/Rules.
-- Coach request queue, approve request, and request alternatives endpoints for Request Management.
 - Stable slot/hold IDs for coach-created bookings so the frontend does not synthesize IDs from times.
 
 Neglected frontend tests by screen/component:

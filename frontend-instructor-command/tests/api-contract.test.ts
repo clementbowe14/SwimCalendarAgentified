@@ -1,15 +1,100 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createMemoryInstructorAuthStore,
   HttpInstructorCommandApi,
   InstructorCommandApiError,
 } from "../src/api/instructorApi.js";
-import type { BookingRequestDTO, CommandCenterSnapshot, SchedulerRules } from "../src/api/types.js";
+import type { BookingRequestDTO, CommandCenterSnapshot, InstructorAuthSession, SchedulerRules } from "../src/api/types.js";
 
 type FetchCall = {
   url: string;
   init?: RequestInit;
 };
+
+test("HTTP instructor adapter signs in through the MVP auth endpoint and persists the bearer session", async () => {
+  const calls: FetchCall[] = [];
+  const store = createMemoryInstructorAuthStore();
+  const api = new HttpInstructorCommandApi("http://api.test/api", store);
+
+  await withMockFetch(calls, async () => jsonResponse(authSessionContract()), async () => {
+    const session = await api.signIn({ email: "coach@example.test", password: "dev-secret" });
+    const body = JSON.parse(String(calls[0].init?.body));
+
+    assert.equal(calls[0].url, "http://api.test/api/auth/coach/sign-in");
+    assert.equal(calls[0].init?.method, "POST");
+    assert.deepEqual(body, { email: "coach@example.test", password: "dev-secret" });
+    assert.equal(session.access_token, "signed.jwt");
+    assert.equal(store.get()?.access_token, "signed.jwt");
+  });
+});
+
+test("HTTP instructor adapter sends bearer auth with protected coach requests", async () => {
+  const calls: FetchCall[] = [];
+  const api = new HttpInstructorCommandApi("http://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
+
+  await withMockFetch(calls, async () => jsonResponse(snapshotContract()), async () => {
+    await api.getSnapshot("frontend-should-not-route-by-this-id", "2026-08-20");
+
+    assert.equal(calls[0].url, "http://api.test/api/coach/command-center/snapshot?date=2026-08-20");
+    assert.equal(headerValue(calls[0].init?.headers, "authorization"), "Bearer signed.jwt");
+  });
+});
+
+test("HTTP instructor adapter validates stored bearer sessions with the backend", async () => {
+  const calls: FetchCall[] = [];
+  const api = new HttpInstructorCommandApi("http://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
+
+  await withMockFetch(calls, async () =>
+    jsonResponse({
+      authenticated: true,
+      coach: {
+        instructor_id: "inst_001",
+        display_name: "Coach Sarah",
+      },
+    }),
+    async () => {
+      const coach = await api.validateSession();
+
+      assert.equal(calls[0].url, "http://api.test/api/auth/coach/session");
+      assert.equal(calls[0].init?.method, "GET");
+      assert.equal(headerValue(calls[0].init?.headers, "authorization"), "Bearer signed.jwt");
+      assert.deepEqual(coach, {
+        instructor_id: "inst_001",
+        display_name: "Coach Sarah",
+      });
+    },
+  );
+});
+
+test("HTTP instructor adapter clears stored auth after protected 401 responses", async () => {
+  const store = createMemoryInstructorAuthStore(authSessionContract());
+  const api = new HttpInstructorCommandApi("http://api.test/api", store);
+  let caught: unknown;
+
+  await withMockFetch([], async () =>
+    jsonResponse(
+      {
+        error: {
+          code: "UNAUTHENTICATED",
+          message: "Sign in is required.",
+        },
+      },
+      { status: 401 },
+    ),
+    async () => {
+      try {
+        await api.getSnapshot("inst_001", "2026-08-20");
+      } catch (error) {
+        caught = error;
+      }
+    },
+  );
+
+  assert.equal(caught instanceof InstructorCommandApiError, true);
+  assert.equal((caught as InstructorCommandApiError).isAuthFailure, true);
+  assert.equal(store.get(), null);
+});
 
 test("HTTP instructor adapter reads the coach command-center snapshot without raw instructor routing", async () => {
   const calls: FetchCall[] = [];
@@ -162,12 +247,29 @@ function requestUrl(input: RequestInfo | URL): string {
   return input instanceof Request ? input.url : String(input);
 }
 
+function headerValue(headers: HeadersInit | undefined, name: string): string | null {
+  if (!headers) return null;
+  return new Headers(headers).get(name);
+}
+
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
     headers: { "content-type": "application/json" },
     ...init,
   });
+}
+
+function authSessionContract(): InstructorAuthSession {
+  return {
+    access_token: "signed.jwt",
+    token_type: "bearer",
+    coach: {
+      instructor_id: "inst_001",
+      display_name: "Coach Sarah",
+    },
+    expires_at: "2026-08-31T20:00:00Z",
+  };
 }
 
 function snapshotContract(): CommandCenterSnapshot {
