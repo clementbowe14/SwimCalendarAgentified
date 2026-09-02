@@ -9,18 +9,13 @@ const navItems: Array<{ id: ScreenId; label: string }> = [
   { id: "finder", label: "Find" },
   { id: "client", label: "Client" },
   { id: "requests", label: "Requests" },
-  { id: "settings", label: "Rules" },
+  { id: "settings", label: "Settings" },
 ];
-
-type ShellOptions = {
-  showSignOut?: boolean;
-};
 
 export function renderShell(
   snapshot: CommandCenterSnapshot,
   activeScreen: ScreenId,
   body: string,
-  options: ShellOptions = {},
 ): string {
   const requestSummary = summarizeRequests(snapshot.requests);
 
@@ -60,7 +55,6 @@ export function renderShell(
           <div class="topbar-actions">
             <span class="metric-pill">${requestSummary.totalPending} pending</span>
             <button class="primary-compact" data-screen="finder" type="button">New client</button>
-            ${options.showSignOut ? `<button class="secondary-compact" data-sign-out type="button">Sign out</button>` : ""}
           </div>
         </header>
         ${body}
@@ -74,5 +68,5 @@ function screenTitle(screen: ScreenId): string {
   if (screen === "finder") return "Availability finder";
   if (screen === "client") return "Client detail";
   if (screen === "requests") return "Request management";
-  return "Settings and rules";
+  return "Settings";
 }

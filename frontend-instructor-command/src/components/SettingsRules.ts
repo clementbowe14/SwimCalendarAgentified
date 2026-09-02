@@ -1,9 +1,9 @@
 import type { SchedulerRules } from "../api/types.js";
 import { escapeHtml } from "../lib/html.js";
 
-export function renderSettingsRules(rules: SchedulerRules): string {
+export function renderSettingsRules(rules: SchedulerRules, showSignOut = false): string {
   return `
-    <section class="screen-grid settings-screen" aria-label="Settings and rules">
+    <section class="screen-grid settings-screen" aria-label="Settings">
       <section class="rules-overview">
         <div>
           <p class="eyebrow">Constraint engine</p>
@@ -45,6 +45,15 @@ export function renderSettingsRules(rules: SchedulerRules): string {
           <div><dt>New client method</dt><dd>${rules.payments.require_payment_method_for_new_clients ? "Required" : "Optional"}</dd></div>
         </dl>
       </section>
+      ${
+        showSignOut
+          ? `
+            <section class="settings-actions" aria-label="Account actions">
+              <button class="danger-action" data-sign-out type="button">Sign out</button>
+            </section>
+          `
+          : ""
+      }
     </section>
   `;
 }

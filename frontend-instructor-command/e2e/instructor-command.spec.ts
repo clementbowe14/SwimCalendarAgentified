@@ -18,8 +18,8 @@ testWhenMockAdapter("navigates the instructor command screens with the local ada
   await page.getByRole("button", { name: "Requests" }).click();
   await expect(page.getByRole("heading", { name: "Request management" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Rules" }).click();
-  await expect(page.getByRole("heading", { name: "Settings and rules" })).toBeVisible();
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
 });
 
 describeWhenBackendConfigured("instructor command real-backend integration", () => {
@@ -27,8 +27,14 @@ describeWhenBackendConfigured("instructor command real-backend integration", () 
     await signIn(page);
 
     await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Sign out" })).toHaveCount(0);
 
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+    const signOut = page.getByRole("button", { name: "Sign out" });
+    await expect(signOut).toBeVisible();
+    await expect(signOut).toHaveCSS("color", "rgb(255, 255, 255)");
+    await expect(signOut).toHaveCSS("background-image", /rgb\(217, 71, 50\)/);
     await page.getByRole("button", { name: "Sign out" }).click();
     await expect(page.getByRole("heading", { name: /locked|sign in/i })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Today schedule" })).toHaveCount(0);

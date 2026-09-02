@@ -111,7 +111,7 @@ export function buildReadinessReport(): ScreenReadiness[] {
       missingApiContracts: ["coach client notes, availability, lesson history, and progress detail fields"],
     },
     {
-      screen: "Settings/Rules",
+      screen: "Settings",
       isReadyForBackend: true,
       requiredApiMethods: ["getSnapshot", "saveRules"],
       missingApiContracts: [],

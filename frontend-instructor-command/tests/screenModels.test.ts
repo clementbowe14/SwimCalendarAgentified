@@ -48,7 +48,7 @@ test("Client Detail renders contact, availability, notes, and next lesson state"
   assert.match(html, /Riverside Aquatic Center/);
 });
 
-test("Settings and Rules screen stays aligned to Python engine buffer rules", () => {
+test("Settings screen stays aligned to Python engine buffer rules", () => {
   const html = renderSettingsRules(snapshot.rules);
 
   assert.deepEqual(
@@ -84,10 +84,10 @@ test("Readiness report covers every representative screen and calls out backend 
 
   assert.deepEqual(
     report.map((screen) => screen.screen),
-    ["Today schedule", "Availability Finder/New Client", "Client Detail", "Settings/Rules", "Request management"],
+    ["Today schedule", "Availability Finder/New Client", "Client Detail", "Settings", "Request management"],
   );
   assert.equal(report.some((screen) => !screen.isReadyForBackend), true);
-  assert.equal(report.find((screen) => screen.screen === "Settings/Rules")?.isReadyForBackend, true);
+  assert.equal(report.find((screen) => screen.screen === "Settings")?.isReadyForBackend, true);
   assert.equal(
     report.some((screen) =>
       screen.missingApiContracts.includes("coach client notes, availability, lesson history, and progress detail fields"),
