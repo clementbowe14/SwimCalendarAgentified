@@ -29,7 +29,7 @@ describeWhenLiveApiConfigured("MVP coach auth flow", () => {
     await expect(page.locator(".command-shell")).toBeVisible();
     await expect(page.locator(".sidebar")).toBeVisible();
     await expect(page.locator(".topbar")).toBeVisible();
-    await expect(page.getByRole("button", { name: /sign out/i })).toBeVisible();
+    await expect(page.getByRole("button", { name: /sign out/i })).toHaveCount(0);
 
     const shellColumns = await page.locator(".command-shell").evaluate((node) => {
       return window.getComputedStyle(node).gridTemplateColumns;
@@ -45,6 +45,9 @@ describeWhenLiveApiConfigured("MVP coach auth flow", () => {
       api.protectedCalls().every((call) => call.authorization?.toLowerCase() === `bearer ${AUTH_TOKEN}`),
     ).toBe(true);
 
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /sign out/i })).toBeVisible();
     await page.getByRole("button", { name: /sign out/i }).click();
 
     await expect(page.getByRole("heading", { name: LOCKED_OR_EXPIRED_HEADING })).toBeVisible();

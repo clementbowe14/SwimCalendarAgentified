@@ -104,9 +104,7 @@ function render(): void {
   }
 
   const body = renderActiveScreen(state.snapshot);
-  app.innerHTML = `${renderShell(state.snapshot, state.activeScreen, `${renderError()}${body}`, {
-    showSignOut: instructorCommandApi.authMode === "live",
-  })}${renderToast()}`;
+  app.innerHTML = `${renderShell(state.snapshot, state.activeScreen, `${renderError()}${body}`)}${renderToast()}`;
   wireEvents();
 }
 
@@ -156,7 +154,7 @@ function renderActiveScreen(snapshot: CommandCenterSnapshot): string {
   }
   if (state.activeScreen === "client") return renderClientDetail(snapshot, state.selectedClientId);
   if (state.activeScreen === "requests") return renderRequestManagement(snapshot);
-  return renderSettingsRules(snapshot.rules);
+  return renderSettingsRules(snapshot.rules, instructorCommandApi.authMode === "live");
 }
 
 function wireEvents(): void {

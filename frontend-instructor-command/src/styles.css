@@ -265,7 +265,8 @@ button {
 .primary-action,
 .secondary-action,
 .primary-compact,
-.secondary-compact {
+.secondary-compact,
+.danger-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -295,6 +296,13 @@ button {
   color: #31516d;
   background: #ffffff;
   box-shadow: none;
+}
+
+.danger-action {
+  border: 0;
+  color: #ffffff;
+  background: linear-gradient(180deg, #d94732 0%, #b51f1f 100%);
+  box-shadow: 0 12px 24px rgba(181, 31, 31, 0.22);
 }
 
 .metric-pill,
@@ -659,6 +667,12 @@ select {
 
 .payment-panel {
   align-self: start;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  grid-column: 1 / -1;
 }
 
 .toggle-list {
