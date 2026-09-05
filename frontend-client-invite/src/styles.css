@@ -155,12 +155,49 @@ button:disabled {
 
 .flow-progress {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 6px;
+  gap: 8px;
   margin: 4px 0 14px;
 }
 
-.flow-progress span {
+.flow-progress-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #31516d;
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 900;
+}
+
+.flow-progress-summary strong {
+  color: #08713a;
+  white-space: nowrap;
+}
+
+.flow-progress-meter {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: inset 0 0 0 1px rgba(7, 109, 228, 0.12);
+}
+
+.flow-progress-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--water), var(--green));
+  transition: width 180ms ease;
+}
+
+.flow-progress-steps {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.flow-progress-steps span {
   min-width: 0;
   padding: 8px 4px;
   border-radius: 999px;
@@ -172,9 +209,14 @@ button:disabled {
   font-weight: 900;
 }
 
-.flow-progress span.active {
+.flow-progress-steps span.complete {
   color: #08713a;
   background: #e8fff0;
+}
+
+.flow-progress-steps span.current {
+  color: #ffffff;
+  background: var(--green);
 }
 
 .screen-stack,
