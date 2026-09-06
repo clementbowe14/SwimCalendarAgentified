@@ -1,12 +1,22 @@
+from __future__ import annotations
+
 from datetime import date, datetime, timedelta
+import hashlib
 import re
 from typing import Optional
+import uuid
+
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from app import db, timezones, tools
 from app.api_errors import (
+    AlternativeSlotContextMismatch,
     GeocodingFailed as GeocodingFailedApiError,
     IdempotencyConflict,
     InvalidSchedulingRequest,
+    LessonRequestConfirmConflict,
+    LessonRequestExpired,
     LessonRequestNotFound,
     ResourceNotFound,
     RoutingConfigurationError,
@@ -25,6 +35,9 @@ from app.api_schemas import (
     CoachCommandCenterSnapshot,
     CoachDistanceBufferTier,
     CoachLessonRequestActionResponse,
+    CoachLessonRequestAlternativesRequest,
+    CoachLessonRequestConfirmResponse,
+    CoachLessonRequestConfirmRequest,
     CoachLessonRequestResponse,
     CoachScheduleItemResponse,
     CoachScheduleResponse,
@@ -42,7 +55,7 @@ from app.api_schemas import (
     PublicRequestStatusResponse,
     TimeSlotResponse,
 )
-from app.models import AppointmentDB, LessonRequestDB, TimeSlotDTO
+from app.models import AppointmentDB, InviteSlotOfferDB, LessonRequestDB, TimeSlotDTO
 from app.public_tokens import (
     InviteContext,
     create_lesson_request,
@@ -234,11 +247,27 @@ def _coach_lesson_request_response(request: dict) -> CoachLessonRequestResponse:
             target_location=location,
         ),
         source="client_invite",
-        status=_request_status(request["status"]),
-        risk="clear",
+        status=_request_status(request["status"], request.get("computed_expired", False)),
+        risk="at_risk" if request.get("validation_failure_code") else "clear",
         submitted_at=request["created_at"],
         note="Client selected this time from an invite.",
-        alternative_slots=[],
+        alternative_slots=[
+            CoachTimeSlotResponse(
+                id=offer["id"],
+                start_time=timezones.storage_to_local(offer["slot_start"], timezone_name),
+                end_time=timezones.storage_to_local(offer["slot_end"], timezone_name),
+                travel_time_mins=offer["travel_time_mins"],
+                buffer_mins=offer["buffer_mins"],
+                distance_miles=offer["distance_miles"],
+                target_location=LocationResponse(
+                    address=offer["client_address"],
+                    lat=offer["lat"],
+                    lng=offer["lng"],
+                    is_instructor_facility=offer["location_type"] == "facility",
+                ),
+            )
+            for offer in request.get("alternative_slots", [])
+        ],
     )
 
 
@@ -248,9 +277,13 @@ def _lesson_status(status: str) -> str:
     return "scheduled"
 
 
-def _request_status(status: str) -> str:
-    if status == "accepted":
+def _request_status(status: str, computed_expired: bool = False) -> str:
+    if computed_expired:
+        return "expired"
+    if status in {"accepted", "confirmed"}:
         return "approved"
+    if status == "alternatives_sent":
+        return "needs_alternatives"
     if status in {"declined", "cancelled"}:
         return "declined"
     return "pending"
@@ -366,60 +399,121 @@ def book_coach_lesson(instructor_id: str, request: CoachBookLessonRequest) -> Bo
 def approve_coach_lesson_request(
     instructor_id: str,
     request_token: str,
-) -> CoachLessonRequestActionResponse:
-    lesson_request, appointment = _load_coach_lesson_request(instructor_id, request_token)
-    if appointment is not None:
-        _mark_lesson_request_status(lesson_request.id, "accepted")
-        return CoachLessonRequestActionResponse(
-            id=lesson_request.request_token,
-            status="approved",
-            appointment_id=appointment.id,
-            message="Lesson request is confirmed.",
-        )
-    if lesson_request.status in {"declined", "cancelled"}:
-        raise InvalidSchedulingRequest("Only pending lesson requests can be approved.")
-    if db.has_active_schedule_conflict(
-        instructor_id=lesson_request.instructor_id,
-        start_time=lesson_request.slot_start,
-        end_time=lesson_request.slot_end,
-    ):
-        raise SchedulingConflict()
-    try:
-        appointment_id = db.save_appointment(
-            instructor_id=lesson_request.instructor_id,
-            client_id=lesson_request.client_id or _client_id_from_name(lesson_request.client_name),
-            title=f"Lesson with {lesson_request.client_name}",
-            start_time=lesson_request.slot_start,
-            end_time=lesson_request.slot_end,
-            location_address=lesson_request.client_address,
-            lat=lesson_request.lat,
-            lng=lesson_request.lng,
-            idempotency_key=f"lesson-request-approval:{lesson_request.id}",
-            request_id=lesson_request.id,
-        )
-    except db.ScheduleConflictError as exc:
-        raise SchedulingConflict() from exc
-    except db.IdempotencyKeyConflictError as exc:
-        raise IdempotencyConflict() from exc
-    _mark_lesson_request_status(lesson_request.id, "accepted")
-    return CoachLessonRequestActionResponse(
-        id=lesson_request.request_token,
-        status="approved",
-        appointment_id=appointment_id,
-        message="Lesson request is confirmed.",
+) -> CoachLessonRequestActionResponse | CoachLessonRequestConfirmResponse:
+    return confirm_coach_lesson_request(
+        instructor_id,
+        request_token,
+        CoachLessonRequestConfirmRequest(),
+        legacy_response=True,
     )
+
+
+def confirm_coach_lesson_request(
+    instructor_id: str,
+    request_token: str,
+    request: CoachLessonRequestConfirmRequest,
+    *,
+    legacy_response: bool = False,
+) -> CoachLessonRequestActionResponse:
+    session = db.SessionLocal()
+    try:
+        lesson_request = _query_coach_lesson_request(session, instructor_id, request_token).with_for_update().first()
+        if lesson_request is None:
+            raise LessonRequestNotFound()
+        if _is_request_expired(lesson_request):
+            raise LessonRequestExpired()
+
+        existing_appointments = _appointments_for_request(session, lesson_request.id)
+        if lesson_request.status == "confirmed" or existing_appointments:
+            appointment_ids = [appointment.id for appointment in existing_appointments]
+            if not _confirmed_slot_matches(lesson_request, request.slot_id):
+                raise LessonRequestConfirmConflict()
+            return _lesson_request_action_response(
+                lesson_request,
+                appointment_ids,
+                status="approved" if legacy_response else "confirmed",
+            )
+        if lesson_request.status not in {"pending", "alternatives_sent"}:
+            raise InvalidSchedulingRequest("Only pending lesson requests can be confirmed.")
+
+        selected_offer = _resolve_confirm_offer(session, lesson_request, request.slot_id)
+        if selected_offer is not None:
+            _apply_offer_to_request(lesson_request, selected_offer)
+        occurrences = _request_occurrences(lesson_request, selected_offer)
+        _acquire_confirmation_locks(session, lesson_request.instructor_id, occurrences)
+
+        try:
+            _validate_occurrences(lesson_request, occurrences)
+            appointments = _insert_occurrence_appointments(session, lesson_request, occurrences)
+        except SchedulingConflict:
+            session.rollback()
+            _persist_validation_failure(
+                lesson_request.id,
+                "SLOT_CONFLICT",
+                {"request_token": request_token},
+            )
+            raise
+        except IntegrityError as exc:
+            session.rollback()
+            _persist_validation_failure(
+                lesson_request.id,
+                "SLOT_CONFLICT",
+                {"request_token": request_token},
+            )
+            raise SchedulingConflict() from exc
+
+        now = datetime.utcnow()
+        lesson_request.status = "confirmed"
+        lesson_request.confirmed_at = now
+        lesson_request.confirmed_slot_offer_id = selected_offer.id if selected_offer is not None else None
+        lesson_request.validation_failure_code = None
+        lesson_request.validation_failure_details = None
+        lesson_request.validation_failed_at = None
+        lesson_request.client_notification_status = "queued"
+        lesson_request.client_notification_message = "Your lesson request was confirmed."
+        lesson_request.client_notified_at = now
+        lesson_request.updated_at = now
+        session.commit()
+        return _lesson_request_action_response(
+            lesson_request,
+            [appointment.id for appointment in appointments],
+            status="approved" if legacy_response else "confirmed",
+        )
+    finally:
+        session.close()
 
 
 def request_alternatives_for_coach_lesson_request(
     instructor_id: str,
     request_token: str,
+    request: Optional[CoachLessonRequestAlternativesRequest] = None,
 ) -> CoachLessonRequestActionResponse:
-    lesson_request, appointment = _load_coach_lesson_request(instructor_id, request_token)
-    if appointment is not None or lesson_request.status == "accepted":
-        raise InvalidSchedulingRequest("Confirmed lesson requests cannot be marked for new times.")
-    _mark_lesson_request_status(lesson_request.id, "declined")
+    body = request or CoachLessonRequestAlternativesRequest()
+    session = db.SessionLocal()
+    try:
+        lesson_request = _query_coach_lesson_request(session, instructor_id, request_token).with_for_update().first()
+        if lesson_request is None:
+            raise LessonRequestNotFound()
+        if _is_request_expired(lesson_request):
+            raise LessonRequestExpired()
+        if lesson_request.status == "confirmed" or _appointments_for_request(session, lesson_request.id):
+            raise InvalidSchedulingRequest("Confirmed lesson requests cannot be marked for new times.")
+        promoted = _promote_alternative_offers(session, lesson_request, body)
+        now = datetime.utcnow()
+        lesson_request.status = "alternatives_sent"
+        lesson_request.alternatives_sent_at = now
+        lesson_request.validation_failure_code = None
+        lesson_request.validation_failure_details = None
+        lesson_request.validation_failed_at = None
+        lesson_request.client_notification_status = "queued"
+        lesson_request.client_notification_message = body.message or "Please choose a new lesson time."
+        lesson_request.client_notified_at = now if promoted or body.message else None
+        lesson_request.updated_at = now
+        session.commit()
+    finally:
+        session.close()
     return CoachLessonRequestActionResponse(
-        id=lesson_request.request_token,
+        id=request_token,
         status="needs_alternatives",
         appointment_id=None,
         message="Client should choose new lesson times.",
@@ -430,16 +524,330 @@ def decline_coach_lesson_request(
     instructor_id: str,
     request_token: str,
 ) -> CoachLessonRequestActionResponse:
-    lesson_request, appointment = _load_coach_lesson_request(instructor_id, request_token)
-    if appointment is not None or lesson_request.status == "accepted":
-        raise InvalidSchedulingRequest("Confirmed lesson requests cannot be declined.")
-    _mark_lesson_request_status(lesson_request.id, "declined")
+    session = db.SessionLocal()
+    try:
+        lesson_request = _query_coach_lesson_request(session, instructor_id, request_token).with_for_update().first()
+        if lesson_request is None:
+            raise LessonRequestNotFound()
+        if _is_request_expired(lesson_request):
+            raise LessonRequestExpired()
+        if lesson_request.status == "confirmed" or _appointments_for_request(session, lesson_request.id):
+            raise InvalidSchedulingRequest("Confirmed lesson requests cannot be declined.")
+        lesson_request.status = "declined"
+        lesson_request.declined_at = datetime.utcnow()
+        lesson_request.updated_at = datetime.utcnow()
+        session.commit()
+        return CoachLessonRequestActionResponse(
+            id=lesson_request.request_token,
+            status="declined",
+            appointment_id=None,
+            message="Lesson request was declined.",
+        )
+    finally:
+        session.close()
+
+
+def _query_coach_lesson_request(session, instructor_id: str, request_token: str):
+    return session.query(LessonRequestDB).filter(
+        LessonRequestDB.instructor_id == instructor_id,
+        LessonRequestDB.request_token == request_token,
+    )
+
+
+def _appointments_for_request(session, request_id: str) -> list[AppointmentDB]:
+    return (
+        session.query(AppointmentDB)
+        .filter_by(request_id=request_id)
+        .order_by(AppointmentDB.start_time.asc())
+        .all()
+    )
+
+
+def _lesson_request_action_response(
+    lesson_request: LessonRequestDB,
+    appointment_ids: list[str],
+    *,
+    status: str,
+) -> CoachLessonRequestActionResponse | CoachLessonRequestConfirmResponse:
+    if status == "confirmed":
+        return CoachLessonRequestConfirmResponse(
+            id=lesson_request.request_token,
+            status="confirmed",
+            appointment_id=appointment_ids[0] if appointment_ids else None,
+            appointment_ids=appointment_ids,
+            message="Lesson request is confirmed.",
+        )
     return CoachLessonRequestActionResponse(
         id=lesson_request.request_token,
-        status="declined",
-        appointment_id=None,
-        message="Lesson request was declined.",
+        status=status,
+        appointment_id=appointment_ids[0] if appointment_ids else None,
+        message="Lesson request is confirmed.",
     )
+
+
+def _is_request_expired(lesson_request: LessonRequestDB) -> bool:
+    return lesson_request.status not in {"confirmed"} and lesson_request.expires_at <= datetime.utcnow()
+
+
+def _instructor_timezone(instructor_id: str) -> str:
+    instructor = db.get_instructor_info(instructor_id)
+    return instructor.timezone if instructor else timezones.DEFAULT_INSTRUCTOR_TIMEZONE
+
+
+def _confirmed_slot_matches(lesson_request: LessonRequestDB, slot_id: Optional[str]) -> bool:
+    if slot_id is None:
+        return True
+    return lesson_request.confirmed_slot_offer_id == slot_id
+
+
+def _resolve_confirm_offer(
+    session,
+    lesson_request: LessonRequestDB,
+    slot_id: Optional[str],
+) -> Optional[InviteSlotOfferDB]:
+    if slot_id is None:
+        if lesson_request.original_slot_offer_id is None:
+            return None
+        return session.query(InviteSlotOfferDB).filter_by(id=lesson_request.original_slot_offer_id).first()
+    offer = (
+        session.query(InviteSlotOfferDB)
+        .filter(
+            InviteSlotOfferDB.id == slot_id,
+            InviteSlotOfferDB.lesson_request_id == lesson_request.id,
+            InviteSlotOfferDB.invite_token == lesson_request.invite_token,
+            InviteSlotOfferDB.instructor_id == lesson_request.instructor_id,
+            InviteSlotOfferDB.offer_kind == "alternative",
+            InviteSlotOfferDB.expires_at > datetime.utcnow(),
+        )
+        .first()
+    )
+    if offer is None:
+        raise InvalidSchedulingRequest("The selected confirmation slot is not valid for this request.")
+    return offer
+
+
+def _request_occurrences(
+    lesson_request: LessonRequestDB,
+    selected_offer: Optional[InviteSlotOfferDB],
+) -> list[tuple[datetime, datetime]]:
+    instructor = db.get_instructor_info(lesson_request.instructor_id)
+    timezone_name = instructor.timezone if instructor else timezones.DEFAULT_INSTRUCTOR_TIMEZONE
+    source_start = selected_offer.slot_start if selected_offer is not None else lesson_request.slot_start
+    source_end = selected_offer.slot_end if selected_offer is not None else lesson_request.slot_end
+    base_local_start = timezones.storage_to_local(source_start, timezone_name).replace(tzinfo=None)
+    base_local_end = timezones.storage_to_local(source_end, timezone_name).replace(tzinfo=None)
+    count = lesson_request.recurrence_count if lesson_request.recurrence == "weekly" else 1
+    occurrences: list[tuple[datetime, datetime]] = []
+    for index in range(count):
+        local_start = base_local_start + timedelta(days=7 * index)
+        local_end = base_local_end + timedelta(days=7 * index)
+        start = timezones.validate_local_datetime(local_start, timezone_name)
+        end = timezones.validate_local_datetime(local_end, timezone_name)
+        occurrences.append((timezones.to_utc_storage(start), timezones.to_utc_storage(end)))
+    return occurrences
+
+
+def _apply_offer_to_request(lesson_request: LessonRequestDB, offer: InviteSlotOfferDB) -> None:
+    lesson_request.slot_start = offer.slot_start
+    lesson_request.slot_end = offer.slot_end
+    lesson_request.requested_date = offer.requested_date
+    lesson_request.travel_time_mins = offer.travel_time_mins
+    lesson_request.buffer_mins = offer.buffer_mins
+    lesson_request.distance_miles = offer.distance_miles
+    lesson_request.original_slot_offer_id = offer.id
+
+
+def _acquire_confirmation_locks(
+    session,
+    instructor_id: str,
+    occurrences: list[tuple[datetime, datetime]],
+) -> None:
+    if session.bind is None or session.bind.dialect.name != "postgresql":
+        return
+    instructor = db.get_instructor_info(instructor_id)
+    timezone_name = instructor.timezone if instructor else timezones.DEFAULT_INSTRUCTOR_TIMEZONE
+    local_dates = set()
+    for start, _ in occurrences:
+        local_date = timezones.storage_to_local(start, timezone_name).date()
+        local_dates.update({local_date - timedelta(days=1), local_date, local_date + timedelta(days=1)})
+    for local_date in sorted(local_dates):
+        raw = f"{instructor_id}:{local_date.isoformat()}".encode("utf-8")
+        key = int.from_bytes(hashlib.sha256(raw).digest()[:8], "big", signed=True)
+        session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+
+
+def _validate_occurrences(
+    lesson_request: LessonRequestDB,
+    occurrences: list[tuple[datetime, datetime]],
+) -> None:
+    for start, _ in occurrences:
+        requested_start = timezones.storage_to_aware_utc(start)
+        requested_date = timezones.requested_local_date(requested_start, _instructor_timezone(lesson_request.instructor_id))
+        _require_available_start(
+            instructor_id=lesson_request.instructor_id,
+            requested_date=requested_date,
+            client_address=lesson_request.client_address,
+            is_instructor_facility=lesson_request.location_type == "facility",
+            duration_mins=lesson_request.duration_mins,
+            requested_start=requested_start,
+        )
+
+
+def _insert_occurrence_appointments(
+    session,
+    lesson_request: LessonRequestDB,
+    occurrences: list[tuple[datetime, datetime]],
+) -> list[AppointmentDB]:
+    if lesson_request.original_slot_offer_id:
+        lesson_request.confirmed_slot_offer_id = lesson_request.original_slot_offer_id
+    appointments: list[AppointmentDB] = []
+    for index, (start, end) in enumerate(occurrences):
+        idempotency_key = f"lesson-request-confirm:{lesson_request.id}:{index}"
+        existing = session.query(AppointmentDB).filter_by(idempotency_key=idempotency_key).first()
+        if existing is not None:
+            appointments.append(existing)
+            continue
+        conflict = (
+            session.query(AppointmentDB)
+            .filter(
+                AppointmentDB.instructor_id == lesson_request.instructor_id,
+                AppointmentDB.status.in_(db.ACTIVE_APPOINTMENT_STATUSES),
+                AppointmentDB.cancelled_at.is_(None),
+                AppointmentDB.start_time < end,
+                AppointmentDB.end_time > start,
+            )
+            .first()
+        )
+        if conflict is not None:
+            raise SchedulingConflict()
+        appointment = AppointmentDB(
+            id=f"app_{uuid.uuid4().hex[:8]}",
+            instructor_id=lesson_request.instructor_id,
+            client_id=lesson_request.client_id or _client_id_from_name(lesson_request.client_name),
+            request_id=lesson_request.id,
+            title=f"Lesson with {lesson_request.client_name}",
+            start_time=start,
+            end_time=end,
+            location_address=lesson_request.client_address,
+            lat=lesson_request.lat,
+            lng=lesson_request.lng,
+            is_break=False,
+            event_type="lesson",
+            status="scheduled",
+            idempotency_key=idempotency_key,
+        )
+        session.add(appointment)
+        appointments.append(appointment)
+    return appointments
+
+
+def _persist_validation_failure(
+    request_id: str,
+    code: str,
+    details: dict,
+) -> None:
+    session = db.SessionLocal()
+    try:
+        lesson_request = session.query(LessonRequestDB).filter_by(id=request_id).first()
+        if lesson_request is None:
+            return
+        lesson_request.validation_failure_code = code
+        lesson_request.validation_failure_details = details
+        lesson_request.validation_failed_at = datetime.utcnow()
+        lesson_request.updated_at = datetime.utcnow()
+        session.commit()
+    finally:
+        session.close()
+
+
+def _promote_alternative_offers(
+    session,
+    lesson_request: LessonRequestDB,
+    request: CoachLessonRequestAlternativesRequest,
+) -> list[InviteSlotOfferDB]:
+    if not request.slot_ids:
+        return []
+    offers = (
+        session.query(InviteSlotOfferDB)
+        .filter(
+            InviteSlotOfferDB.id.in_(request.slot_ids),
+            InviteSlotOfferDB.offer_kind == "search",
+            InviteSlotOfferDB.lesson_request_id.is_(None),
+            InviteSlotOfferDB.expires_at > datetime.utcnow(),
+        )
+        .all()
+    )
+    if {offer.id for offer in offers} != set(request.slot_ids):
+        raise AlternativeSlotContextMismatch()
+    for offer in offers:
+        if not _offer_matches_request_context(offer, lesson_request):
+            raise AlternativeSlotContextMismatch()
+    promoted: list[InviteSlotOfferDB] = []
+    now = datetime.utcnow()
+    for offer in offers:
+        existing = (
+            session.query(InviteSlotOfferDB)
+            .filter_by(
+                id=_alternative_offer_id(lesson_request.id, offer.id),
+                lesson_request_id=lesson_request.id,
+                offer_kind="alternative",
+            )
+            .first()
+        )
+        if existing is not None:
+            promoted.append(existing)
+            continue
+        alternative = InviteSlotOfferDB(
+            id=_alternative_offer_id(lesson_request.id, offer.id),
+            invite_token=offer.invite_token,
+            instructor_id=offer.instructor_id,
+            client_name=offer.client_name,
+            client_address=offer.client_address,
+            requested_date=offer.requested_date,
+            slot_start=offer.slot_start,
+            slot_end=offer.slot_end,
+            duration_mins=offer.duration_mins,
+            location_type=offer.location_type,
+            location_address=offer.location_address,
+            lat=offer.lat,
+            lng=offer.lng,
+            travel_time_mins=offer.travel_time_mins,
+            buffer_mins=offer.buffer_mins,
+            distance_miles=offer.distance_miles,
+            recurrence=offer.recurrence,
+            recurrence_count=offer.recurrence_count,
+            recurrence_available=offer.recurrence_available,
+            lesson_request_id=lesson_request.id,
+            offer_kind="alternative",
+            message=request.message,
+            notified_at=now,
+            expires_at=offer.expires_at,
+        )
+        session.add(alternative)
+        promoted.append(alternative)
+    return promoted
+
+
+def _offer_matches_request_context(offer: InviteSlotOfferDB, lesson_request: LessonRequestDB) -> bool:
+    return (
+        offer.invite_token == lesson_request.invite_token
+        and offer.instructor_id == lesson_request.instructor_id
+        and offer.client_name == lesson_request.client_name
+        and offer.client_address == lesson_request.client_address
+        and offer.location_type == lesson_request.location_type
+        and offer.location_address == lesson_request.client_address
+        and abs(offer.lat - lesson_request.lat) < 0.000001
+        and abs(offer.lng - lesson_request.lng) < 0.000001
+        and offer.duration_mins == lesson_request.duration_mins
+        and offer.recurrence == lesson_request.recurrence
+        and offer.recurrence_count == lesson_request.recurrence_count
+        and offer.requested_date == lesson_request.requested_date
+    )
+
+
+def _alternative_offer_id(request_id: str, source_slot_id: str) -> str:
+    raw = f"{request_id}:{source_slot_id}".encode("utf-8")
+    return f"alt_{hashlib.sha256(raw).hexdigest()[:16]}"
 
 
 def public_invite_response(invite: InviteContext) -> PublicInviteResponse:
@@ -561,6 +969,8 @@ def create_public_lesson_request(
 def get_public_request_status(request_token: str) -> PublicRequestStatusResponse:
     record = resolve_lesson_request(request_token)
     status = _legacy_public_request_status(record.status)
+    if record.status != "confirmed" and record.expires_at <= datetime.utcnow():
+        status = "expired"
     return PublicRequestStatusResponse(
         request_token=record.request_token,
         status=status,
@@ -605,9 +1015,9 @@ def _mark_lesson_request_status(request_id: str, status: str) -> None:
 
 
 def _legacy_public_request_status(status: str) -> str:
-    if status == "accepted":
+    if status in {"accepted", "confirmed"}:
         return "confirmed"
-    if status in {"declined", "cancelled"}:
+    if status in {"alternatives_sent", "declined", "cancelled"}:
         return "needs_new_times"
     return "pending"
 
@@ -617,6 +1027,8 @@ def _legacy_public_request_message(status: str) -> str:
         return "Your lesson request was confirmed by the instructor."
     if status == "needs_new_times":
         return "The instructor needs you to choose new lesson times."
+    if status == "expired":
+        return "This lesson request has expired. Please choose a new time."
     return "Your lesson request is waiting for instructor confirmation."
 
 

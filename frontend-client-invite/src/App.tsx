@@ -141,6 +141,21 @@ export default function App() {
     }
   };
 
+  const selectAlternative = async (slotId: string) => {
+    if (!lessonRequest) return;
+    setLoading(true);
+    setErrorMessage(null);
+    try {
+      const idempotencyKey = `invite-alternative:${lessonRequest.id}:${slotId}`;
+      const nextRequest = await api.selectAlternativeSlot(lessonRequest.id, slotId, idempotencyKey);
+      setLessonRequest(nextRequest);
+    } catch (error) {
+      setErrorMessage(readApiError(error));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <main className="client-page">
       <BrandHeader
@@ -196,6 +211,7 @@ export default function App() {
         <LessonRequestStatusScreen
           lessonRequest={lessonRequest}
           onRefreshStatus={refreshStatus}
+          onSelectAlternative={selectAlternative}
           onCalendar={() => goToStep("calendar")}
           checkingStatus={loading}
         />

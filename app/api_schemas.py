@@ -128,7 +128,7 @@ class CoachLessonRequestResponse(BaseModel):
     client_name: str
     requested_slot: CoachTimeSlotResponse
     source: Literal["client_invite", "manual_intake", "reschedule"]
-    status: Literal["pending", "approved", "needs_alternatives", "declined"]
+    status: Literal["pending", "approved", "needs_alternatives", "declined", "expired"]
     risk: Literal["clear", "at_risk"]
     submitted_at: datetime
     note: str
@@ -213,6 +213,24 @@ class CoachLessonRequestActionResponse(BaseModel):
     message: str
 
 
+class CoachLessonRequestConfirmResponse(BaseModel):
+    id: str
+    status: Literal["confirmed"]
+    appointment_id: Optional[str] = None
+    appointment_ids: list[str] = Field(default_factory=list)
+    message: str
+
+
+class CoachLessonRequestConfirmRequest(BaseModel):
+    slot_id: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    idempotency_key: Optional[str] = Field(default=None, min_length=8, max_length=160)
+
+
+class CoachLessonRequestAlternativesRequest(BaseModel):
+    slot_ids: list[str] = Field(default_factory=list)
+    message: Optional[str] = Field(default=None, max_length=500)
+
+
 class PublicInviteResponse(BaseModel):
     invite_token: str
     instructor_name: str
@@ -258,7 +276,7 @@ class PublicLessonRequestResponse(BaseModel):
 
 class PublicRequestStatusResponse(BaseModel):
     request_token: str
-    status: Literal["pending", "confirmed", "needs_new_times"]
+    status: Literal["pending", "confirmed", "needs_new_times", "expired"]
     message: str
 
 
@@ -328,6 +346,8 @@ class ClientInviteSchedulerSlot(BaseModel):
     next_event: Optional[str] = None
     safety_reason: str
     recurrence_available: bool
+    recurrence: Literal["single", "weekly"] = "single"
+    recurrence_count: int = 1
 
 
 class ClientInviteAvailabilityResponse(BaseModel):
@@ -350,6 +370,7 @@ class ClientInviteCalendarLinks(BaseModel):
 
 class ClientInviteLessonConfirmation(BaseModel):
     appointment_id: str
+    appointment_ids: list[str] = Field(default_factory=list)
     message: str
     confirmed_at_iso: datetime
     calendar_links: ClientInviteCalendarLinks
@@ -359,9 +380,15 @@ class ClientInviteLessonRequestResponse(BaseModel):
     id: str
     invite_token: str
     slot: ClientInviteSchedulerSlot
-    status: Literal["requested", "confirmed", "needs_new_times"]
+    status: Literal["requested", "confirmed", "needs_new_times", "expired"]
     requested_at_iso: datetime
+    alternative_slots: list[ClientInviteSchedulerSlot] = Field(default_factory=list)
     confirmation: Optional[ClientInviteLessonConfirmation] = None
+
+
+class ClientInviteAlternativeSelectionRequest(BaseModel):
+    slot_id: str = Field(min_length=1, max_length=160)
+    idempotency_key: Optional[str] = Field(default=None, min_length=8, max_length=160)
 
 
 class ErrorBody(BaseModel):

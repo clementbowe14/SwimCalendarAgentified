@@ -270,11 +270,11 @@ def test_timezone_migration_converts_legacy_local_rows_and_restores_overlap_cons
                     INSERT INTO lesson_requests
                         (id, request_token, invite_token, instructor_id, client_id, client_name, client_address, lat, lng,
                          requested_date, slot_start, slot_end, duration_mins, travel_time_mins, buffer_mins, distance_miles,
-                         location_type, status)
+                         location_type, status, created_at, updated_at)
                     VALUES
                         ('lr_migration', 'req_migration', 'invite_migration', 'inst_migration', 'client_migration',
                          'Legacy Client', 'Pool', 30.33, -97.72, '2026-08-21', '2026-08-21 11:00:00', '2026-08-21 12:00:00',
-                         60, 0, 10, 0, 'home', 'pending')
+                         60, 0, 10, 0, 'home', 'accepted', '2026-08-19 11:00:00', '2026-08-19 11:00:00')
                     """
                 )
             )
@@ -346,13 +346,23 @@ def test_timezone_migration_converts_legacy_local_rows_and_restores_overlap_cons
                     """
                     SELECT
                         (SELECT slot_start FROM lesson_requests WHERE id = 'lr_migration') AS request_start,
+                        (SELECT status FROM lesson_requests WHERE id = 'lr_migration') AS request_status,
+                        (SELECT recurrence FROM lesson_requests WHERE id = 'lr_migration') AS request_recurrence,
+                        (SELECT recurrence_count FROM lesson_requests WHERE id = 'lr_migration') AS request_recurrence_count,
+                        (SELECT expires_at FROM lesson_requests WHERE id = 'lr_migration') AS request_expires_at,
                         (SELECT slot_start FROM invite_slot_offers WHERE id = 'slot_migration') AS offer_start,
+                        (SELECT recurrence_count FROM invite_slot_offers WHERE id = 'slot_migration') AS offer_recurrence_count,
                         (SELECT COUNT(*) FROM route_estimates) AS route_count
                     """
                 )
             ).one()
             assert slot_rows.request_start == datetime.datetime(2026, 8, 21, 16, 0)
+            assert slot_rows.request_status == "confirmed"
+            assert slot_rows.request_recurrence == "single"
+            assert slot_rows.request_recurrence_count == 1
+            assert slot_rows.request_expires_at == datetime.datetime(2026, 8, 20, 11, 0)
             assert slot_rows.offer_start == datetime.datetime(2026, 8, 21, 18, 0)
+            assert slot_rows.offer_recurrence_count == 1
             assert slot_rows.route_count == 0
 
             overlap_constraint = connection.execute(

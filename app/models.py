@@ -1,4 +1,4 @@
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from sqlalchemy import (
@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -71,7 +72,7 @@ class AppointmentDB(Base):
     cancelled_at = Column(DateTime, nullable=True)
 
     instructor = relationship("InstructorDB", back_populates="appointments")
-    lesson_request = relationship("LessonRequestDB", back_populates="appointment")
+    lesson_request = relationship("LessonRequestDB", back_populates="appointments")
 
 class ClientDB(Base):
     __tablename__ = "clients"
@@ -119,8 +120,16 @@ class LessonRequestDB(Base):
     __table_args__ = (
         CheckConstraint("slot_end > slot_start", name="ck_lesson_requests_end_after_start"),
         CheckConstraint(
-            "status in ('pending', 'accepted', 'declined', 'cancelled')",
+            "status in ('pending', 'confirmed', 'alternatives_sent', 'declined', 'cancelled')",
             name="ck_lesson_requests_status",
+        ),
+        CheckConstraint(
+            "recurrence in ('single', 'weekly')",
+            name="ck_lesson_requests_recurrence",
+        ),
+        CheckConstraint(
+            "((recurrence = 'single' AND recurrence_count = 1) OR (recurrence = 'weekly' AND recurrence_count BETWEEN 1 AND 12))",
+            name="ck_lesson_requests_recurrence_count",
         ),
         CheckConstraint(
             "location_type in ('home', 'facility')",
@@ -151,6 +160,20 @@ class LessonRequestDB(Base):
     distance_miles = Column(Float, nullable=False, default=0.0)
     location_type = Column(String, nullable=False)
     status = Column(String, nullable=False, default="pending")
+    recurrence = Column(String, nullable=False, default="single")
+    recurrence_count = Column(Integer, nullable=False, default=1)
+    original_slot_offer_id = Column(String, ForeignKey("invite_slot_offers.id"), nullable=True)
+    confirmed_slot_offer_id = Column(String, ForeignKey("invite_slot_offers.id"), nullable=True)
+    expires_at = Column(DateTime, nullable=False, default=lambda: datetime.utcnow() + timedelta(hours=24))
+    confirmed_at = Column(DateTime, nullable=True)
+    declined_at = Column(DateTime, nullable=True)
+    alternatives_sent_at = Column(DateTime, nullable=True)
+    validation_failure_code = Column(String, nullable=True)
+    validation_failure_details = Column(JSON, nullable=True)
+    validation_failed_at = Column(DateTime, nullable=True)
+    client_notification_status = Column(String, nullable=True)
+    client_notification_message = Column(Text, nullable=True)
+    client_notified_at = Column(DateTime, nullable=True)
     idempotency_key = Column(String, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -158,7 +181,9 @@ class LessonRequestDB(Base):
     instructor = relationship("InstructorDB", back_populates="lesson_requests")
     client = relationship("ClientDB")
     invite = relationship("InviteTokenDB", back_populates="lesson_requests")
-    appointment = relationship("AppointmentDB", back_populates="lesson_request", uselist=False)
+    appointments = relationship("AppointmentDB", back_populates="lesson_request")
+    original_slot_offer = relationship("InviteSlotOfferDB", foreign_keys=[original_slot_offer_id])
+    confirmed_slot_offer = relationship("InviteSlotOfferDB", foreign_keys=[confirmed_slot_offer_id])
 
 
 class RouteEstimateDB(Base):
@@ -219,7 +244,16 @@ class InviteIntakeDB(Base):
 class InviteSlotOfferDB(Base):
     __tablename__ = "invite_slot_offers"
     __table_args__ = (
+        CheckConstraint(
+            "offer_kind in ('search', 'alternative')",
+            name="ck_invite_slot_offers_offer_kind",
+        ),
+        CheckConstraint(
+            "((recurrence = 'single' AND recurrence_count = 1) OR (recurrence = 'weekly' AND recurrence_count BETWEEN 1 AND 12))",
+            name="ck_invite_slot_offers_recurrence_count",
+        ),
         Index("ix_invite_slot_offers_invite_expires", "invite_token", "expires_at"),
+        Index("ix_invite_slot_offers_request_kind", "lesson_request_id", "offer_kind"),
     )
 
     id = Column(String, primary_key=True)
@@ -239,12 +273,18 @@ class InviteSlotOfferDB(Base):
     buffer_mins = Column(Integer, nullable=False)
     distance_miles = Column(Float, nullable=False)
     recurrence = Column(String, nullable=False, default="single")
+    recurrence_count = Column(Integer, nullable=False, default=1)
     recurrence_available = Column(Boolean, nullable=False, default=True)
+    lesson_request_id = Column(String, ForeignKey("lesson_requests.id"), nullable=True)
+    offer_kind = Column(String, nullable=False, default="search")
+    message = Column(Text, nullable=True)
+    notified_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     invite = relationship("InviteTokenDB")
+    lesson_request = relationship("LessonRequestDB", foreign_keys=[lesson_request_id])
 
 
 class SchedulerSettingsDB(Base):
