@@ -1,6 +1,13 @@
 export type LessonLocationType = "home" | "facility";
 export type BookingRecurrence = "single" | "weekly";
-export type RequestStatus = "draft" | "searching" | "slots_ready" | "requested" | "confirmed" | "needs_new_times";
+export type RequestStatus =
+  | "draft"
+  | "searching"
+  | "slots_ready"
+  | "requested"
+  | "confirmed"
+  | "needs_new_times"
+  | "expired";
 export type CalendarProvider = "google" | "apple" | "ics";
 
 export type DayKey = "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
@@ -53,6 +60,8 @@ export type SchedulerSlot = {
   next_event: string | null;
   safety_reason: string;
   recurrence_available: boolean;
+  recurrence: BookingRecurrence;
+  recurrence_count: number;
 };
 
 export type AvailabilitySearchResponse = {
@@ -72,11 +81,13 @@ export type LessonRequest = {
   slot: SchedulerSlot;
   status: RequestStatus;
   requested_at_iso: string;
+  alternative_slots: SchedulerSlot[];
   confirmation: LessonConfirmation | null;
 };
 
 export type LessonConfirmation = {
   appointment_id: string;
+  appointment_ids: string[];
   message: string;
   confirmed_at_iso: string;
   calendar_links: Record<CalendarProvider, string>;
@@ -98,5 +109,6 @@ export interface ClientInviteApi {
   findAvailableSlots(inviteToken: string, request: ClientAvailabilitySearchRequest): Promise<AvailabilitySearchResponse>;
   requestLessonSlot(inviteToken: string, slotId: string, idempotencyKey?: string): Promise<LessonRequest>;
   getLessonRequestStatus(requestId: string): Promise<LessonRequest>;
+  selectAlternativeSlot(requestId: string, slotId: string, idempotencyKey?: string): Promise<LessonRequest>;
   getCalendarLinks(requestId: string): Promise<LessonConfirmation["calendar_links"]>;
 }

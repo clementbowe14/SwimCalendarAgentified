@@ -225,7 +225,7 @@ def _mark_request_confirmed(request_token: str) -> None:
     session = db.SessionLocal()
     try:
         lesson_request = session.query(LessonRequestDB).filter_by(request_token=request_token).one()
-        lesson_request.status = "accepted"
+        lesson_request.status = "confirmed"
         appointment = AppointmentDB(
             id="app_confirmed_private",
             instructor_id=lesson_request.instructor_id,

@@ -2,7 +2,7 @@ export type Id = string;
 
 export type LessonLocationMode = "client_home" | "instructor_facility";
 
-export type RequestStatus = "pending" | "approved" | "needs_alternatives" | "declined";
+export type RequestStatus = "pending" | "approved" | "needs_alternatives" | "declined" | "expired";
 
 export type RequestRisk = "clear" | "at_risk";
 

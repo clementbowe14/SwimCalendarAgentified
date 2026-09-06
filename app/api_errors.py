@@ -115,6 +115,33 @@ class IdempotencyConflict(ApiException):
         )
 
 
+class LessonRequestExpired(ApiException):
+    def __init__(self):
+        super().__init__(
+            "LESSON_REQUEST_EXPIRED",
+            "The lesson request is no longer actionable.",
+            status_code=409,
+        )
+
+
+class LessonRequestConfirmConflict(ApiException):
+    def __init__(self):
+        super().__init__(
+            "LESSON_REQUEST_CONFIRM_CONFLICT",
+            "The lesson request was already confirmed with a different slot.",
+            status_code=409,
+        )
+
+
+class AlternativeSlotContextMismatch(ApiException):
+    def __init__(self):
+        super().__init__(
+            "ALTERNATIVE_SLOT_CONTEXT_MISMATCH",
+            "One or more alternative slots do not match this lesson request.",
+            status_code=409,
+        )
+
+
 class InvalidSchedulingRequest(ApiException):
     def __init__(
         self,

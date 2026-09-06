@@ -72,6 +72,8 @@ export class MockClientInviteApi implements ClientInviteApi {
         ? "Facility selected, so the scheduler evaluates this as the instructor main location with no client-side travel."
         : slot.safety_reason,
       recurrence_available: request.recurrence === "weekly" ? slot.recurrence_available : true,
+      recurrence: request.recurrence,
+      recurrence_count: request.recurrence === "weekly" ? 4 : 1,
     }));
 
     return {
@@ -94,6 +96,13 @@ export class MockClientInviteApi implements ClientInviteApi {
     await wait(160);
     const baseRequest = this.lessonRequest?.id === requestId ? this.lessonRequest : createRequestedLesson(schedulerSlots[0]);
     this.lessonRequest = createConfirmedLesson(baseRequest.slot);
+    return this.lessonRequest;
+  }
+
+  async selectAlternativeSlot(_requestId: string, slotId: string, _idempotencyKey?: string): Promise<LessonRequest> {
+    await wait(160);
+    const slot = schedulerSlots.find((item) => item.id === slotId) ?? schedulerSlots[0];
+    this.lessonRequest = createRequestedLesson(slot);
     return this.lessonRequest;
   }
 
@@ -147,6 +156,16 @@ export class FetchClientInviteApi implements ClientInviteApi {
 
   getLessonRequestStatus(requestToken: string): Promise<LessonRequest> {
     return this.fetchJson(`/lesson-requests/${encodeURIComponent(requestToken)}`);
+  }
+
+  selectAlternativeSlot(requestToken: string, slotId: string, idempotencyKey?: string): Promise<LessonRequest> {
+    return this.fetchJson(`/lesson-requests/${encodeURIComponent(requestToken)}/select-alternative`, {
+      method: "POST",
+      body: JSON.stringify({
+        slot_id: slotId,
+        ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+      }),
+    });
   }
 
   getCalendarLinks(requestToken: string): Promise<LessonConfirmation["calendar_links"]> {

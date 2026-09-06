@@ -57,6 +57,8 @@ export const schedulerSlots: SchedulerSlot[] = [
     next_event: "Open until 2:00 PM",
     safety_reason: "Travel clears at 11:57, buffer clears at 12:07, then rounds up to 12:30.",
     recurrence_available: true,
+    recurrence: "single",
+    recurrence_count: 1,
   },
   {
     id: "slot_2026_08_27_1600",
@@ -71,6 +73,8 @@ export const schedulerSlots: SchedulerSlot[] = [
     next_event: "Next lesson starts at 5:30 PM",
     safety_reason: "Same-facility booking removes travel and keeps the 10 minute reset buffer.",
     recurrence_available: true,
+    recurrence: "single",
+    recurrence_count: 1,
   },
   {
     id: "slot_2026_08_29_1515",
@@ -85,6 +89,8 @@ export const schedulerSlots: SchedulerSlot[] = [
     next_event: null,
     safety_reason: "Drive plus buffer clears at 3:03, then rounds up to 3:15.",
     recurrence_available: false,
+    recurrence: "single",
+    recurrence_count: 1,
   },
 ];
 
@@ -108,6 +114,7 @@ export const createRequestedLesson = (slot: SchedulerSlot): LessonRequest => ({
   slot,
   status: "requested",
   requested_at_iso: "2026-08-27T13:30:00-05:00",
+  alternative_slots: [],
   confirmation: null,
 });
 
@@ -116,6 +123,7 @@ export const createConfirmedLesson = (slot: SchedulerSlot): LessonRequest => ({
   status: "confirmed",
   confirmation: {
     appointment_id: "app_sofia_1230",
+    appointment_ids: ["app_sofia_1230"],
     confirmed_at_iso: "2026-08-27T13:35:00-05:00",
     message: `Riley confirmed ${slot.display}.`,
     calendar_links: {

@@ -9,13 +9,17 @@ from app.api_schemas import (
     CoachBookLessonRequest,
     CoachCommandCenterSnapshot,
     CoachContext as CoachContextResponse,
+    CoachLessonRequestAlternativesRequest,
     CoachLessonRequestActionResponse,
+    CoachLessonRequestConfirmResponse,
+    CoachLessonRequestConfirmRequest,
     CoachScheduleResponse,
     CoachSchedulerRules,
 )
 from app.api_services import (
     approve_coach_lesson_request,
     book_coach_lesson,
+    confirm_coach_lesson_request,
     decline_coach_lesson_request,
     get_coach_command_center_snapshot,
     get_coach_schedule,
@@ -94,12 +98,22 @@ def approve_lesson_request(
     return approve_coach_lesson_request(coach.instructor_id, request_token)
 
 
+@router.post("/lesson-requests/{request_token}/confirm", response_model=CoachLessonRequestConfirmResponse)
+def confirm_lesson_request(
+    request_token: str,
+    request: CoachLessonRequestConfirmRequest = CoachLessonRequestConfirmRequest(),
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachLessonRequestConfirmResponse:
+    return confirm_coach_lesson_request(coach.instructor_id, request_token, request)
+
+
 @router.post("/lesson-requests/{request_token}/alternatives", response_model=CoachLessonRequestActionResponse)
 def request_lesson_alternatives(
     request_token: str,
+    request: CoachLessonRequestAlternativesRequest = CoachLessonRequestAlternativesRequest(),
     coach: CoachContext = Depends(get_current_coach),
 ) -> CoachLessonRequestActionResponse:
-    return request_alternatives_for_coach_lesson_request(coach.instructor_id, request_token)
+    return request_alternatives_for_coach_lesson_request(coach.instructor_id, request_token, request)
 
 
 @router.post("/lesson-requests/{request_token}/decline", response_model=CoachLessonRequestActionResponse)

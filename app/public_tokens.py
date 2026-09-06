@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 from uuid import uuid4
 
@@ -38,6 +38,10 @@ class LessonRequestRecord:
     distance_miles: float
     location_type: str
     status: str
+    recurrence: str
+    recurrence_count: int
+    original_slot_offer_id: Optional[str]
+    expires_at: datetime
     created_at: datetime
 
 
@@ -89,11 +93,21 @@ def create_lesson_request(
     lat: float,
     lng: float,
     idempotency_key: Optional[str] = None,
+    recurrence: str = "single",
+    recurrence_count: int = 1,
+    original_slot_offer_id: Optional[str] = None,
+    expires_at: Optional[datetime] = None,
 ) -> LessonRequestRecord:
     selected_slot_start = timezones.to_utc_storage(selected_slot_start)
     selected_slot_end = timezones.to_utc_storage(selected_slot_end)
+    if recurrence == "single":
+        recurrence_count = 1
+    elif recurrence_count < 1:
+        recurrence_count = 4
     session = db.SessionLocal()
     try:
+        invite = session.query(InviteTokenDB).filter_by(token=invite_token).first()
+        capped_expires_at = _request_expires_at(invite, expires_at)
         if idempotency_key:
             existing = session.query(LessonRequestDB).filter_by(idempotency_key=idempotency_key).first()
             if existing:
@@ -109,6 +123,8 @@ def create_lesson_request(
                     or existing.buffer_mins != buffer_mins
                     or existing.distance_miles != distance_miles
                     or existing.location_type != location_type
+                    or existing.recurrence != recurrence
+                    or existing.recurrence_count != recurrence_count
                 ):
                     raise db.IdempotencyKeyConflictError(
                         "Idempotency key was already used for a different request."
@@ -134,6 +150,10 @@ def create_lesson_request(
             lng=lng,
             status="pending",
             idempotency_key=idempotency_key,
+            recurrence=recurrence,
+            recurrence_count=recurrence_count,
+            original_slot_offer_id=original_slot_offer_id,
+            expires_at=capped_expires_at,
         )
         session.add(request)
         session.commit()
@@ -199,6 +219,10 @@ def _lesson_request_record(request: LessonRequestDB) -> LessonRequestRecord:
         distance_miles=request.distance_miles,
         location_type=request.location_type,
         status=request.status,
+        recurrence=request.recurrence,
+        recurrence_count=request.recurrence_count,
+        original_slot_offer_id=request.original_slot_offer_id,
+        expires_at=request.expires_at,
         created_at=request.created_at,
     )
 
@@ -206,3 +230,10 @@ def _lesson_request_record(request: LessonRequestDB) -> LessonRequestRecord:
 def _parse_durations(raw: str) -> tuple[int, ...]:
     durations = tuple(int(value.strip()) for value in raw.split(",") if value.strip())
     return durations or (60,)
+
+
+def _request_expires_at(invite: Optional[InviteTokenDB], requested: Optional[datetime]) -> datetime:
+    expires_at = requested or (datetime.utcnow() + timedelta(hours=24))
+    if invite is not None and invite.expires_at < expires_at:
+        return invite.expires_at
+    return expires_at

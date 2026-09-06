@@ -157,6 +157,34 @@
         "title": "BookLessonResponse",
         "type": "object"
       },
+      "ClientInviteAlternativeSelectionRequest": {
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 8,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "slot_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Slot Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slot_id"
+        ],
+        "title": "ClientInviteAlternativeSelectionRequest",
+        "type": "object"
+      },
       "ClientInviteAvailabilityRequest": {
         "properties": {
           "client_id": {
@@ -426,6 +454,13 @@
             "title": "Appointment Id",
             "type": "string"
           },
+          "appointment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Appointment Ids",
+            "type": "array"
+          },
           "calendar_links": {
             "$ref": "#/components/schemas/ClientInviteCalendarLinks"
           },
@@ -478,6 +513,13 @@
       },
       "ClientInviteLessonRequestResponse": {
         "properties": {
+          "alternative_slots": {
+            "items": {
+              "$ref": "#/components/schemas/ClientInviteSchedulerSlot"
+            },
+            "title": "Alternative Slots",
+            "type": "array"
+          },
           "confirmation": {
             "anyOf": [
               {
@@ -508,7 +550,8 @@
             "enum": [
               "requested",
               "confirmed",
-              "needs_new_times"
+              "needs_new_times",
+              "expired"
             ],
             "title": "Status",
             "type": "string"
@@ -608,9 +651,23 @@
             "title": "Previous Event",
             "type": "string"
           },
+          "recurrence": {
+            "default": "single",
+            "enum": [
+              "single",
+              "weekly"
+            ],
+            "title": "Recurrence",
+            "type": "string"
+          },
           "recurrence_available": {
             "title": "Recurrence Available",
             "type": "boolean"
+          },
+          "recurrence_count": {
+            "default": 1,
+            "title": "Recurrence Count",
+            "type": "integer"
           },
           "safety_reason": {
             "title": "Safety Reason",
@@ -1060,6 +1117,105 @@
         "title": "CoachLessonRequestActionResponse",
         "type": "object"
       },
+      "CoachLessonRequestAlternativesRequest": {
+        "properties": {
+          "message": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "slot_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Slot Ids",
+            "type": "array"
+          }
+        },
+        "title": "CoachLessonRequestAlternativesRequest",
+        "type": "object"
+      },
+      "CoachLessonRequestConfirmRequest": {
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 8,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "slot_id": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Id"
+          }
+        },
+        "title": "CoachLessonRequestConfirmRequest",
+        "type": "object"
+      },
+      "CoachLessonRequestConfirmResponse": {
+        "properties": {
+          "appointment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Appointment Id"
+          },
+          "appointment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Appointment Ids",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "status": {
+            "const": "confirmed",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "message"
+        ],
+        "title": "CoachLessonRequestConfirmResponse",
+        "type": "object"
+      },
       "CoachLessonRequestResponse": {
         "properties": {
           "alternative_slots": {
@@ -1110,7 +1266,8 @@
               "pending",
               "approved",
               "needs_alternatives",
-              "declined"
+              "declined",
+              "expired"
             ],
             "title": "Status",
             "type": "string"
@@ -1793,7 +1950,8 @@
             "enum": [
               "pending",
               "confirmed",
-              "needs_new_times"
+              "needs_new_times",
+              "expired"
             ],
             "title": "Status",
             "type": "string"
@@ -2206,6 +2364,18 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoachLessonRequestAlternativesRequest",
+                "default": {
+                  "slot_ids": []
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {
@@ -2281,6 +2451,63 @@
           }
         ],
         "summary": "Approve Lesson Request",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/lesson-requests/{request_token}/confirm": {
+      "post": {
+        "operationId": "confirm_lesson_request_api_coach_lesson_requests__request_token__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_token",
+            "required": true,
+            "schema": {
+              "title": "Request Token",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoachLessonRequestConfirmRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachLessonRequestConfirmResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Confirm Lesson Request",
         "tags": [
           "coach"
         ]
@@ -2942,6 +3169,58 @@
           }
         },
         "summary": "Read Client Calendar Links",
+        "tags": [
+          "public"
+        ]
+      }
+    },
+    "/api/public/lesson-requests/{request_token}/select-alternative": {
+      "post": {
+        "operationId": "select_client_lesson_alternative_api_public_lesson_requests__request_token__select_alternative_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_token",
+            "required": true,
+            "schema": {
+              "title": "Request Token",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientInviteAlternativeSelectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientInviteLessonRequestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Select Client Lesson Alternative",
         "tags": [
           "public"
         ]

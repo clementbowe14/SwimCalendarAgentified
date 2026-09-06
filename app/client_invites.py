@@ -11,6 +11,7 @@ from app.api_errors import (
     GeocodingFailed as GeocodingFailedApiError,
     IdempotencyConflict,
     InvalidSchedulingRequest,
+    LessonRequestExpired,
     LessonRequestNotFound,
     ResourceNotFound,
     RoutingConfigurationError,
@@ -26,6 +27,7 @@ from app.api_schemas import (
     ClientInviteEnvelopeResponse,
     ClientInviteIntake,
     ClientInviteLessonConfirmation,
+    ClientInviteAlternativeSelectionRequest,
     ClientInviteLessonRequestCreate,
     ClientInviteLessonRequestResponse,
     ClientInviteLocation,
@@ -114,6 +116,8 @@ def request_client_invite_lesson_slot(
 ) -> ClientInviteLessonRequestResponse:
     invite = resolve_invite(invite_token)
     offer = _load_active_offer(invite.token, request.slot_id)
+    if offer.recurrence == "weekly" and not offer.recurrence_available:
+        raise InvalidSchedulingRequest("The selected lesson time is not available for weekly booking.")
     idempotency_key = request.idempotency_key or f"public-slot:{invite.token}:{request.slot_id}"
     try:
         record = create_lesson_request(
@@ -132,6 +136,10 @@ def request_client_invite_lesson_slot(
             lat=offer.lat,
             lng=offer.lng,
             idempotency_key=idempotency_key,
+            recurrence=offer.recurrence,
+            recurrence_count=offer.recurrence_count,
+            original_slot_offer_id=offer.id,
+            expires_at=min(datetime.datetime.utcnow() + datetime.timedelta(hours=24), invite.expires_at),
         )
     except db.IdempotencyKeyConflictError as exc:
         raise IdempotencyConflict() from exc
@@ -139,6 +147,52 @@ def request_client_invite_lesson_slot(
 
 
 def get_client_lesson_request_status(request_token: str) -> ClientInviteLessonRequestResponse:
+    return _lesson_request_response(request_token)
+
+
+def select_client_lesson_request_alternative(
+    request_token: str,
+    request: ClientInviteAlternativeSelectionRequest,
+) -> ClientInviteLessonRequestResponse:
+    session = db.SessionLocal()
+    try:
+        lesson_request = session.query(LessonRequestDB).filter_by(request_token=request_token).first()
+        if lesson_request is None:
+            raise LessonRequestNotFound()
+        if _is_expired(lesson_request):
+            raise LessonRequestExpired()
+        offer = (
+            session.query(InviteSlotOfferDB)
+            .filter(
+                InviteSlotOfferDB.id == request.slot_id,
+                InviteSlotOfferDB.lesson_request_id == lesson_request.id,
+                InviteSlotOfferDB.offer_kind == "alternative",
+                InviteSlotOfferDB.expires_at > datetime.datetime.utcnow(),
+            )
+            .first()
+        )
+        if offer is None:
+            raise SlotOfferNotFound()
+        lesson_request.slot_start = offer.slot_start
+        lesson_request.slot_end = offer.slot_end
+        lesson_request.requested_date = offer.requested_date
+        lesson_request.travel_time_mins = offer.travel_time_mins
+        lesson_request.buffer_mins = offer.buffer_mins
+        lesson_request.distance_miles = offer.distance_miles
+        lesson_request.original_slot_offer_id = offer.id
+        lesson_request.confirmed_slot_offer_id = None
+        lesson_request.status = "pending"
+        lesson_request.validation_failure_code = None
+        lesson_request.validation_failure_details = None
+        lesson_request.validation_failed_at = None
+        lesson_request.expires_at = min(
+            datetime.datetime.utcnow() + datetime.timedelta(hours=24),
+            lesson_request.invite.expires_at,
+        )
+        lesson_request.updated_at = datetime.datetime.utcnow()
+        session.commit()
+    finally:
+        session.close()
     return _lesson_request_response(request_token)
 
 
@@ -150,10 +204,10 @@ def get_client_calendar_links(request_token: str) -> ClientInviteCalendarLinks:
 
 
 def get_client_calendar_ics(request_token: str) -> str:
-    request, appointment = _load_request_and_appointment(request_token)
-    if appointment is None:
+    request, appointments = _load_request_and_appointments(request_token)
+    if not appointments:
         raise CalendarLinksUnavailable()
-    return _ics_content(request, appointment)
+    return _ics_content(request, appointments)
 
 
 def _find_slots(
@@ -293,6 +347,8 @@ def _store_and_shape_slot(
         next_event="Next commitment",
         safety_reason="Travel and buffer time fit before the next protected schedule item.",
         recurrence_available=request.recurrence == "single" or _weekly_candidate(local_start),
+        recurrence=request.recurrence,
+        recurrence_count=4 if request.recurrence == "weekly" else 1,
     )
     _save_slot_offer(invite, request, location, slot, shaped, is_facility)
     return shaped
@@ -347,7 +403,12 @@ def _upsert_slot_offer(
     existing.buffer_mins = slot.buffer_mins
     existing.distance_miles = slot.distance_miles
     existing.recurrence = request.recurrence
+    existing.recurrence_count = 4 if request.recurrence == "weekly" else 1
     existing.recurrence_available = shaped.recurrence_available
+    existing.lesson_request_id = None
+    existing.offer_kind = "search"
+    existing.message = None
+    existing.notified_at = None
     existing.expires_at = datetime.datetime.utcnow() + datetime.timedelta(minutes=SLOT_OFFER_TTL_MINUTES)
     existing.updated_at = datetime.datetime.utcnow()
 
@@ -360,6 +421,8 @@ def _load_active_offer(invite_token: str, slot_id: str) -> InviteSlotOfferDB:
             .filter(
                 InviteSlotOfferDB.id == slot_id,
                 InviteSlotOfferDB.invite_token == invite_token,
+                InviteSlotOfferDB.offer_kind == "search",
+                InviteSlotOfferDB.lesson_request_id.is_(None),
                 InviteSlotOfferDB.expires_at > datetime.datetime.utcnow(),
             )
             .first()
@@ -373,12 +436,12 @@ def _load_active_offer(invite_token: str, slot_id: str) -> InviteSlotOfferDB:
 
 
 def _lesson_request_response(request_token: str) -> ClientInviteLessonRequestResponse:
-    request, appointment = _load_request_and_appointment(request_token)
+    request, appointments = _load_request_and_appointments(request_token)
     timezone_name = _instructor_timezone(request.instructor_id)
     local_start = timezones.storage_to_local(request.slot_start, timezone_name)
     local_end = timezones.storage_to_local(request.slot_end, timezone_name)
     slot = ClientInviteSchedulerSlot(
-        id=_slot_id_from_request(request),
+        id=request.original_slot_offer_id or _slot_id_from_request(request),
         start_iso=local_start,
         end_iso=local_end,
         display=_display_slot(local_start),
@@ -390,44 +453,59 @@ def _lesson_request_response(request_token: str) -> ClientInviteLessonRequestRes
         next_event="Next commitment",
         safety_reason="This requested time was created from a server-issued slot offer.",
         recurrence_available=True,
+        recurrence=request.recurrence,
+        recurrence_count=request.recurrence_count,
     )
     status = _public_request_status(request.status)
-    confirmation = _confirmation_response(request, appointment) if appointment is not None else None
+    if _is_expired(request):
+        status = "expired"
+    confirmation = _confirmation_response(request, appointments) if appointments else None
     return ClientInviteLessonRequestResponse(
         id=request.request_token,
         invite_token=request.invite_token,
         slot=slot,
         status=status,
         requested_at_iso=request.created_at,
+        alternative_slots=_alternative_slot_responses(request),
         confirmation=confirmation,
     )
 
 
-def _load_request_and_appointment(request_token: str) -> tuple[LessonRequestDB, Optional[AppointmentDB]]:
+def _load_request_and_appointments(request_token: str) -> tuple[LessonRequestDB, list[AppointmentDB]]:
     session = db.SessionLocal()
     try:
         request = session.query(LessonRequestDB).filter_by(request_token=request_token).first()
         if request is None:
             raise LessonRequestNotFound()
-        appointment = session.query(AppointmentDB).filter_by(request_id=request.id).first()
+        appointments = (
+            session.query(AppointmentDB)
+            .filter_by(request_id=request.id)
+            .order_by(AppointmentDB.start_time.asc())
+            .all()
+        )
         session.expunge(request)
-        if appointment is not None:
+        for appointment in appointments:
             session.expunge(appointment)
-        return request, appointment
+        return request, appointments
     finally:
         session.close()
 
 
 def _confirmation_response(
     request: LessonRequestDB,
-    appointment: AppointmentDB,
+    appointments: list[AppointmentDB],
 ) -> ClientInviteLessonConfirmation:
-    links = _calendar_links(request, appointment)
-    local_start = timezones.storage_to_local(appointment.start_time, _instructor_timezone(request.instructor_id))
+    first = appointments[0]
+    links = _calendar_links(request, first)
+    local_start = timezones.storage_to_local(first.start_time, _instructor_timezone(request.instructor_id))
     return ClientInviteLessonConfirmation(
         appointment_id=request.request_token,
+        appointment_ids=[
+            request.request_token if len(appointments) == 1 else f"{request.request_token}-{index + 1}"
+            for index, _ in enumerate(appointments)
+        ],
         message=f"Your swim lesson is confirmed for {_display_slot(local_start)}.",
-        confirmed_at_iso=appointment.created_at,
+        confirmed_at_iso=first.created_at,
         calendar_links=links,
     )
 
@@ -445,23 +523,26 @@ def _calendar_links(request: LessonRequestDB, appointment: AppointmentDB) -> Cli
     return ClientInviteCalendarLinks(google=google, apple=ics, ics=ics)
 
 
-def _ics_content(request: LessonRequestDB, appointment: AppointmentDB) -> str:
-    return "\r\n".join(
-        [
-            "BEGIN:VCALENDAR",
-            "VERSION:2.0",
-            "PRODID:-//Swim Command//Client Invite//EN",
-            "BEGIN:VEVENT",
-            f"UID:{request.request_token}@swim-command.local",
-            f"DTSTART:{_calendar_timestamp(appointment.start_time)}",
-            f"DTEND:{_calendar_timestamp(appointment.end_time)}",
-            "SUMMARY:Swim lesson",
-            f"LOCATION:{appointment.location_address}",
-            "END:VEVENT",
-            "END:VCALENDAR",
-            "",
-        ]
-    )
+def _ics_content(request: LessonRequestDB, appointments: list[AppointmentDB]) -> str:
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Swim Command//Client Invite//EN",
+    ]
+    for index, appointment in enumerate(appointments):
+        lines.extend(
+            [
+                "BEGIN:VEVENT",
+                f"UID:{request.request_token}-{index + 1}@swim-command.local",
+                f"DTSTART:{_calendar_timestamp(appointment.start_time)}",
+                f"DTEND:{_calendar_timestamp(appointment.end_time)}",
+                "SUMMARY:Swim lesson",
+                f"LOCATION:{appointment.location_address}",
+                "END:VEVENT",
+            ]
+        )
+    lines.extend(["END:VCALENDAR", ""])
+    return "\r\n".join(lines)
 
 
 def _slot_matches_windows(slot: TimeSlotDTO, windows) -> bool:
@@ -505,6 +586,7 @@ def _slot_id(invite_token: str, request: ClientInviteAvailabilityRequest, slot_s
             timezones.canonical_instant_text(slot_start),
             str(request.duration_mins),
             request.recurrence,
+            str(4 if request.recurrence == "weekly" else 1),
         ]
     )
     return f"slot_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]}"
@@ -519,7 +601,8 @@ def _slot_id_from_request(request: LessonRequestDB) -> str:
             request.requested_date.isoformat(),
             timezones.canonical_instant_text(request.slot_start),
             str(request.duration_mins),
-            "single",
+            request.recurrence,
+            str(request.recurrence_count),
         ]
     )
     return f"slot_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]}"
@@ -552,8 +635,50 @@ def _instructor_local(value: datetime.datetime, instructor_id: str) -> datetime.
 
 
 def _public_request_status(status: str) -> str:
-    if status == "accepted":
+    if status in {"accepted", "confirmed"}:
         return "confirmed"
-    if status in {"declined", "cancelled"}:
+    if status in {"alternatives_sent", "declined", "cancelled"}:
         return "needs_new_times"
     return "requested"
+
+
+def _alternative_slot_responses(request: LessonRequestDB) -> list[ClientInviteSchedulerSlot]:
+    if request.status != "alternatives_sent":
+        return []
+    session = db.SessionLocal()
+    try:
+        offers = (
+            session.query(InviteSlotOfferDB)
+            .filter_by(lesson_request_id=request.id, offer_kind="alternative")
+            .order_by(InviteSlotOfferDB.slot_start.asc())
+            .all()
+        )
+        timezone_name = _instructor_timezone(request.instructor_id)
+        return [_offer_slot_response(offer, timezone_name) for offer in offers]
+    finally:
+        session.close()
+
+
+def _offer_slot_response(offer: InviteSlotOfferDB, timezone_name: str) -> ClientInviteSchedulerSlot:
+    local_start = timezones.storage_to_local(offer.slot_start, timezone_name)
+    local_end = timezones.storage_to_local(offer.slot_end, timezone_name)
+    return ClientInviteSchedulerSlot(
+        id=offer.id,
+        start_iso=local_start,
+        end_iso=local_end,
+        display=_display_slot(local_start),
+        location_address=offer.location_address,
+        travel_time_mins=offer.travel_time_mins,
+        buffer_mins=offer.buffer_mins,
+        distance_miles=offer.distance_miles,
+        previous_event="",
+        next_event=None,
+        safety_reason="This alternative time is available for your lesson request.",
+        recurrence_available=offer.recurrence_available,
+        recurrence=offer.recurrence,
+        recurrence_count=offer.recurrence_count,
+    )
+
+
+def _is_expired(request: LessonRequestDB) -> bool:
+    return request.status not in {"confirmed"} and request.expires_at <= datetime.datetime.utcnow()

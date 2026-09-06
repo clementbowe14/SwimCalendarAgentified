@@ -7,6 +7,7 @@ from app.api_schemas import (
     ClientInviteCalendarLinks,
     ClientInviteEnvelopeResponse,
     ClientInviteIntake,
+    ClientInviteAlternativeSelectionRequest,
     ClientInviteLessonRequestCreate,
     ClientInviteLessonRequestResponse,
     PublicAvailabilitySearchRequest,
@@ -29,6 +30,7 @@ from app.client_invites import (
     get_client_lesson_request_status,
     request_client_invite_lesson_slot,
     search_client_invite_slots,
+    select_client_lesson_request_alternative,
     submit_client_invite_intake,
 )
 from app.public_tokens import resolve_invite
@@ -92,6 +94,14 @@ def create_client_invite_lesson_request(
 @router.get("/lesson-requests/{request_token}", response_model=ClientInviteLessonRequestResponse)
 def read_client_lesson_request_status(request_token: str) -> ClientInviteLessonRequestResponse:
     return get_client_lesson_request_status(request_token)
+
+
+@router.post("/lesson-requests/{request_token}/select-alternative", response_model=ClientInviteLessonRequestResponse)
+def select_client_lesson_alternative(
+    request_token: str,
+    request: ClientInviteAlternativeSelectionRequest,
+) -> ClientInviteLessonRequestResponse:
+    return select_client_lesson_request_alternative(request_token, request)
 
 
 @router.get("/lesson-requests/{request_token}/calendar-links", response_model=ClientInviteCalendarLinks)

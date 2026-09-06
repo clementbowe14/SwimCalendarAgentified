@@ -17,6 +17,7 @@ from app.models import (
     LessonRequestDB,
     LocationInfo,
     SchedulerSettingsDB,
+    InviteSlotOfferDB,
 )
 
 DATABASE_URL = os.getenv(
@@ -223,22 +224,25 @@ def seed_data():
                 requested_date=datetime.date(2026, 8, 20),
                 slot_start=timezones.to_utc_storage(
                     timezones.validate_local_datetime(
-                        datetime.datetime(2026, 8, 20, 16, 0),
+                        datetime.datetime(2026, 8, 20, 16, 15),
                         instructor.timezone,
                     )
                 ),
                 slot_end=timezones.to_utc_storage(
                     timezones.validate_local_datetime(
-                        datetime.datetime(2026, 8, 20, 16, 45),
+                        datetime.datetime(2026, 8, 20, 17, 0),
                         instructor.timezone,
                     )
                 ),
                 duration_mins=45,
-                travel_time_mins=12,
-                buffer_mins=10,
+                travel_time_mins=24,
+                buffer_mins=20,
                 distance_miles=2.1,
                 location_type="home",
                 status="pending",
+                recurrence="single",
+                recurrence_count=1,
+                expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=1),
                 created_at=datetime.datetime(2026, 8, 19, 16, 30),
                 updated_at=datetime.datetime(2026, 8, 19, 16, 30),
             )
@@ -316,11 +320,12 @@ def get_clients_for_instructor(instructor_id: str) -> List[dict]:
 
 def get_pending_lesson_requests_for_instructor(instructor_id: str) -> List[dict]:
     session = SessionLocal()
+    now = datetime.datetime.utcnow()
     requests = (
         session.query(LessonRequestDB)
         .filter(
             LessonRequestDB.instructor_id == instructor_id,
-            LessonRequestDB.status == "pending",
+            LessonRequestDB.status.in_(("pending", "confirmed", "alternatives_sent", "declined")),
         )
         .order_by(LessonRequestDB.created_at.asc())
         .all()
@@ -347,7 +352,30 @@ def get_pending_lesson_requests_for_instructor(instructor_id: str) -> List[dict]
             "distance_miles": request.distance_miles,
             "location_type": request.location_type,
             "status": request.status,
+            "recurrence": request.recurrence,
+            "recurrence_count": request.recurrence_count,
+            "expires_at": request.expires_at,
+            "computed_expired": request.status not in {"confirmed", "declined", "cancelled"} and request.expires_at <= now,
+            "validation_failure_code": request.validation_failure_code,
             "created_at": request.created_at,
+            "alternative_slots": [
+                {
+                    "id": offer.id,
+                    "slot_start": offer.slot_start,
+                    "slot_end": offer.slot_end,
+                    "travel_time_mins": offer.travel_time_mins,
+                    "buffer_mins": offer.buffer_mins,
+                    "distance_miles": offer.distance_miles,
+                    "client_address": offer.client_address,
+                    "lat": offer.lat,
+                    "lng": offer.lng,
+                    "location_type": offer.location_type,
+                }
+                for offer in session.query(InviteSlotOfferDB)
+                .filter_by(lesson_request_id=request.id, offer_kind="alternative")
+                .order_by(InviteSlotOfferDB.slot_start.asc())
+                .all()
+            ],
         }
         for request in requests
     ]
