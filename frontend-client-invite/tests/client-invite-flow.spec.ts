@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 test.describe("client invite self-booking flow", () => {
   test("remains public-token scoped without coach authentication UI", async ({ page }) => {
@@ -14,10 +14,12 @@ test.describe("client invite self-booking flow", () => {
 
     await expect(page.getByRole("heading", { name: "Tell us when you can swim" })).toBeVisible();
     await expect(page.getByLabel("Client name")).toHaveValue("Sofia Martinez");
+    await expectInviteProgress(page, "Step 1 of 5: Info", 20);
 
     await page.getByRole("button", { name: "Continue to availability" }).click();
     await expect(page.getByRole("heading", { name: "Choose your open windows" })).toBeVisible();
     await expect(page.getByRole("button", { name: "45 min" })).toHaveClass(/selected/);
+    await expectInviteProgress(page, "Step 2 of 5: Times", 40);
   });
 
   test("finds backend-shaped slot results from availability preferences", async ({ page }) => {
@@ -29,6 +31,11 @@ test.describe("client invite self-booking flow", () => {
     await expect(page.getByRole("heading", { name: "Pick a lesson time" })).toBeVisible();
     await expect(page.getByText("Travel 12 min - Buffer 10 min - 2.1 mi")).toBeVisible();
     await expect(page.getByText("No safe options Tue after 5 PM")).toBeVisible();
+    await expectInviteProgress(page, "Step 3 of 5: Slots", 60);
+
+    await page.getByRole("button", { name: "Edit preferences" }).click();
+    await expect(page.getByRole("heading", { name: "Choose your open windows" })).toBeVisible();
+    await expectInviteProgress(page, "Step 2 of 5: Times", 40);
   });
 
   test("requests a lesson and shows confirmation status", async ({ page }) => {
@@ -39,9 +46,11 @@ test.describe("client invite self-booking flow", () => {
 
     await expect(page.getByRole("heading", { name: "Lesson request sent" })).toBeVisible();
     await expect(page.getByText("Text and email request sent")).toBeVisible();
+    await expectInviteProgress(page, "Step 4 of 5: Status", 80);
 
     await page.getByRole("button", { name: "Check confirmation" }).click();
     await expect(page.getByRole("heading", { name: "Lesson confirmed" })).toBeVisible();
+    await expectInviteProgress(page, "Step 4 of 5: Status", 80);
   });
 
   test("shows calendar handoff after confirmed request", async ({ page }) => {
@@ -53,7 +62,17 @@ test.describe("client invite self-booking flow", () => {
     await page.getByRole("button", { name: "Add to calendar" }).click();
 
     await expect(page.getByRole("heading", { name: "Ready for your calendar" })).toBeVisible();
+    await expectInviteProgress(page, "Step 5 of 5: Calendar", 100);
     await page.getByRole("button", { name: "Google Calendar" }).click();
     await expect(page.getByText("Added to Google Calendar.")).toBeVisible();
   });
 });
+
+async function expectInviteProgress(page: Page, stepText: string, percentComplete: number) {
+  await expect(page.getByText(stepText)).toBeVisible();
+  await expect(page.getByText(`${percentComplete}% complete`)).toBeVisible();
+
+  const progress = page.getByRole("progressbar", { name: "Invite completion" });
+  await expect(progress).toHaveAttribute("aria-valuenow", String(percentComplete));
+  await expect(progress).toHaveAttribute("aria-valuetext", `${percentComplete}% complete`);
+}
