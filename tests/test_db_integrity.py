@@ -12,6 +12,8 @@ from sqlalchemy.exc import IntegrityError
 from app import db, tools
 from app.models import AppointmentDB, LessonRequestDB
 from app.public_tokens import DEMO_INVITE_TOKEN, create_lesson_request
+from app.routing import RouteEstimate
+from app.routing_cache import DatabaseRouteEstimateCache, RouteCacheKey
 from tests.db_test_utils import TEST_DATABASE_URL, reset_postgres_database
 
 
@@ -138,6 +140,58 @@ def test_local_day_query_includes_cross_midnight_overlaps(isolated_db):
     for appointment in appointments:
         assert appointment["start_time"].tzinfo is not None
         assert appointment["end_time"].tzinfo is not None
+
+
+def test_route_cache_conflicting_expired_row_is_refreshed(isolated_db):
+    cache = DatabaseRouteEstimateCache()
+    key = RouteCacheKey(
+        provider="mapbox",
+        origin_key="30.26720,-97.74310",
+        destination_key="30.33000,-97.72000",
+        departure_bucket_start=datetime.datetime(2026, 8, 20, 14, 0),
+        traffic_mode="live",
+    )
+    origin = (30.2672, -97.7431)
+    destination = (30.33, -97.72)
+
+    cache.set(
+        key,
+        RouteEstimate(distance_miles=1.0, travel_time_mins=5, duration_seconds=300, provider="mapbox"),
+        origin,
+        destination,
+        expires_at=datetime.datetime(2026, 8, 20, 10, 0),
+    )
+    refreshed = cache.set(
+        key,
+        RouteEstimate(distance_miles=2.0, travel_time_mins=12, duration_seconds=720, provider="mapbox"),
+        origin,
+        destination,
+        expires_at=datetime.datetime.utcnow() + datetime.timedelta(hours=1),
+    )
+
+    session = db.SessionLocal()
+    try:
+        rows = session.execute(
+            text(
+                """
+                SELECT distance_miles, travel_time_mins
+                FROM route_estimates
+                WHERE provider = :provider
+                  AND origin_key = :origin_key
+                  AND destination_key = :destination_key
+                  AND departure_bucket_start = :departure_bucket_start
+                  AND traffic_mode = :traffic_mode
+                """
+            ),
+            key.__dict__,
+        ).all()
+    finally:
+        session.close()
+
+    assert refreshed.travel_time_mins == 12
+    assert len(rows) == 1
+    assert rows[0].distance_miles == 2.0
+    assert rows[0].travel_time_mins == 12
 
 
 def test_alembic_migration_creates_entities_and_postgres_overlap_constraint():

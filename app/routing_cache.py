@@ -1,16 +1,18 @@
 import datetime
+import math
 import uuid
 from dataclasses import dataclass
-from typing import Dict, Optional, Protocol, Tuple
+from typing import Callable, Dict, Optional, Protocol, Tuple
 
 from sqlalchemy.exc import IntegrityError
 
 from app import db, timezones
 from app.models import RouteEstimateDB
-from app.routing import BaseRoutingProvider, RouteEstimate
+from app.routing import BaseRoutingProvider, RouteEstimate, RoutingProviderNotConfigured
 
 
 NO_DEPARTURE_BUCKET = datetime.datetime(1970, 1, 1)
+SUPPORTED_TRAFFIC_MODES = {"none", "typical", "live"}
 
 
 @dataclass(frozen=True)
@@ -110,8 +112,21 @@ class DatabaseRouteEstimateCache:
         except IntegrityError:
             session.rollback()
             existing = _query_cache_row(session, key)
-            if existing is not None and existing.expires_at > datetime.datetime.utcnow():
+            now = timezones.to_utc_storage(datetime.datetime.utcnow())
+            if existing is not None and existing.expires_at > now:
                 return _row_to_estimate(existing)
+            if existing is not None:
+                existing.origin_lat = origin_coords[0]
+                existing.origin_lng = origin_coords[1]
+                existing.destination_lat = destination_coords[0]
+                existing.destination_lng = destination_coords[1]
+                existing.distance_miles = estimate.distance_miles
+                existing.travel_time_mins = estimate.travel_time_mins
+                existing.duration_seconds = estimate.duration_seconds
+                existing.expires_at = expires_at
+                existing.updated_at = now
+                session.commit()
+                return estimate
             raise
         finally:
             session.close()
@@ -125,13 +140,21 @@ class CachingRoutingProvider(BaseRoutingProvider):
         ttl_hours: int = 24,
         bucket_minutes: int = 15,
         traffic_mode: str = "none",
+        clock: Callable[[], datetime.datetime] = datetime.datetime.utcnow,
     ):
+        if ttl_hours <= 0:
+            raise RoutingProviderNotConfigured("Route cache TTL must be positive.")
+        if bucket_minutes <= 0:
+            raise RoutingProviderNotConfigured("Route cache departure bucket must be positive.")
+        if traffic_mode not in SUPPORTED_TRAFFIC_MODES:
+            raise RoutingProviderNotConfigured("Unsupported routing traffic mode.")
         self.provider = provider
         self.cache = cache
         self.ttl_hours = ttl_hours
         self.bucket_minutes = bucket_minutes
         self.traffic_mode = traffic_mode
         self.provider_name = provider.provider_name
+        self.clock = clock
 
     def estimate_route(
         self,
@@ -141,6 +164,16 @@ class CachingRoutingProvider(BaseRoutingProvider):
         traffic_mode: str = "none",
     ) -> RouteEstimate:
         resolved_traffic_mode = traffic_mode if traffic_mode != "none" else self.traffic_mode
+        if resolved_traffic_mode not in SUPPORTED_TRAFFIC_MODES:
+            raise RoutingProviderNotConfigured("Unsupported routing traffic mode.")
+        if departure_time is None and resolved_traffic_mode in {"typical", "live"}:
+            return self.provider.estimate_route(
+                origin_coords,
+                dest_coords,
+                departure_time=None,
+                traffic_mode=resolved_traffic_mode,
+            )
+
         departure_bucket = bucket_departure_time(departure_time, self.bucket_minutes)
         key = RouteCacheKey(
             provider=self.provider.provider_name,
@@ -149,7 +182,7 @@ class CachingRoutingProvider(BaseRoutingProvider):
             departure_bucket_start=departure_bucket,
             traffic_mode=resolved_traffic_mode,
         )
-        now = datetime.datetime.utcnow()
+        now = timezones.to_utc_storage(self.clock())
         cached = self.cache.get(key, now)
         if cached:
             return cached
@@ -168,13 +201,15 @@ class CachingRoutingProvider(BaseRoutingProvider):
 
 
 def coordinate_key(coords: Tuple[float, float]) -> str:
-    return f"{coords[0]:.5f},{coords[1]:.5f}"
+    return f"{_coordinate_component(coords[0]):.5f},{_coordinate_component(coords[1]):.5f}"
 
 
 def bucket_departure_time(
     departure_time: Optional[datetime.datetime],
     bucket_minutes: int,
 ) -> datetime.datetime:
+    if bucket_minutes <= 0:
+        raise RoutingProviderNotConfigured("Route cache departure bucket must be positive.")
     if departure_time is None:
         return NO_DEPARTURE_BUCKET
     departure_time = timezones.to_utc_storage(departure_time)
@@ -184,6 +219,13 @@ def bucket_departure_time(
         microseconds=departure_time.microsecond,
     )
     return departure_time - discard
+
+
+def _coordinate_component(value: float) -> float:
+    rounded = round(value, 5)
+    if rounded == 0 or math.isclose(rounded, 0.0, abs_tol=0.000005):
+        return 0.0
+    return rounded
 
 
 def _provider_departure_time(departure_bucket: datetime.datetime) -> Optional[datetime.datetime]:

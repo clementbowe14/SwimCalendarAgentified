@@ -263,8 +263,14 @@ def _resolve_location(
         lat, lng = tools.routing_provider.geocode(location.address)
     except GeocodeFailed as exc:
         raise GeocodingFailedApiError({"field": "location.address"}) from exc
+    except RoutingTimeout as exc:
+        raise RoutingTimeoutApiError() from exc
+    except RoutingProviderUnavailable as exc:
+        raise RoutingProviderUnavailableApiError() from exc
     except RoutingProviderNotConfigured as exc:
         raise RoutingConfigurationError() from exc
+    except RouteEstimateFailed as exc:
+        raise RoutingEstimateFailedApiError() from exc
     return ClientInviteLocation(
         address=location.address,
         lat=lat,
