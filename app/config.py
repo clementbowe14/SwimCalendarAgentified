@@ -2,6 +2,12 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
+from app.routing import RoutingProviderNotConfigured
+
+
+SUPPORTED_ROUTING_PROVIDERS = {"haversine", "mock", "local", "mapbox"}
+SUPPORTED_TRAFFIC_MODES = {"none", "typical", "live"}
+
 
 @dataclass(frozen=True)
 class RoutingSettings:
@@ -15,13 +21,31 @@ class RoutingSettings:
 
 
 def routing_settings_from_env() -> RoutingSettings:
+    provider = os.getenv("SWIM_ROUTING_PROVIDER", "haversine").strip().lower()
+    traffic_mode = os.getenv("SWIM_ROUTING_TRAFFIC_MODE", "none").strip().lower()
+    timeout_seconds = _float_env("SWIM_ROUTING_TIMEOUT_SECONDS", 3.0)
+    route_cache_enabled = _bool_env("SWIM_ROUTE_CACHE_ENABLED", False)
+    route_cache_ttl_hours = _int_env("SWIM_ROUTE_CACHE_TTL_HOURS", 24)
+    departure_bucket_minutes = _int_env("SWIM_ROUTE_DEPARTURE_BUCKET_MINUTES", 15)
+
+    if provider not in SUPPORTED_ROUTING_PROVIDERS:
+        raise RoutingProviderNotConfigured("Unsupported routing provider.")
+    if traffic_mode not in SUPPORTED_TRAFFIC_MODES:
+        raise RoutingProviderNotConfigured("Unsupported routing traffic mode.")
+    if timeout_seconds <= 0:
+        raise RoutingProviderNotConfigured("Routing timeout must be positive.")
+    if route_cache_enabled and route_cache_ttl_hours <= 0:
+        raise RoutingProviderNotConfigured("Route cache TTL must be positive.")
+    if route_cache_enabled and departure_bucket_minutes <= 0:
+        raise RoutingProviderNotConfigured("Route cache departure bucket must be positive.")
+
     return RoutingSettings(
-        provider=os.getenv("SWIM_ROUTING_PROVIDER", "haversine").strip().lower(),
-        traffic_mode=os.getenv("SWIM_ROUTING_TRAFFIC_MODE", "none").strip().lower(),
-        timeout_seconds=_float_env("SWIM_ROUTING_TIMEOUT_SECONDS", 3.0),
-        route_cache_enabled=_bool_env("SWIM_ROUTE_CACHE_ENABLED", False),
-        route_cache_ttl_hours=_int_env("SWIM_ROUTE_CACHE_TTL_HOURS", 24),
-        departure_bucket_minutes=_int_env("SWIM_ROUTE_DEPARTURE_BUCKET_MINUTES", 15),
+        provider=provider,
+        traffic_mode=traffic_mode,
+        timeout_seconds=timeout_seconds,
+        route_cache_enabled=route_cache_enabled,
+        route_cache_ttl_hours=route_cache_ttl_hours,
+        departure_bucket_minutes=departure_bucket_minutes,
         mapbox_access_token=os.getenv("SWIM_MAPBOX_ACCESS_TOKEN"),
     )
 

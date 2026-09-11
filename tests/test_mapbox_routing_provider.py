@@ -1,9 +1,17 @@
 import datetime
+import json
+import urllib.error
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from app.routing import GeocodeFailed, RoutingTimeout
+from app.routing import (
+    GeocodeFailed,
+    RouteEstimateFailed,
+    RoutingProviderNotConfigured,
+    RoutingProviderUnavailable,
+    RoutingTimeout,
+)
 from app.routing_providers import MapboxRoutingProvider
 
 
@@ -33,6 +41,36 @@ def test_mapbox_geocode_no_results_raises_geocode_failed():
 
     with pytest.raises(GeocodeFailed):
         provider.geocode("No Such Address")
+
+
+def test_mapbox_geocode_malformed_coordinates_maps_to_provider_unavailable():
+    provider = MapboxRoutingProvider(
+        access_token="test-token",
+        fetch_json=lambda url, timeout_seconds: {"features": [{"center": ["nan", 30.2672]}]},
+    )
+
+    with pytest.raises(RoutingProviderUnavailable):
+        provider.geocode("100 Main St, Austin, TX")
+
+
+def test_mapbox_geocode_auth_error_maps_to_configuration_error():
+    provider = MapboxRoutingProvider(
+        access_token="test-token",
+        fetch_json=lambda url, timeout_seconds: _http_error(401),
+    )
+
+    with pytest.raises(RoutingProviderNotConfigured):
+        provider.geocode("100 Main St, Austin, TX")
+
+
+def test_mapbox_geocode_rate_limit_maps_to_provider_unavailable():
+    provider = MapboxRoutingProvider(
+        access_token="test-token",
+        fetch_json=lambda url, timeout_seconds: _http_error(429),
+    )
+
+    with pytest.raises(RoutingProviderUnavailable):
+        provider.geocode("100 Main St, Austin, TX")
 
 
 def test_mapbox_route_uses_traffic_profile_departure_and_parses_response():
@@ -74,3 +112,63 @@ def test_mapbox_route_timeout_maps_to_domain_timeout():
             departure_time=datetime.datetime(2026, 8, 20, 9, 15),
             traffic_mode="live",
         )
+
+
+def test_mapbox_route_no_routes_maps_to_estimate_failure():
+    provider = MapboxRoutingProvider(
+        access_token="test-token",
+        fetch_json=lambda url, timeout_seconds: {"routes": []},
+    )
+
+    with pytest.raises(RouteEstimateFailed):
+        provider.estimate_route((30.2672, -97.7431), (30.3300, -97.7200))
+
+
+def test_mapbox_route_invalid_duration_is_not_accepted():
+    provider = MapboxRoutingProvider(
+        access_token="test-token",
+        fetch_json=lambda url, timeout_seconds: {"routes": [{"distance": 1000, "duration": -5}]},
+    )
+
+    with pytest.raises(RouteEstimateFailed):
+        provider.estimate_route((30.2672, -97.7431), (30.3300, -97.7200))
+
+
+def test_mapbox_route_422_maps_to_estimate_failure():
+    provider = MapboxRoutingProvider(
+        access_token="test-token",
+        fetch_json=lambda url, timeout_seconds: _http_error(422),
+    )
+
+    with pytest.raises(RouteEstimateFailed):
+        provider.estimate_route((30.2672, -97.7431), (30.3300, -97.7200))
+
+
+def test_mapbox_route_5xx_maps_to_provider_unavailable():
+    provider = MapboxRoutingProvider(
+        access_token="test-token",
+        fetch_json=lambda url, timeout_seconds: _http_error(503),
+    )
+
+    with pytest.raises(RoutingProviderUnavailable):
+        provider.estimate_route((30.2672, -97.7431), (30.3300, -97.7200))
+
+
+def test_mapbox_malformed_json_maps_to_provider_unavailable():
+    def fetch_json(url, timeout_seconds):
+        raise json.JSONDecodeError("bad json", "", 0)
+
+    provider = MapboxRoutingProvider(access_token="test-token", fetch_json=fetch_json)
+
+    with pytest.raises(RoutingProviderUnavailable):
+        provider.estimate_route((30.2672, -97.7431), (30.3300, -97.7200))
+
+
+def _http_error(status_code: int):
+    raise urllib.error.HTTPError(
+        url="https://api.mapbox.com/test?access_token=secret",
+        code=status_code,
+        msg="provider failed",
+        hdrs=None,
+        fp=None,
+    )

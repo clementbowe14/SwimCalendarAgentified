@@ -155,6 +155,26 @@ Optional routing settings:
 - `SWIM_ROUTE_CACHE_TTL_HOURS=24`
 - `SWIM_ROUTE_DEPARTURE_BUCKET_MINUTES=15`
 
+Routing configuration values are validated at startup/request time. Unsupported
+providers or traffic modes, missing Mapbox credentials, and non-positive
+timeouts/cache windows return a stable `ROUTING_CONFIGURATION_ERROR` from API
+availability endpoints.
+
+When route caching is enabled, route estimates are cached by provider, rounded
+origin/destination coordinates, UTC departure bucket, and traffic mode.
+Geocoding results are not cached. `live` and `typical` traffic estimates without
+a departure time bypass the cache so a sentinel bucket cannot serve stale
+traffic-dependent travel times.
+
+Availability endpoints return stable, sanitized routing errors:
+
+- `GEOCODING_FAILED` for empty or unmatched client addresses.
+- `ROUTING_TIMEOUT` for provider timeouts.
+- `ROUTING_PROVIDER_UNAVAILABLE` for provider outages, rate limits, network
+  errors, malformed geocode responses, or malformed provider JSON.
+- `ROUTING_ESTIMATE_FAILED` when a directions response cannot produce a usable
+  route estimate.
+
 ### MVP Public Invite Token
 
 The MVP public API includes seeded development invite tokens:

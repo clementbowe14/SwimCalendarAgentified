@@ -69,3 +69,31 @@ def test_routing_settings_parse_cache_and_traffic_env(monkeypatch):
     assert settings.route_cache_ttl_hours == 12
     assert settings.departure_bucket_minutes == 30
     assert settings.traffic_mode == "live"
+
+
+def test_invalid_traffic_mode_fails_with_configuration_error(monkeypatch):
+    monkeypatch.setenv("SWIM_ROUTING_TRAFFIC_MODE", "rush-hour")
+
+    with pytest.raises(RoutingProviderNotConfigured, match="traffic mode"):
+        routing_settings_from_env()
+
+
+def test_invalid_timeout_fails_with_configuration_error(monkeypatch):
+    monkeypatch.setenv("SWIM_ROUTING_TIMEOUT_SECONDS", "0")
+
+    with pytest.raises(RoutingProviderNotConfigured, match="timeout"):
+        routing_settings_from_env()
+
+
+def test_invalid_enabled_cache_values_fail_with_configuration_error(monkeypatch):
+    monkeypatch.setenv("SWIM_ROUTE_CACHE_ENABLED", "true")
+    monkeypatch.setenv("SWIM_ROUTE_CACHE_TTL_HOURS", "0")
+
+    with pytest.raises(RoutingProviderNotConfigured, match="TTL"):
+        routing_settings_from_env()
+
+    monkeypatch.setenv("SWIM_ROUTE_CACHE_TTL_HOURS", "24")
+    monkeypatch.setenv("SWIM_ROUTE_DEPARTURE_BUCKET_MINUTES", "0")
+
+    with pytest.raises(RoutingProviderNotConfigured, match="bucket"):
+        routing_settings_from_env()

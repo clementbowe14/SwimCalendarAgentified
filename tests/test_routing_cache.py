@@ -2,7 +2,7 @@ import datetime
 
 import pytest
 
-from app.routing import BaseRoutingProvider, RouteEstimate, RouteEstimateFailed
+from app.routing import BaseRoutingProvider, RouteEstimate, RouteEstimateFailed, RoutingProviderNotConfigured
 from app.routing_cache import (
     CachingRoutingProvider,
     InMemoryRouteEstimateCache,
@@ -97,10 +97,17 @@ def test_route_cache_misses_when_departure_crosses_bucket_boundary():
 
 def test_expired_route_cache_entry_is_ignored():
     provider = CountingProvider()
-    cached = CachingRoutingProvider(provider, InMemoryRouteEstimateCache(), ttl_hours=-1)
+    now = [datetime.datetime(2026, 8, 20, 9, 0)]
+    cached = CachingRoutingProvider(
+        provider,
+        InMemoryRouteEstimateCache(),
+        ttl_hours=1,
+        clock=lambda: now[0],
+    )
     departure = datetime.datetime(2026, 8, 20, 9, 0)
 
     cached.estimate_route((30.0, -97.0), (30.1, -97.1), departure_time=departure)
+    now[0] = datetime.datetime(2026, 8, 20, 11, 0)
     cached.estimate_route((30.0, -97.0), (30.1, -97.1), departure_time=departure)
 
     assert len(provider.route_calls) == 2
@@ -121,6 +128,7 @@ def test_provider_failures_are_not_cached():
 
 def test_coordinate_keys_and_departure_buckets_are_stable():
     assert coordinate_key((30.123456, -97.765432)) == "30.12346,-97.76543"
+    assert coordinate_key((-0.0, -0.0000001)) == "0.00000,0.00000"
     assert bucket_departure_time(
         datetime.datetime(2026, 8, 20, 9, 29, 59),
         15,
@@ -140,3 +148,42 @@ def test_route_cache_canonicalizes_aware_departure_time_to_utc_bucket():
     assert len(provider.route_calls) == 1
     assert provider.route_calls[0][2] == datetime.datetime(2026, 8, 20, 14, 0, tzinfo=datetime.timezone.utc)
     assert bucket_departure_time(central_departure, 15) == datetime.datetime(2026, 8, 20, 14, 0)
+
+
+def test_live_no_departure_route_estimates_bypass_cache():
+    provider = CountingProvider()
+    cached = CachingRoutingProvider(
+        provider,
+        InMemoryRouteEstimateCache(),
+        traffic_mode="live",
+    )
+
+    cached.estimate_route((30.0, -97.0), (30.1, -97.1))
+    cached.estimate_route((30.0, -97.0), (30.1, -97.1))
+
+    assert len(provider.route_calls) == 2
+    assert provider.route_calls[0][2] is None
+    assert provider.route_calls[0][3] == "live"
+
+
+def test_static_no_departure_route_estimates_can_use_cache():
+    provider = CountingProvider()
+    cached = CachingRoutingProvider(provider, InMemoryRouteEstimateCache(), traffic_mode="none")
+
+    cached.estimate_route((30.0, -97.0), (30.1, -97.1))
+    cached.estimate_route((30.0, -97.0), (30.1, -97.1))
+
+    assert len(provider.route_calls) == 1
+
+
+def test_invalid_route_cache_settings_fail_fast():
+    provider = CountingProvider()
+
+    with pytest.raises(RoutingProviderNotConfigured, match="TTL"):
+        CachingRoutingProvider(provider, InMemoryRouteEstimateCache(), ttl_hours=0)
+    with pytest.raises(RoutingProviderNotConfigured, match="bucket"):
+        CachingRoutingProvider(provider, InMemoryRouteEstimateCache(), bucket_minutes=0)
+    with pytest.raises(RoutingProviderNotConfigured, match="bucket"):
+        bucket_departure_time(datetime.datetime(2026, 8, 20, 9, 0), 0)
+    with pytest.raises(RoutingProviderNotConfigured, match="traffic mode"):
+        CachingRoutingProvider(provider, InMemoryRouteEstimateCache(), traffic_mode="rush-hour")

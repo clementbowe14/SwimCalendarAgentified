@@ -1110,8 +1110,14 @@ def _resolve_location(
         lat, lng = tools.routing_provider.geocode(client_address)
     except GeocodeFailed as exc:
         raise GeocodingFailedApiError({"field": "client_address"}) from exc
+    except RoutingTimeout as exc:
+        raise RoutingTimeoutApiError() from exc
+    except RoutingProviderUnavailable as exc:
+        raise RoutingProviderUnavailableApiError() from exc
     except RoutingProviderNotConfigured as exc:
         raise RoutingConfigurationError() from exc
+    except RouteEstimateFailed as exc:
+        raise RoutingEstimateFailedApiError() from exc
     return LocationResponse(
         address=client_address,
         lat=lat,
