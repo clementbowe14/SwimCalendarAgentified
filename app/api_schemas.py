@@ -267,7 +267,19 @@ class PublicLessonRequestCreate(BaseModel):
     idempotency_key: Optional[str] = Field(default=None, min_length=8, max_length=160)
 
 
+class NotificationStatus(BaseModel):
+    kind: Literal["invite", "confirmation"]
+    channel: Literal["sms", "email"]
+    status: Literal["queued", "processing", "accepted", "delivered", "failed", "skipped"]
+    updated_at: datetime
+
+
+class InviteNotificationResponse(BaseModel):
+    notifications: list[NotificationStatus]
+
+
 class PublicLessonRequestResponse(BaseModel):
+    notifications: list[NotificationStatus] = Field(default_factory=list)
     request_token: str
     status: Literal["pending"]
     selected_slot: TimeSlotResponse
@@ -275,6 +287,7 @@ class PublicLessonRequestResponse(BaseModel):
 
 
 class PublicRequestStatusResponse(BaseModel):
+    notifications: list[NotificationStatus] = Field(default_factory=list)
     request_token: str
     status: Literal["pending", "confirmed", "needs_new_times", "expired"]
     message: str
@@ -362,7 +375,14 @@ class ClientInviteLessonRequestCreate(BaseModel):
     idempotency_key: Optional[str] = Field(default=None, min_length=8, max_length=160)
 
 
+class GoogleCalendarEvent(BaseModel):
+    start_iso: datetime
+    end_iso: datetime
+    url: str
+
+
 class ClientInviteCalendarLinks(BaseModel):
+    google_events: list[GoogleCalendarEvent] = Field(default_factory=list)
     google: str
     apple: str
     ics: str
@@ -377,6 +397,7 @@ class ClientInviteLessonConfirmation(BaseModel):
 
 
 class ClientInviteLessonRequestResponse(BaseModel):
+    notifications: list[NotificationStatus] = Field(default_factory=list)
     id: str
     invite_token: str
     slot: ClientInviteSchedulerSlot
