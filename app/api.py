@@ -58,6 +58,14 @@ def create_app() -> FastAPI:
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
     app.add_exception_handler(Exception, unexpected_exception_handler)
 
+    @app.middleware("http")
+    async def protect_public_responses(request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/api/public/"):
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(coach.router)

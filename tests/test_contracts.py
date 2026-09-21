@@ -56,6 +56,7 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/coach/lesson-requests/{request_token}/alternatives" in paths
     assert "/api/coach/lesson-requests/{request_token}/decline" in paths
     assert "/api/coach/settings" in paths
+    assert "/api/coach/invites/{invite_token}/notifications" in paths
     assert "/api/public/command-center/snapshot" not in paths
     assert "/api/public/settings" not in paths
 
@@ -63,6 +64,15 @@ def test_openapi_contract_includes_public_and_coach_routes():
 def test_fixtures_validate_against_response_schemas():
     for relative_path, schema in FIXTURE_SCHEMAS.items():
         schema.model_validate(_load_json(CONTRACT_ROOT / relative_path))
+
+
+def test_confirmation_fixture_has_safe_delivery_states_and_occurrence_links():
+    payload = _load_json(CONTRACT_ROOT / "fixtures/public/lesson_request_confirmed.json")
+    assert [item["channel"] for item in payload["notifications"]] == ["sms", "email"]
+    for item in payload["notifications"]:
+        assert set(item) == {"kind", "channel", "status", "updated_at"}
+    links = payload["confirmation"]["calendar_links"]
+    assert links["google_events"][0]["url"] == links["google"]
 
 
 def test_public_fixtures_do_not_leak_private_identifiers_or_schedule_details():

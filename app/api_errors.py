@@ -219,8 +219,10 @@ async def validation_exception_handler(_: Request, exc: RequestValidationError) 
     )
 
 
-async def unexpected_exception_handler(_: Request, __: Exception) -> JSONResponse:
+async def unexpected_exception_handler(request: Request, __: Exception) -> JSONResponse:
     return JSONResponse(
         status_code=500,
         content=error_payload("INTERNAL_SERVER_ERROR", "An unexpected error occurred."),
+        headers={"Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer"}
+        if request.url.path.startswith("/api/public/") else None,
     )

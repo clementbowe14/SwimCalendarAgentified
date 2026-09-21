@@ -3,6 +3,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -15,6 +16,17 @@ from app.api_schemas import CoachCommandCenterSnapshot, CoachSchedulerRules
 
 def build_contract_artifacts() -> dict[str, Any]:
     coach_settings_fixture = _coach_settings_fixture()
+    google = "https://calendar.google.com/calendar/render?" + urlencode({
+        "action": "TEMPLATE", "text": "Swim lesson",
+        "dates": "20260829T173000Z/20260829T181500Z",
+        "location": "820 Lakeview Dr, Austin, TX", "details": "Confirmed swim lesson.",
+    })
+    calendar_links = {
+        "google": google,
+        "apple": "/api/public/calendar/req_contract_confirmed.ics",
+        "ics": "/api/public/calendar/req_contract_confirmed.ics",
+        "google_events": [{"start_iso": "2026-08-29T17:30:00Z", "end_iso": "2026-08-29T18:15:00Z", "url": google}],
+    }
     return {
         "openapi.json": create_app().openapi(),
         "fixtures/public/client_invite_envelope.json": {
@@ -60,6 +72,7 @@ def build_contract_artifacts() -> dict[str, Any]:
             "unavailable_windows": [],
         },
         "fixtures/public/lesson_request_requested.json": {
+            "notifications": [],
             "id": "req_contract_pending",
             "invite_token": "invite_sofia_0826",
             "slot": {
@@ -81,6 +94,10 @@ def build_contract_artifacts() -> dict[str, Any]:
             "confirmation": None,
         },
         "fixtures/public/lesson_request_confirmed.json": {
+            "notifications": [
+                {"kind": "confirmation", "channel": "sms", "status": "skipped", "updated_at": "2026-08-28T16:35:00Z"},
+                {"kind": "confirmation", "channel": "email", "status": "queued", "updated_at": "2026-08-28T16:35:00Z"},
+            ],
             "id": "req_contract_confirmed",
             "invite_token": "invite_sofia_0826",
             "slot": {
@@ -103,14 +120,11 @@ def build_contract_artifacts() -> dict[str, Any]:
                 "appointment_id": "req_contract_confirmed",
                 "message": "Your swim lesson is confirmed for Sat, Aug 29 at 12:30 PM.",
                 "confirmed_at_iso": "2026-08-28T16:35:00",
-                "calendar_links": {
-                    "google": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Swim%20lesson&dates=20260829T173000Z/20260829T181500Z&location=820%20Lakeview%20Dr%2C%20Austin%2C%20TX",
-                    "apple": "/api/public/calendar/req_contract_confirmed.ics",
-                    "ics": "/api/public/calendar/req_contract_confirmed.ics",
-                },
+                "calendar_links": calendar_links,
             },
         },
         "fixtures/public/lesson_request_needs_new_times.json": {
+            "notifications": [],
             "id": "req_contract_alternatives",
             "invite_token": "invite_sofia_0826",
             "slot": {
@@ -131,11 +145,7 @@ def build_contract_artifacts() -> dict[str, Any]:
             "requested_at_iso": "2026-08-28T16:30:00",
             "confirmation": None,
         },
-        "fixtures/public/calendar_links.json": {
-            "google": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Swim%20lesson&dates=20260829T173000Z/20260829T181500Z&location=820%20Lakeview%20Dr%2C%20Austin%2C%20TX",
-            "apple": "/api/public/calendar/req_contract_confirmed.ics",
-            "ics": "/api/public/calendar/req_contract_confirmed.ics",
-        },
+        "fixtures/public/calendar_links.json": calendar_links,
         "fixtures/public/error_invalid_token.json": {
             "error": {
                 "code": "INVITE_NOT_FOUND",

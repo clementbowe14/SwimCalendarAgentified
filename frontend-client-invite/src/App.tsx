@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
   AvailabilitySearchResponse,
-  CalendarProvider,
   ClientIntake,
   ClientInviteApi,
   ClientInviteEnvelope,
@@ -40,7 +39,6 @@ export default function App() {
   });
   const [slotResponse, setSlotResponse] = useState<AvailabilitySearchResponse | null>(null);
   const [lessonRequest, setLessonRequest] = useState<LessonRequest | null>(null);
-  const [calendarProvider, setCalendarProvider] = useState<CalendarProvider | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -64,7 +62,16 @@ export default function App() {
     };
   }, []);
 
-  const heroContent = useMemo(() => getHeroContent(flow.step, envelope.instructor_name), [flow.step, envelope.instructor_name]);
+  const heroContent = useMemo(() => {
+    if ((flow.step === "request" || flow.step === "calendar") && lessonRequest?.status === "confirmed") {
+      return {
+        eyebrow: flow.step === "request" ? "Request status" : "Calendar handoff",
+        title: "Lesson confirmed",
+        copy: lessonRequest.confirmation ? "Your active lesson dates and confirmation status." : "This request was confirmed. There are no active calendar dates available.",
+      };
+    }
+    return getHeroContent(flow.step, envelope.instructor_name);
+  }, [flow.step, envelope.instructor_name, lessonRequest]);
 
   const goToStep = (step: InviteStep) => setFlow((current) => ({ ...current, step }));
 
@@ -220,9 +227,8 @@ export default function App() {
       {flow.step === "calendar" && lessonRequest ? (
         <CalendarHandoffScreen
           lessonRequest={lessonRequest}
-          durationMins={flow.duration_mins}
-          selectedCalendarProvider={calendarProvider}
-          onSelectProvider={setCalendarProvider}
+          onRefreshStatus={refreshStatus}
+          checkingStatus={loading}
         />
       ) : null}
     </main>

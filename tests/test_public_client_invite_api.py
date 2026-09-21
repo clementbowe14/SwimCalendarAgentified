@@ -184,10 +184,13 @@ def test_confirmed_request_returns_public_calendar_links(client):
 
     assert response.status_code == 200
     payload = response.json()
-    assert set(payload.keys()) == {"google", "apple", "ics"}
+    assert set(payload.keys()) == {"google", "apple", "ics", "google_events"}
     assert request_token in payload["ics"]
     assert "app_" not in payload["google"]
-    assert "Z/" in payload["google"]
+    from urllib.parse import parse_qs, urlsplit
+    dates = parse_qs(urlsplit(payload["google"]).query)["dates"][0]
+    assert all(value.endswith("Z") for value in dates.split("/"))
+    assert payload["google_events"][0]["url"] == payload["google"]
 
     ics_response = client.get(payload["ics"])
     assert ics_response.status_code == 200

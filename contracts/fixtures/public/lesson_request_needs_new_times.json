@@ -2,6 +2,7 @@
   "confirmation": null,
   "id": "req_contract_alternatives",
   "invite_token": "invite_sofia_0826",
+  "notifications": [],
   "requested_at_iso": "2026-08-28T16:30:00",
   "slot": {
     "buffer_mins": 10,

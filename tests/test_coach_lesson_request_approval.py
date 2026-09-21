@@ -49,7 +49,7 @@ def test_coach_approves_pending_request_into_scheduled_appointment(
 
     calendar_links = api_client.get(f"/api/public/lesson-requests/{SEEDED_REQUEST_TOKEN}/calendar-links")
     assert calendar_links.status_code == 200
-    assert set(calendar_links.json()) == {"google", "apple", "ics"}
+    assert set(calendar_links.json()) == {"google", "apple", "ics", "google_events"}
 
 
 def test_coach_request_approval_is_idempotent(authenticated_api_client):

@@ -1,49 +1,34 @@
-import { CheckIcon } from "@radix-ui/react-icons";
-import type { CalendarProvider, LessonRequest } from "../api/types";
+import type { LessonRequest } from "../api/types";
+import { NotificationDelivery } from "../components/NotificationDelivery";
 import { CalendarActions } from "../components/CalendarActions";
 import { SectionCard } from "../components/SectionCard";
+import { ConfirmedOccurrences } from "../components/ConfirmedOccurrences";
 
 type CalendarHandoffScreenProps = {
   lessonRequest: LessonRequest;
-  durationMins: number;
-  selectedCalendarProvider: CalendarProvider | null;
-  onSelectProvider: (provider: CalendarProvider) => void;
+  onRefreshStatus: () => void;
+  checkingStatus: boolean;
 };
 
 export function CalendarHandoffScreen({
   lessonRequest,
-  durationMins,
-  selectedCalendarProvider,
-  onSelectProvider,
+  onRefreshStatus,
+  checkingStatus,
 }: CalendarHandoffScreenProps) {
-  if (!lessonRequest.confirmation) {
-    return null;
-  }
-
   return (
     <div className="screen-stack">
-      <SectionCard eyebrow="Confirmed lesson" title="Ready for your calendar">
+      <SectionCard eyebrow="Confirmed lesson" title={lessonRequest.confirmation ? "Ready for your calendar" : "Calendar unavailable"}>
         <section className="client-confirmed-card">
-          <div className="delivery-row">
-            <span className="delivery-chip">Text sent</span>
-            <span className="delivery-chip">Email sent</span>
-          </div>
+          <NotificationDelivery notifications={lessonRequest.notifications ?? []} />
           <div className="confirmed-message">
-            <span>Riley confirmed your lesson</span>
-            <strong>{lessonRequest.slot.display}</strong>
-            <small>{lessonRequest.slot.location_address} - {durationMins} min</small>
+            <span>Lesson request confirmed</span>
+            <ConfirmedOccurrences confirmation={lessonRequest.confirmation} />
+            {lessonRequest.confirmation ? <small>{lessonRequest.slot.location_address}</small> : <p role="status">Calendar links are no longer available.</p>}
           </div>
-          <CalendarActions
+          {lessonRequest.confirmation && <CalendarActions
             links={lessonRequest.confirmation.calendar_links}
-            selectedProvider={selectedCalendarProvider}
-            onSelect={onSelectProvider}
-          />
-          {selectedCalendarProvider ? (
-            <p className="calendar-saved-note">
-              <CheckIcon />
-              Added to {selectedCalendarProvider === "google" ? "Google Calendar" : selectedCalendarProvider === "apple" ? "Apple Calendar" : "your downloads"}.
-            </p>
-          ) : null}
+          />}
+          <button className="primary-button" type="button" onClick={onRefreshStatus} disabled={checkingStatus}>{checkingStatus ? "Checking status" : "Refresh status"}</button>
         </section>
       </SectionCard>
     </div>

@@ -231,7 +231,48 @@ Errors use a stable JSON shape:
 }
 ```
 
-## Tests
+## Notifications and Calendar Handoff
+
+New lesson confirmations atomically record one SMS event and one email event,
+including weekly confirmations. Missing or invalid invite-intake contacts produce
+`skipped` events; valid contacts produce `queued` events. Phone numbers must be
+E.164 (for example `+15125550194`); the server does not guess a country code.
+`accepted` means accepted by a provider, not delivered. No SMS/email provider or
+background dispatcher is configured by default, so no API keys are required and
+queued events do not actually send messages.
+
+Authenticated coaches can explicitly queue invite notifications with
+`POST /api/coach/invites/{invite_token}/notifications` and an `Idempotency-Key`
+header. Reusing the key for the same invite replays the original result; using it
+for a different invite under the same instructor returns a conflict. Contacts
+come only from that invite's persisted intake. An initial invitation before
+intake needs a future coach contact-capture workflow.
+
+Set `SWIM_CLIENT_INVITE_ORIGIN` to the trusted HTTPS origin of the client app
+(for example `https://lessons.example.com`). Invitation records snapshot a link
+on that origin so adapters can render an actionable message without querying
+application storage. Development defaults to `http://127.0.0.1:3001`; staging and
+production reject new invite-notification commands if the origin is missing or
+invalid. Replays keep their original recipient and invitation URL.
+
+Both public request-status endpoints return only channel, kind, status and UTC
+update time. They do not expose recipient details, provider IDs or failure
+payloads. Legacy requests have no fabricated delivery history. Client screens
+can refresh delivery state after confirmation.
+
+Confirmed, active lessons have Google Calendar links per occurrence and an ICS
+download containing all active occurrences. Calendar exports preserve stored
+UTC instants, escape text and use stable opaque event identifiers. Downloads are
+snapshots: previously imported events do not automatically update when cancelled.
+Opening Google Calendar or downloading a file does not prove it was imported.
+
+Apply Alembic migrations before deploying. The notification migration adds the
+event ledger and backfills calendar identifiers without sending historical
+messages. Downgrading it destroys notification history and calendar identifiers.
+Real providers, webhooks, background dispatch and calendar subscriptions are
+intentionally outside this implementation.
+
+## Running Tests
 
 Run the full test suite with:
 
