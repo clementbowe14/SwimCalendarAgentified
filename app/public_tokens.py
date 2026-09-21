@@ -173,7 +173,7 @@ def resolve_lesson_request(request_token: str) -> LessonRequestRecord:
     session = db.SessionLocal()
     try:
         request = session.query(LessonRequestDB).filter_by(request_token=request_token).first()
-        if not request:
+        if not request or request.invite is None or request.invite.revoked_at is not None:
             raise LessonRequestNotFound()
         return _lesson_request_record(request)
     finally:

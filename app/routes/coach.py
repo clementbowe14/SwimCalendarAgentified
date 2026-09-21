@@ -1,6 +1,10 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query, Request
+from starlette.concurrency import run_in_threadpool
+
+from app.api_errors import ApiException
+from app.notifications import enqueue_invite
 
 from app.api_schemas import (
     AvailabilitySearchRequest,
@@ -15,6 +19,7 @@ from app.api_schemas import (
     CoachLessonRequestConfirmRequest,
     CoachScheduleResponse,
     CoachSchedulerRules,
+    InviteNotificationResponse,
 )
 from app.api_services import (
     approve_coach_lesson_request,
@@ -32,6 +37,19 @@ from app.dependencies import CoachContext, get_current_coach
 
 
 router = APIRouter(prefix="/api/coach", tags=["coach"])
+
+
+@router.post("/invites/{invite_token}/notifications", response_model=InviteNotificationResponse, status_code=202)
+async def send_invite_notification(
+    invite_token: str,
+    request: Request,
+    idempotency_key: str = Header(min_length=1, max_length=200),
+    coach: CoachContext = Depends(get_current_coach),
+) -> InviteNotificationResponse:
+    if await request.body():
+        raise ApiException("VALIDATION_ERROR", "This endpoint does not accept a request body.", 422)
+    notifications = await run_in_threadpool(enqueue_invite, coach.instructor_id, invite_token, idempotency_key)
+    return InviteNotificationResponse(notifications=notifications)
 
 
 @router.get("/me", response_model=CoachContextResponse)

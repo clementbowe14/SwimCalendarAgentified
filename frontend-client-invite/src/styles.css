@@ -689,6 +689,9 @@ input:focus {
 }
 
 .delivery-chip {
+  padding: 6px 10px;
+  text-align: center;
+  overflow-wrap: anywhere;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -729,6 +732,17 @@ input:focus {
   font-weight: 900;
 }
 
+.confirmed-occurrences {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.confirmed-message .confirmed-occurrences strong {
+  font-size: 16px;
+  line-height: 1.4;
+}
+
 .confirmed-message small {
   color: #5f6e80;
   font-size: 13px;
@@ -741,6 +755,7 @@ input:focus {
 }
 
 .calendar-save-button {
+  text-decoration: none;
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);
   gap: 7px;
@@ -760,6 +775,18 @@ input:focus {
 
 .calendar-save-button.wide {
   grid-column: 1 / -1;
+}
+
+.calendar-save-button[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.calendar-handoff-note {
+  margin: 0;
+  color: #5f6e80;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .calendar-save-button.selected {

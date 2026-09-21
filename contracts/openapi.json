@@ -346,6 +346,13 @@
             "title": "Google",
             "type": "string"
           },
+          "google_events": {
+            "items": {
+              "$ref": "#/components/schemas/GoogleCalendarEvent"
+            },
+            "title": "Google Events",
+            "type": "array"
+          },
           "ics": {
             "title": "Ics",
             "type": "string"
@@ -537,6 +544,13 @@
           "invite_token": {
             "title": "Invite Token",
             "type": "string"
+          },
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationStatus"
+            },
+            "title": "Notifications",
+            "type": "array"
           },
           "requested_at_iso": {
             "format": "date-time",
@@ -1611,6 +1625,31 @@
         "title": "CoachTimeSlotResponse",
         "type": "object"
       },
+      "GoogleCalendarEvent": {
+        "properties": {
+          "end_iso": {
+            "format": "date-time",
+            "title": "End Iso",
+            "type": "string"
+          },
+          "start_iso": {
+            "format": "date-time",
+            "title": "Start Iso",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_iso",
+          "end_iso",
+          "url"
+        ],
+        "title": "GoogleCalendarEvent",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1686,6 +1725,22 @@
         "title": "InstructorProfileResponse",
         "type": "object"
       },
+      "InviteNotificationResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationStatus"
+            },
+            "title": "Notifications",
+            "type": "array"
+          }
+        },
+        "required": [
+          "notifications"
+        ],
+        "title": "InviteNotificationResponse",
+        "type": "object"
+      },
       "LocationResponse": {
         "properties": {
           "address": {
@@ -1712,6 +1767,51 @@
           "lng"
         ],
         "title": "LocationResponse",
+        "type": "object"
+      },
+      "NotificationStatus": {
+        "properties": {
+          "channel": {
+            "enum": [
+              "sms",
+              "email"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "invite",
+              "confirmation"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "processing",
+              "accepted",
+              "delivered",
+              "failed",
+              "skipped"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "channel",
+          "status",
+          "updated_at"
+        ],
+        "title": "NotificationStatus",
         "type": "object"
       },
       "PublicAvailabilitySearchRequest": {
@@ -1914,6 +2014,13 @@
             "title": "Message",
             "type": "string"
           },
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationStatus"
+            },
+            "title": "Notifications",
+            "type": "array"
+          },
           "request_token": {
             "title": "Request Token",
             "type": "string"
@@ -1941,6 +2048,13 @@
           "message": {
             "title": "Message",
             "type": "string"
+          },
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationStatus"
+            },
+            "title": "Notifications",
+            "type": "array"
           },
           "request_token": {
             "title": "Request Token",
@@ -2345,6 +2459,64 @@
           }
         ],
         "summary": "Read Command Center Snapshot",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/invites/{invite_token}/notifications": {
+      "post": {
+        "operationId": "send_invite_notification_api_coach_invites__invite_token__notifications_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invite_token",
+            "required": true,
+            "schema": {
+              "title": "Invite Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteNotificationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Send Invite Notification",
         "tags": [
           "coach"
         ]

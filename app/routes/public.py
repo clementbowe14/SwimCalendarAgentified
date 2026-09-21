@@ -114,4 +114,9 @@ def read_client_calendar_ics(request_token: str) -> Response:
     return PlainTextResponse(
         get_client_calendar_ics(request_token),
         media_type="text/calendar",
+        headers={
+            "Content-Disposition": 'attachment; filename="swim-lessons.ics"',
+            "Cache-Control": "private, no-store",
+            "Referrer-Policy": "no-referrer",
+        },
     )

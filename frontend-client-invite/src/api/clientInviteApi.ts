@@ -175,6 +175,7 @@ export class FetchClientInviteApi implements ClientInviteApi {
   private async fetchJson<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...init,
+      referrerPolicy: "no-referrer",
       headers: {
         "content-type": "application/json",
         ...init.headers,

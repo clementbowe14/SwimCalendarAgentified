@@ -76,6 +76,7 @@ export type AvailabilitySearchResponse = {
 };
 
 export type LessonRequest = {
+  notifications: NotificationStatus[];
   id: string;
   invite_token: string;
   slot: SchedulerSlot;
@@ -90,7 +91,14 @@ export type LessonConfirmation = {
   appointment_ids: string[];
   message: string;
   confirmed_at_iso: string;
-  calendar_links: Record<CalendarProvider, string>;
+  calendar_links: Record<CalendarProvider, string> & { google_events: Array<{ start_iso: string; end_iso: string; url: string }> };
+};
+
+export type NotificationStatus = {
+  kind: "invite" | "confirmation";
+  channel: "sms" | "email";
+  status: "queued" | "processing" | "accepted" | "delivered" | "failed" | "skipped";
+  updated_at: string;
 };
 
 export type ClientInviteEnvelope = {

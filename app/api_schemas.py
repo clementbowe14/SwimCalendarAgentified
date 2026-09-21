@@ -1,7 +1,7 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 
 class HealthResponse(BaseModel):
@@ -271,7 +271,12 @@ class NotificationStatus(BaseModel):
     kind: Literal["invite", "confirmation"]
     channel: Literal["sms", "email"]
     status: Literal["queued", "processing", "accepted", "delivered", "failed", "skipped"]
-    updated_at: datetime
+    updated_at: AwareDatetime
+
+    @field_validator("updated_at")
+    @classmethod
+    def normalize_utc(cls, value: datetime) -> datetime:
+        return value.astimezone(timezone.utc)
 
 
 class InviteNotificationResponse(BaseModel):

@@ -3,7 +3,14 @@
     "appointment_id": "req_contract_confirmed",
     "calendar_links": {
       "apple": "/api/public/calendar/req_contract_confirmed.ics",
-      "google": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Swim%20lesson&dates=20260829T173000Z/20260829T181500Z&location=820%20Lakeview%20Dr%2C%20Austin%2C%20TX",
+      "google": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Swim+lesson&dates=20260829T173000Z%2F20260829T181500Z&location=820+Lakeview+Dr%2C+Austin%2C+TX&details=Confirmed+swim+lesson.",
+      "google_events": [
+        {
+          "end_iso": "2026-08-29T18:15:00Z",
+          "start_iso": "2026-08-29T17:30:00Z",
+          "url": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Swim+lesson&dates=20260829T173000Z%2F20260829T181500Z&location=820+Lakeview+Dr%2C+Austin%2C+TX&details=Confirmed+swim+lesson."
+        }
+      ],
       "ics": "/api/public/calendar/req_contract_confirmed.ics"
     },
     "confirmed_at_iso": "2026-08-28T16:35:00",
@@ -11,6 +18,20 @@
   },
   "id": "req_contract_confirmed",
   "invite_token": "invite_sofia_0826",
+  "notifications": [
+    {
+      "channel": "sms",
+      "kind": "confirmation",
+      "status": "skipped",
+      "updated_at": "2026-08-28T16:35:00Z"
+    },
+    {
+      "channel": "email",
+      "kind": "confirmation",
+      "status": "queued",
+      "updated_at": "2026-08-28T16:35:00Z"
+    }
+  ],
   "requested_at_iso": "2026-08-28T16:30:00",
   "slot": {
     "buffer_mins": 10,

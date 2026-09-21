@@ -1,4 +1,5 @@
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
+from uuid import uuid4
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from sqlalchemy import (
@@ -9,12 +10,14 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     JSON,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -54,6 +57,7 @@ class AppointmentDB(Base):
     )
 
     id = Column(String, primary_key=True)
+    calendar_uid = Column(String, nullable=False, unique=True, default=lambda: str(uuid4()), server_default=text("gen_random_uuid()::text"))
     instructor_id = Column(String, ForeignKey('instructors.id'), nullable=False)
     client_id = Column(String, nullable=False) # 'client' or 'instructor_break'
     request_id = Column(String, ForeignKey("lesson_requests.id"), nullable=True)
@@ -97,6 +101,7 @@ class ClientDB(Base):
 class InviteTokenDB(Base):
     __tablename__ = "invite_tokens"
     __table_args__ = (
+        UniqueConstraint("token", "instructor_id", name="uq_invite_tokens_tenant"),
         Index("ix_invite_tokens_instructor", "instructor_id"),
     )
 
@@ -118,6 +123,7 @@ class InviteTokenDB(Base):
 class LessonRequestDB(Base):
     __tablename__ = "lesson_requests"
     __table_args__ = (
+        UniqueConstraint("id", "invite_token", "instructor_id", name="uq_lesson_requests_tenant_invite"),
         CheckConstraint("slot_end > slot_start", name="ck_lesson_requests_end_after_start"),
         CheckConstraint(
             "status in ('pending', 'confirmed', 'alternatives_sent', 'declined', 'cancelled')",
@@ -184,6 +190,42 @@ class LessonRequestDB(Base):
     appointments = relationship("AppointmentDB", back_populates="lesson_request")
     original_slot_offer = relationship("InviteSlotOfferDB", foreign_keys=[original_slot_offer_id])
     confirmed_slot_offer = relationship("InviteSlotOfferDB", foreign_keys=[confirmed_slot_offer_id])
+
+
+class NotificationEventDB(Base):
+    __tablename__ = "notification_events"
+    __table_args__ = (
+        ForeignKeyConstraint(["invite_token", "instructor_id"], ["invite_tokens.token", "invite_tokens.instructor_id"], name="fk_notifications_invite_tenant"),
+        ForeignKeyConstraint(["request_id", "invite_token", "instructor_id"], ["lesson_requests.id", "lesson_requests.invite_token", "lesson_requests.instructor_id"], name="fk_notifications_request_tenant"),
+        UniqueConstraint("instructor_id", "logical_key", "channel", name="uq_notifications_channel"),
+        CheckConstraint("kind in ('invite', 'confirmation')", name="ck_notifications_kind"),
+        CheckConstraint("channel in ('sms', 'email')", name="ck_notifications_channel"),
+        CheckConstraint("status in ('queued', 'processing', 'accepted', 'delivered', 'failed', 'skipped')", name="ck_notifications_status"),
+        CheckConstraint("attempt_count between 0 and 5", name="ck_notifications_attempts"),
+        CheckConstraint("(kind = 'confirmation' AND request_id IS NOT NULL) OR (kind = 'invite' AND request_id IS NULL)", name="ck_notifications_request_kind"),
+        Index("ix_notifications_due", "status", "next_attempt_at", "lease_expires_at"),
+        Index("ix_notifications_request", "request_id"),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid4()))
+    instructor_id = Column(String, ForeignKey("instructors.id"), nullable=False)
+    invite_token = Column(String, nullable=False)
+    request_id = Column(String, nullable=True)
+    kind = Column(String, nullable=False)
+    channel = Column(String, nullable=False)
+    logical_key = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="queued")
+    recipient = Column(String, nullable=True)
+    template_version = Column(String, nullable=False, default="1")
+    template_context = Column(JSON, nullable=False, default=dict)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    attempt_token = Column(String, nullable=True)
+    failure_code = Column(String, nullable=True)
+    provider_message_id = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class RouteEstimateDB(Base):

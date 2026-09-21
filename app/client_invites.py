@@ -1,11 +1,12 @@
 import datetime
 import hashlib
-import urllib.parse
 from typing import Optional
 
 from sqlalchemy.exc import IntegrityError
 
 from app import db, timezones, tools
+from app.calendar_handoff import calendar_ics, calendar_links
+from app.notifications import public_notifications
 from app.api_errors import (
     CalendarLinksUnavailable,
     GeocodingFailed as GeocodingFailedApiError,
@@ -157,7 +158,7 @@ def select_client_lesson_request_alternative(
     session = db.SessionLocal()
     try:
         lesson_request = session.query(LessonRequestDB).filter_by(request_token=request_token).first()
-        if lesson_request is None:
+        if lesson_request is None or lesson_request.invite is None or lesson_request.invite.revoked_at is not None:
             raise LessonRequestNotFound()
         if _is_expired(lesson_request):
             raise LessonRequestExpired()
@@ -197,17 +198,15 @@ def select_client_lesson_request_alternative(
 
 
 def get_client_calendar_links(request_token: str) -> ClientInviteCalendarLinks:
-    response = _lesson_request_response(request_token)
-    if response.confirmation is None:
-        raise CalendarLinksUnavailable()
-    return response.confirmation.calendar_links
+    request, appointments = _load_request_and_appointments(request_token)
+    return calendar_links(request.request_token, appointments)
 
 
 def get_client_calendar_ics(request_token: str) -> str:
     request, appointments = _load_request_and_appointments(request_token)
     if not appointments:
         raise CalendarLinksUnavailable()
-    return _ics_content(request, appointments)
+    return calendar_ics(appointments)
 
 
 def _find_slots(
@@ -466,6 +465,8 @@ def _lesson_request_response(request_token: str) -> ClientInviteLessonRequestRes
     if _is_expired(request):
         status = "expired"
     confirmation = _confirmation_response(request, appointments) if appointments else None
+    with db.SessionLocal() as session:
+        notifications = public_notifications(session, request.id)
     return ClientInviteLessonRequestResponse(
         id=request.request_token,
         invite_token=request.invite_token,
@@ -474,6 +475,7 @@ def _lesson_request_response(request_token: str) -> ClientInviteLessonRequestRes
         requested_at_iso=request.created_at,
         alternative_slots=_alternative_slot_responses(request),
         confirmation=confirmation,
+        notifications=notifications,
     )
 
 
@@ -481,14 +483,16 @@ def _load_request_and_appointments(request_token: str) -> tuple[LessonRequestDB,
     session = db.SessionLocal()
     try:
         request = session.query(LessonRequestDB).filter_by(request_token=request_token).first()
-        if request is None:
+        if request is None or request.invite is None or request.invite.revoked_at is not None:
             raise LessonRequestNotFound()
         appointments = (
             session.query(AppointmentDB)
-            .filter_by(request_id=request.id)
-            .order_by(AppointmentDB.start_time.asc())
+            .filter_by(request_id=request.id, instructor_id=request.instructor_id,
+                       event_type="lesson", status="scheduled", is_break=False)
+            .filter(AppointmentDB.cancelled_at.is_(None))
+            .order_by(AppointmentDB.start_time.asc(), AppointmentDB.calendar_uid.asc())
             .all()
-        )
+        ) if request.status == "confirmed" else []
         session.expunge(request)
         for appointment in appointments:
             session.expunge(appointment)
@@ -502,7 +506,7 @@ def _confirmation_response(
     appointments: list[AppointmentDB],
 ) -> ClientInviteLessonConfirmation:
     first = appointments[0]
-    links = _calendar_links(request, first)
+    links = calendar_links(request.request_token, appointments)
     local_start = timezones.storage_to_local(first.start_time, _instructor_timezone(request.instructor_id))
     return ClientInviteLessonConfirmation(
         appointment_id=request.request_token,
@@ -514,41 +518,6 @@ def _confirmation_response(
         confirmed_at_iso=first.created_at,
         calendar_links=links,
     )
-
-
-def _calendar_links(request: LessonRequestDB, appointment: AppointmentDB) -> ClientInviteCalendarLinks:
-    start = _calendar_timestamp(appointment.start_time)
-    end = _calendar_timestamp(appointment.end_time)
-    title = urllib.parse.quote("Swim lesson")
-    location = urllib.parse.quote(appointment.location_address)
-    google = (
-        "https://calendar.google.com/calendar/render?action=TEMPLATE"
-        f"&text={title}&dates={start}/{end}&location={location}"
-    )
-    ics = f"/api/public/calendar/{request.request_token}.ics"
-    return ClientInviteCalendarLinks(google=google, apple=ics, ics=ics)
-
-
-def _ics_content(request: LessonRequestDB, appointments: list[AppointmentDB]) -> str:
-    lines = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//Swim Command//Client Invite//EN",
-    ]
-    for index, appointment in enumerate(appointments):
-        lines.extend(
-            [
-                "BEGIN:VEVENT",
-                f"UID:{request.request_token}-{index + 1}@swim-command.local",
-                f"DTSTART:{_calendar_timestamp(appointment.start_time)}",
-                f"DTEND:{_calendar_timestamp(appointment.end_time)}",
-                "SUMMARY:Swim lesson",
-                f"LOCATION:{appointment.location_address}",
-                "END:VEVENT",
-            ]
-        )
-    lines.extend(["END:VCALENDAR", ""])
-    return "\r\n".join(lines)
 
 
 def _slot_matches_windows(slot: TimeSlotDTO, windows) -> bool:
@@ -621,10 +590,6 @@ def _intake_id(invite_token: str) -> str:
 def _display_slot(start_time: datetime.datetime) -> str:
     hour = start_time.strftime("%I").lstrip("0") or "12"
     return f"{start_time.strftime('%a, %b')} {start_time.day} at {hour}:{start_time.strftime('%M %p')}"
-
-
-def _calendar_timestamp(value: datetime.datetime) -> str:
-    return timezones.calendar_utc_timestamp(value)
 
 
 def _weekly_candidate(start_time: datetime.datetime) -> bool:

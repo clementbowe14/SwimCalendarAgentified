@@ -248,6 +248,13 @@ for a different invite under the same instructor returns a conflict. Contacts
 come only from that invite's persisted intake. An initial invitation before
 intake needs a future coach contact-capture workflow.
 
+Set `SWIM_CLIENT_INVITE_ORIGIN` to the trusted HTTPS origin of the client app
+(for example `https://lessons.example.com`). Invitation records snapshot a link
+on that origin so adapters can render an actionable message without querying
+application storage. Development defaults to `http://127.0.0.1:3001`; staging and
+production reject new invite-notification commands if the origin is missing or
+invalid. Replays keep their original recipient and invitation URL.
+
 Both public request-status endpoints return only channel, kind, status and UTC
 update time. They do not expose recipient details, provider IDs or failure
 payloads. Legacy requests have no fabricated delivery history. Client screens

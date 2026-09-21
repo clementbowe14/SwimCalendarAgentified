@@ -45,11 +45,11 @@ test.describe("client invite self-booking flow", () => {
     await page.getByRole("button", { name: "Request this lesson" }).click();
 
     await expect(page.getByRole("heading", { name: "Lesson request sent" })).toBeVisible();
-    await expect(page.getByText("Text and email request sent")).toBeVisible();
+    await expect(page.getByText("Lesson request received")).toBeVisible();
     await expectInviteProgress(page, "Step 4 of 5: Status", 80);
 
     await page.getByRole("button", { name: "Check confirmation" }).click();
-    await expect(page.getByRole("heading", { name: "Lesson confirmed" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Lesson confirmed", level: 2 })).toBeVisible();
     await expectInviteProgress(page, "Step 4 of 5: Status", 80);
   });
 
@@ -63,8 +63,8 @@ test.describe("client invite self-booking flow", () => {
 
     await expect(page.getByRole("heading", { name: "Ready for your calendar" })).toBeVisible();
     await expectInviteProgress(page, "Step 5 of 5: Calendar", 100);
-    await page.getByRole("button", { name: "Google Calendar" }).click();
-    await expect(page.getByText("Added to Google Calendar.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Google Calendar" })).toHaveAttribute("href", /https:\/\/calendar.google.com\/calendar\/render/);
+    await expect(page.getByText("Added to Google Calendar.")).toHaveCount(0);
   });
 });
 

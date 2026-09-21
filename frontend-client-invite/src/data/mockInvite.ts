@@ -116,6 +116,7 @@ export const createRequestedLesson = (slot: SchedulerSlot): LessonRequest => ({
   requested_at_iso: "2026-08-27T13:30:00-05:00",
   alternative_slots: [],
   confirmation: null,
+  notifications: [],
 });
 
 export const createConfirmedLesson = (slot: SchedulerSlot): LessonRequest => ({
@@ -128,7 +129,8 @@ export const createConfirmedLesson = (slot: SchedulerSlot): LessonRequest => ({
     message: `Riley confirmed ${slot.display}.`,
     calendar_links: {
       google: "https://calendar.google.com/calendar/render?action=TEMPLATE",
-      apple: "webcal://swim-command.local/lessons/app_sofia_1230.ics",
+      google_events: [{ start_iso: slot.start_iso, end_iso: slot.end_iso, url: "https://calendar.google.com/calendar/render?action=TEMPLATE" }],
+      apple: "/calendar/app_sofia_1230.ics",
       ics: "/calendar/app_sofia_1230.ics",
     },
   },

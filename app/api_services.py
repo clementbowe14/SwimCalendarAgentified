@@ -469,10 +469,9 @@ def confirm_coach_lesson_request(
         lesson_request.validation_failure_code = None
         lesson_request.validation_failure_details = None
         lesson_request.validation_failed_at = None
-        lesson_request.client_notification_status = "queued"
-        lesson_request.client_notification_message = "Your lesson request was confirmed."
-        lesson_request.client_notified_at = now
         lesson_request.updated_at = now
+        from app.notifications import enqueue_confirmation
+        enqueue_confirmation(session, lesson_request, appointments)
         session.commit()
         return _lesson_request_action_response(
             lesson_request,
@@ -908,7 +907,11 @@ def create_public_lesson_request(
             or existing.location_type != request.location_type
         ):
             raise IdempotencyConflict()
+        from app.notifications import public_notifications
+        with db.SessionLocal() as session:
+            notifications = public_notifications(session, existing.id)
         return PublicLessonRequestResponse(
+            notifications=notifications,
             request_token=existing.request_token,
             status="pending",
             selected_slot=TimeSlotResponse(
@@ -968,6 +971,9 @@ def create_public_lesson_request(
 
 def get_public_request_status(request_token: str) -> PublicRequestStatusResponse:
     record = resolve_lesson_request(request_token)
+    from app.notifications import public_notifications
+    with db.SessionLocal() as session:
+        notifications = public_notifications(session, record.id)
     status = _legacy_public_request_status(record.status)
     if record.status != "confirmed" and record.expires_at <= datetime.utcnow():
         status = "expired"
@@ -975,6 +981,7 @@ def get_public_request_status(request_token: str) -> PublicRequestStatusResponse
         request_token=record.request_token,
         status=status,
         message=_legacy_public_request_message(status),
+        notifications=notifications,
     )
 
 
