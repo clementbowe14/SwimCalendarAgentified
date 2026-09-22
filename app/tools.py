@@ -2,10 +2,11 @@ import datetime
 from typing import List, Optional
 from app import timezones
 from app.routing import BaseRoutingProvider, RoutingProviderNotConfigured
-from app.engine import SwimSchedulerConstraintEngine
+from app.engine import BufferPolicy, SwimSchedulerConstraintEngine
 from app.models import LocationInfo, TimeSlotDTO
 from app import db
 from app.routing_service import build_routing_provider
+from app.scheduler_settings import load_buffer_policy
 
 
 class UnconfiguredRoutingProvider(BaseRoutingProvider):
@@ -29,13 +30,11 @@ def _build_default_routing_provider():
 
 
 routing_provider = _build_default_routing_provider()
-constraint_engine = SwimSchedulerConstraintEngine(routing_provider)
 
 
 def configure_routing_provider(provider):
-    global routing_provider, constraint_engine
+    global routing_provider
     routing_provider = provider
-    constraint_engine = SwimSchedulerConstraintEngine(routing_provider)
 
 
 def reset_routing_provider():
@@ -46,7 +45,8 @@ def find_available_swim_slots(
     date_str: str,
     client_address: str,
     is_instructor_facility: bool = False,
-    duration_mins: int = 60
+    duration_mins: int = 60,
+    buffer_policy: Optional[BufferPolicy] = None,
 ) -> List[TimeSlotDTO]:
     """
     Finds all valid swim lesson slots for a given client request on a specific date.
@@ -96,7 +96,13 @@ def find_available_swim_slots(
     # 4. Fetch existing appointments & breaks
     existing_events = db.get_utc_appointment_events_for_date(instructor_id, date_str)
 
-    # 5. Run constraint engine
+    # 5. Load one immutable policy snapshot and run the constraint engine.
+    policy = buffer_policy or load_buffer_policy(instructor_id, operation="availability")
+    constraint_engine = SwimSchedulerConstraintEngine(
+        routing_provider,
+        policy,
+        timezone_name=instructor.timezone,
+    )
     utc_slots = constraint_engine.find_available_slots_for_day(
         day_start=day_start,
         day_end=day_end,
@@ -125,6 +131,8 @@ def book_swim_lesson(
     location_address: str,
     idempotency_key: Optional[str] = None,
     request_id: Optional[str] = None,
+    is_instructor_facility: bool = False,
+    buffer_policy: Optional[BufferPolicy] = None,
 ) -> dict:
     """
     Books an appointment slot after validating inputs.
@@ -140,7 +148,38 @@ def book_swim_lesson(
     start_time_storage = timezones.to_utc_storage(start_time)
     end_time_storage = start_time_storage + datetime.timedelta(minutes=duration_mins)
 
-    lat, lng = routing_provider.geocode(location_address)
+    existing = db.get_appointment_by_idempotency_key(idempotency_key)
+    if existing is not None:
+        if (
+            existing["instructor_id"] != instructor_id
+            or existing["client_id"] != client_id
+            or timezones.to_utc_storage(existing["start_time"]) != start_time_storage
+            or timezones.to_utc_storage(existing["end_time"]) != end_time_storage
+        ):
+            raise db.IdempotencyKeyConflictError("The idempotency key was used for another booking.")
+        return {
+            "success": True,
+            "appointment_id": existing["id"],
+            "message": f"Successfully booked swim lesson for {client_name} on {timezones.aware_to_local(start_time, instructor.timezone).strftime('%b %d, %Y at %I:%M %p')}!",
+        }
+
+    policy = buffer_policy or load_buffer_policy(instructor_id, operation="direct_booking")
+    available_slots = find_available_swim_slots(
+        instructor_id=instructor_id,
+        date_str=timezones.requested_local_date(start_time, instructor.timezone).isoformat(),
+        client_address=location_address,
+        is_instructor_facility=is_instructor_facility,
+        duration_mins=duration_mins,
+        buffer_policy=policy,
+    )
+    if not any(timezones.to_utc_storage(slot.start_time) == start_time_storage for slot in available_slots):
+        raise db.ScheduleConflictError("The requested start is no longer available.")
+
+    if is_instructor_facility:
+        lat, lng = instructor.lat, instructor.lng
+        location_address = instructor.main_address
+    else:
+        lat, lng = routing_provider.geocode(location_address)
 
     app_id = db.save_appointment(
         instructor_id=instructor_id,

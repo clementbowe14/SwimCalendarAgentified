@@ -384,30 +384,42 @@ def get_pending_lesson_requests_for_instructor(instructor_id: str) -> List[dict]
 
 def get_scheduler_settings(instructor_id: str) -> Optional[dict]:
     session = SessionLocal()
-    settings = session.query(SchedulerSettingsDB).filter_by(instructor_id=instructor_id).first()
-    if settings is None:
-        session.close()
-        return None
-    result = {
-        "rounding_increment_mins": settings.rounding_increment_mins,
-        "post_break_buffer_mins": settings.post_break_buffer_mins,
-        "distance_buffer_tiers": json.loads(settings.distance_buffer_tiers),
-        "payments": {
-            "enabled_methods": _split_csv(settings.payments_enabled_methods),
-            "cancellation_window_hours": settings.cancellation_window_hours,
-            "require_payment_method_for_new_clients": settings.require_payment_method_for_new_clients,
-        },
-    }
-    session.close()
-    return result
-
-def save_scheduler_settings(instructor_id: str, rules: dict) -> dict:
-    session = SessionLocal()
     try:
         settings = session.query(SchedulerSettingsDB).filter_by(instructor_id=instructor_id).first()
         if settings is None:
+            return None
+        return {
+            "buffers_enabled": settings.buffers_enabled,
+            "apply_distance_buffer_at_shift_start": settings.apply_distance_buffer_at_shift_start,
+            "rounding_increment_mins": settings.rounding_increment_mins,
+            "post_break_buffer_mins": settings.post_break_buffer_mins,
+            "distance_buffer_tiers": json.loads(settings.distance_buffer_tiers),
+            "payments": {
+                "enabled_methods": _split_csv(settings.payments_enabled_methods),
+                "cancellation_window_hours": settings.cancellation_window_hours,
+                "require_payment_method_for_new_clients": settings.require_payment_method_for_new_clients,
+            },
+        }
+    finally:
+        session.close()
+
+def save_scheduler_settings(
+    instructor_id: str,
+    rules: dict,
+    *,
+    explicit_fields: Optional[set[str]] = None,
+) -> dict:
+    session = SessionLocal()
+    try:
+        settings = session.query(SchedulerSettingsDB).filter_by(instructor_id=instructor_id).first()
+        is_new = settings is None
+        if is_new:
             settings = SchedulerSettingsDB(instructor_id=instructor_id)
             session.add(settings)
+        if is_new or explicit_fields is None or "buffers_enabled" in explicit_fields:
+            settings.buffers_enabled = rules["buffers_enabled"]
+        if is_new or explicit_fields is None or "apply_distance_buffer_at_shift_start" in explicit_fields:
+            settings.apply_distance_buffer_at_shift_start = rules["apply_distance_buffer_at_shift_start"]
         settings.rounding_increment_mins = rules["rounding_increment_mins"]
         settings.post_break_buffer_mins = rules["post_break_buffer_mins"]
         settings.distance_buffer_tiers = json.dumps(rules["distance_buffer_tiers"], sort_keys=True)

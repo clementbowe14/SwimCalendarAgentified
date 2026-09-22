@@ -1,7 +1,10 @@
 from datetime import date, datetime, timezone
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
+import math
+import re
 from typing import Literal, Optional
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class HealthResponse(BaseModel):
@@ -136,11 +139,33 @@ class CoachLessonRequestResponse(BaseModel):
 
 
 class CoachDistanceBufferTier(BaseModel):
-    id: str
-    label: str
-    min_miles: float = Field(ge=0)
-    max_miles: Optional[float] = Field(default=None, ge=0)
+    id: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=120)
+    min_miles: float = Field(ge=0, le=10_000, allow_inf_nan=False)
+    max_miles: Optional[float] = Field(default=None, ge=0, le=10_000, allow_inf_nan=False)
     buffer_mins: int = Field(ge=0, le=240)
+
+    @field_validator("id", "label", mode="before")
+    @classmethod
+    def trim_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", value):
+            raise ValueError("Tier id must start with a lowercase letter and contain only lowercase letters, numbers, '_' or '-'.")
+        return value
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "CoachDistanceBufferTier":
+        if not math.isfinite(self.min_miles) or (
+            self.max_miles is not None and not math.isfinite(self.max_miles)
+        ):
+            raise ValueError("Tier bounds must be finite numbers.")
+        if self.max_miles is not None and self.max_miles < self.min_miles:
+            raise ValueError("Tier max_miles must be greater than or equal to min_miles.")
+        return self
 
 
 class CoachSchedulerPayments(BaseModel):
@@ -150,10 +175,38 @@ class CoachSchedulerPayments(BaseModel):
 
 
 class CoachSchedulerRules(BaseModel):
-    rounding_increment_mins: Literal[15] = 15
+    buffers_enabled: bool = True
+    apply_distance_buffer_at_shift_start: bool = False
+    rounding_increment_mins: Literal[5, 10, 15, 30] = 15
     post_break_buffer_mins: int = Field(default=15, ge=0, le=240)
-    distance_buffer_tiers: list[CoachDistanceBufferTier]
+    distance_buffer_tiers: list[CoachDistanceBufferTier] = Field(min_length=1, max_length=10)
     payments: CoachSchedulerPayments = Field(default_factory=CoachSchedulerPayments)
+
+    @model_validator(mode="after")
+    def validate_complete_distance_coverage(self) -> "CoachSchedulerRules":
+        tiers = self.distance_buffer_tiers
+        ids = [tier.id for tier in tiers]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Distance buffer tier ids must be unique.")
+        if Decimal(str(tiers[0].min_miles)) != Decimal("0"):
+            raise ValueError("The first distance buffer tier must start at 0 miles.")
+
+        for index, tier in enumerate(tiers):
+            is_last = index == len(tiers) - 1
+            if is_last and tier.max_miles is not None:
+                raise ValueError("The last distance buffer tier must have max_miles set to null.")
+            if not is_last and tier.max_miles is None:
+                raise ValueError("Only the last distance buffer tier may have max_miles set to null.")
+            if index and tier.min_miles <= tiers[index - 1].min_miles:
+                raise ValueError("Distance buffer tiers must be ordered by increasing min_miles.")
+            if not is_last:
+                current_max = Decimal(str(tier.max_miles))
+                next_min = Decimal(str(tiers[index + 1].min_miles))
+                last_hundredth = int((current_max * 100).to_integral_value(rounding=ROUND_FLOOR))
+                next_hundredth = int((next_min * 100).to_integral_value(rounding=ROUND_CEILING))
+                if last_hundredth + 1 != next_hundredth:
+                    raise ValueError("Distance buffer tiers must cover every hundredth of a mile exactly once.")
+        return self
 
 
 class CoachCommandCenterSnapshot(BaseModel):
