@@ -333,6 +333,8 @@ class SchedulerSettingsDB(Base):
     __tablename__ = "scheduler_settings"
 
     instructor_id = Column(String, ForeignKey("instructors.id"), primary_key=True)
+    buffers_enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+    apply_distance_buffer_at_shift_start = Column(Boolean, nullable=False, default=False, server_default="false")
     rounding_increment_mins = Column(Integer, nullable=False, default=15)
     post_break_buffer_mins = Column(Integer, nullable=False, default=15)
     distance_buffer_tiers = Column(Text, nullable=False)

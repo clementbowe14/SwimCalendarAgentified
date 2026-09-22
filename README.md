@@ -42,6 +42,22 @@ Override it with:
 SWIM_DATABASE_URL=postgresql+psycopg://user:password@host:5432/swim_scheduler ./venv/bin/alembic upgrade head
 ```
 
+Issue #17 adds strict validation for persisted scheduler buffer policies. Use a
+two-phase deployment: deploy the additive columns and strict write validation,
+stop or drain old writers, then run the preflight before enabling the new
+policy-aware readers:
+
+```bash
+./venv/bin/python scripts/check_scheduler_settings.py
+```
+
+The preflight reports only instructor IDs and stable reason codes. It never
+rewrites custom settings. Remediate every reported row through the validated
+coach settings API and rerun the command until it succeeds. Keep the application
+read-only during remediation so an older process cannot recreate an invalid
+policy. Downgrading migration `20260922_0008` removes the two buffer switches and
+therefore loses their customized values.
+
 ### Start The API
 
 ```bash

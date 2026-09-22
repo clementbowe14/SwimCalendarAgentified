@@ -1005,16 +1005,21 @@
             "type": "integer"
           },
           "id": {
+            "maxLength": 64,
+            "minLength": 1,
             "title": "Id",
             "type": "string"
           },
           "label": {
+            "maxLength": 120,
+            "minLength": 1,
             "title": "Label",
             "type": "string"
           },
           "max_miles": {
             "anyOf": [
               {
+                "maximum": 10000.0,
                 "minimum": 0.0,
                 "type": "number"
               },
@@ -1025,6 +1030,7 @@
             "title": "Max Miles"
           },
           "min_miles": {
+            "maximum": 10000.0,
             "minimum": 0.0,
             "title": "Min Miles",
             "type": "number"
@@ -1511,10 +1517,22 @@
       },
       "CoachSchedulerRules": {
         "properties": {
+          "apply_distance_buffer_at_shift_start": {
+            "default": false,
+            "title": "Apply Distance Buffer At Shift Start",
+            "type": "boolean"
+          },
+          "buffers_enabled": {
+            "default": true,
+            "title": "Buffers Enabled",
+            "type": "boolean"
+          },
           "distance_buffer_tiers": {
             "items": {
               "$ref": "#/components/schemas/CoachDistanceBufferTier"
             },
+            "maxItems": 10,
+            "minItems": 1,
             "title": "Distance Buffer Tiers",
             "type": "array"
           },
@@ -1529,8 +1547,13 @@
             "type": "integer"
           },
           "rounding_increment_mins": {
-            "const": 15,
             "default": 15,
+            "enum": [
+              5,
+              10,
+              15,
+              30
+            ],
             "title": "Rounding Increment Mins",
             "type": "integer"
           }

@@ -56,6 +56,60 @@ def test_coach_scheduler_settings_can_be_read_and_updated(client):
     assert reread.json() == updated_rules
 
 
+def test_persisted_buffer_toggle_changes_real_availability(client):
+    request = {
+        "client_name": "Charlie",
+        "client_address": "450 North Blvd, Austin, TX",
+        "requested_date": "2026-08-20",
+        "duration_mins": 60,
+        "is_instructor_facility": False,
+    }
+    enabled = client.post("/api/coach/availability", json=request)
+    assert enabled.status_code == 200
+    assert any(slot["buffer_mins"] > 0 for slot in enabled.json()["available_slots"])
+
+    rules = client.get("/api/coach/settings").json()
+    rules["buffers_enabled"] = False
+    saved = client.put("/api/coach/settings", json=rules)
+    disabled = client.post("/api/coach/availability", json=request)
+
+    assert saved.status_code == 200
+    assert disabled.status_code == 200
+    assert disabled.json()["available_slots"]
+    assert all(slot["buffer_mins"] == 0 for slot in disabled.json()["available_slots"])
+
+
+def test_old_settings_payload_preserves_explicit_buffer_switches(client):
+    rules = client.get("/api/coach/settings").json()
+    rules["buffers_enabled"] = False
+    rules["apply_distance_buffer_at_shift_start"] = True
+    assert client.put("/api/coach/settings", json=rules).status_code == 200
+
+    old_payload = dict(rules)
+    old_payload.pop("buffers_enabled")
+    old_payload.pop("apply_distance_buffer_at_shift_start")
+    old_payload["post_break_buffer_mins"] = 22
+    response = client.put("/api/coach/settings", json=old_payload)
+
+    assert response.status_code == 200
+    assert response.json()["buffers_enabled"] is False
+    assert response.json()["apply_distance_buffer_at_shift_start"] is True
+    assert response.json()["post_break_buffer_mins"] == 22
+
+
+def test_invalid_tier_update_is_atomic(client):
+    original = client.get("/api/coach/settings").json()
+    invalid = dict(original)
+    invalid["distance_buffer_tiers"] = [dict(tier) for tier in original["distance_buffer_tiers"]]
+    invalid["distance_buffer_tiers"][0]["max_miles"] = 4.98
+
+    response = client.put("/api/coach/settings", json=invalid)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert client.get("/api/coach/settings").json() == original
+
+
 @pytest.mark.parametrize(
     ("method", "path", "json"),
     [

@@ -140,7 +140,9 @@ export type LessonRequest = {
 };
 
 export type SchedulerRules = {
-  rounding_increment_mins: 15;
+  buffers_enabled: boolean;
+  apply_distance_buffer_at_shift_start: boolean;
+  rounding_increment_mins: 5 | 10 | 15 | 30;
   post_break_buffer_mins: number;
   distance_buffer_tiers: Array<{
     id: Id;
