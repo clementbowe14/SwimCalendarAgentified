@@ -110,6 +110,39 @@ def test_weekly_exports_are_chronological_snapshots_with_stable_uids():
     assert calendar_ics(items) == calendar_ics(items)
 
 
+def test_calendar_presentation_can_change_without_changing_public_defaults():
+    item = appointment()
+
+    public_links = calendar_links("req_public", [item])
+    instructor_links = calendar_links(
+        item.id,
+        [item],
+        download_url=f"/api/coach/appointments/{item.id}/calendar.ics",
+        title="Appointment",
+        description="Confirmed appointment.",
+    )
+    instructor_event = events(
+        calendar_ics(
+            [item],
+            title="Appointment",
+            description="Confirmed appointment.",
+        )
+    )[0]
+
+    public_query = parse_qs(urlsplit(public_links.google).query)
+    instructor_query = parse_qs(urlsplit(instructor_links.google).query)
+    assert public_query["text"] == ["Swim lesson"]
+    assert public_query["details"] == ["Confirmed swim lesson."]
+    assert public_links.ics == "/api/public/calendar/req_public.ics"
+    assert instructor_query["text"] == ["Appointment"]
+    assert instructor_query["details"] == ["Confirmed appointment."]
+    assert instructor_links.apple == instructor_links.ics == (
+        f"/api/coach/appointments/{item.id}/calendar.ics"
+    )
+    assert str(instructor_event["SUMMARY"]) == "Appointment"
+    assert str(instructor_event["DESCRIPTION"]) == "Confirmed appointment."
+
+
 @pytest.mark.parametrize("minutes", [0, -1])
 def test_invalid_durations_have_sanitized_errors(minutes):
     item = appointment()

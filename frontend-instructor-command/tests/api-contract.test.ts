@@ -173,6 +173,83 @@ test("HTTP instructor adapter maps prototype availability requests onto the coac
   );
 });
 
+test("HTTP instructor adapter uses canonical confirmation and preserves returned occurrence IDs", async () => {
+  const calls: FetchCall[] = [];
+  const api = new HttpInstructorCommandApi("http://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
+  const calendarLinks = calendarLinksContract("app_request_1");
+
+  await withMockFetch(calls, async () =>
+    jsonResponse({
+      id: "request/one",
+      status: "confirmed",
+      appointment_id: "app_request_1",
+      appointment_ids: ["app_request_1", "app_request_2"],
+      message: "Lesson request is confirmed.",
+      calendar_links: calendarLinks,
+    }),
+    async () => {
+      const response = await api.confirmRequest("request/one");
+      const body = JSON.parse(String(calls[0].init?.body));
+
+      assert.equal(calls[0].url, "http://api.test/api/coach/lesson-requests/request%2Fone/confirm");
+      assert.equal(calls[0].init?.method, "POST");
+      assert.equal(headerValue(calls[0].init?.headers, "authorization"), "Bearer signed.jwt");
+      assert.deepEqual(body, {});
+      assert.deepEqual(response.appointment_ids, ["app_request_1", "app_request_2"]);
+      assert.equal(response.calendar_links?.google_events.length, 2);
+    },
+  );
+});
+
+test("HTTP instructor adapter reads handoff by exact appointment and downloads authenticated ICS", async () => {
+  const calls: FetchCall[] = [];
+  const api = new HttpInstructorCommandApi("http://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
+  const links = calendarLinksContract("app/direct one");
+
+  await withMockFetch(
+    calls,
+    async (input) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/calendar-links")) return jsonResponse(links);
+      return new Response("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n", {
+        headers: { "content-type": "text/calendar; charset=utf-8" },
+      });
+    },
+    async () => {
+      const read = await api.getAppointmentCalendarLinks("app/direct one");
+      const blob = await api.downloadCalendarIcs(read.ics);
+
+      assert.equal(calls[0].url, "http://api.test/api/coach/appointments/app%2Fdirect%20one/calendar-links");
+      assert.equal(calls[1].url, "http://api.test/api/coach/appointments/app%2Fdirect%20one/calendar.ics");
+      assert.equal(headerValue(calls[0].init?.headers, "authorization"), "Bearer signed.jwt");
+      assert.equal(headerValue(calls[1].init?.headers, "authorization"), "Bearer signed.jwt");
+      assert.equal(calls[1].init?.cache, "no-store");
+      assert.equal(calls[1].init?.redirect, "error");
+      assert.equal(calls[1].init?.referrerPolicy, "no-referrer");
+      assert.equal(await blob.text(), "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n");
+    },
+  );
+});
+
+test("HTTP instructor adapter rejects untrusted and non-calendar downloads", async () => {
+  const calls: FetchCall[] = [];
+  const api = new HttpInstructorCommandApi("https://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
+
+  await assert.rejects(() => api.downloadCalendarIcs("https://evil.test/api/coach/appointments/app_1/calendar.ics"));
+  assert.equal(calls.length, 0);
+
+  await withMockFetch(
+    calls,
+    async () => new Response("not a calendar", { headers: { "content-type": "text/html" } }),
+    async () => {
+      await assert.rejects(
+        () => api.downloadCalendarIcs("https://api.test/api/coach/appointments/app_1/calendar.ics"),
+        (error: unknown) => error instanceof InstructorCommandApiError && error.code === "INVALID_CALENDAR_RESPONSE",
+      );
+    },
+  );
+});
+
 test("HTTP instructor adapter preserves stable backend error codes", async () => {
   const api = new HttpInstructorCommandApi("http://api.test/api");
   let caught: unknown;
@@ -269,6 +346,20 @@ function authSessionContract(): InstructorAuthSession {
       display_name: "Coach Sarah",
     },
     expires_at: "2026-08-31T20:00:00Z",
+  };
+}
+
+function calendarLinksContract(anchor: string) {
+  const path = `/api/coach/appointments/${encodeURIComponent(anchor)}/calendar.ics`;
+  const google = "https://calendar.google.com/calendar/render?action=TEMPLATE";
+  return {
+    google,
+    google_events: [
+      { start_iso: "2026-08-29T17:30:00Z", end_iso: "2026-08-29T18:15:00Z", url: `${google}&dates=one` },
+      { start_iso: "2026-09-05T17:30:00Z", end_iso: "2026-09-05T18:15:00Z", url: `${google}&dates=two` },
+    ],
+    apple: path,
+    ics: path,
   };
 }
 

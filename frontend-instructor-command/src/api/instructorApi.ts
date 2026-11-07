@@ -1,9 +1,12 @@
 import { candidateSlots, snapshot } from "./mockData.js";
+import { trustedInstructorCalendarUrl } from "./calendar.js";
 import type {
   BookLessonPayload,
   BookLessonResponse,
   BookingRequestDTO,
+  CalendarLinks,
   CoachLessonRequestActionResponse,
+  CoachLessonRequestConfirmResponse,
   CommandCenterSnapshot,
   Id,
   InstructorAuthCredentials,
@@ -28,6 +31,7 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
   readonly authMode = "mock" as const;
 
   private currentSnapshot: CommandCenterSnapshot = clone(snapshot);
+  private readonly calendarHandoffs = new Map<Id, CalendarLinks>();
 
   getStoredSession(): InstructorAuthSession | null {
     return null;
@@ -87,22 +91,72 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
 
   async bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse> {
     const appointment_id = `appt_${payload.client_id}_${payload.start_time_iso.replace(/[^0-9]/g, "").slice(0, 12)}`;
+    const calendar_links = mockCalendarLinks(appointment_id, [
+      {
+        startIso: payload.start_time_iso,
+        endIso: addMinutes(payload.start_time_iso, payload.duration_mins),
+      },
+    ]);
+    this.calendarHandoffs.set(appointment_id, calendar_links);
     return {
       success: true,
       appointment_id,
       message: `Successfully booked swim lesson for ${payload.client_name}.`,
+      calendar_links,
     };
   }
 
-  async approveRequest(request_id: Id, slot_id: Id): Promise<LessonRequest> {
-    return this.updateRequest(request_id, (request) => {
-      const selectedSlot = [request.requested_slot, ...request.alternative_slots].find((slot) => slot.id === slot_id);
-      return {
-        ...request,
-        status: "approved",
-        requested_slot: selectedSlot ?? request.requested_slot,
-      };
-    });
+  async confirmRequest(request_id: Id): Promise<CoachLessonRequestConfirmResponse> {
+    const updated = this.updateRequest(request_id, (request) => ({ ...request, status: "approved" }));
+    const occurrenceStarts = request_id === "req_sofia_0827"
+      ? [updated.requested_slot.start_time, addDays(updated.requested_slot.start_time, 7)]
+      : [updated.requested_slot.start_time];
+    const appointment_ids = occurrenceStarts.map((_, index) => `appt_${request_id}_${index + 1}`);
+    const calendar_links = mockCalendarLinks(
+      appointment_ids[0],
+      occurrenceStarts.map((startIso) => ({
+        startIso,
+        endIso: addMinutes(startIso, minutesBetweenIso(updated.requested_slot.start_time, updated.requested_slot.end_time)),
+      })),
+    );
+    for (const appointmentId of appointment_ids) {
+      this.calendarHandoffs.set(appointmentId, calendar_links);
+    }
+    return {
+      id: request_id,
+      status: "confirmed",
+      appointment_id: appointment_ids[0],
+      appointment_ids,
+      message: "Lesson request is confirmed.",
+      calendar_links,
+    };
+  }
+
+  async getAppointmentCalendarLinks(appointment_id: Id): Promise<CalendarLinks> {
+    const links = this.calendarHandoffs.get(appointment_id);
+    if (!links) {
+      throw new InstructorCommandApiError(
+        409,
+        "CALENDAR_LINKS_UNAVAILABLE",
+        "Calendar options are unavailable for this appointment.",
+      );
+    }
+    return clone(links);
+  }
+
+  async downloadCalendarIcs(calendar_url: string): Promise<Blob> {
+    const documentUrl = typeof window === "undefined" ? "http://mock.local/" : window.location.href;
+    const trustedUrl = trustedInstructorCalendarUrl(calendar_url, "/api", documentUrl);
+    const path = new URL(trustedUrl).pathname;
+    const available = [...this.calendarHandoffs.values()].some((links) => links.ics === path);
+    if (!available) {
+      throw new InstructorCommandApiError(
+        409,
+        "CALENDAR_LINKS_UNAVAILABLE",
+        "Calendar options are unavailable for this appointment.",
+      );
+    }
+    return new Blob(["BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n"], { type: "text/calendar" });
   }
 
   async requestAlternatives(request_id: Id, preferred_slot_ids: Id[]): Promise<LessonRequest> {
@@ -213,8 +267,37 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     });
   }
 
-  approveRequest(_request_id: Id, _slot_id: Id): Promise<CoachLessonRequestActionResponse> {
-    return this.post(`/coach/lesson-requests/${encodeURIComponent(_request_id)}/approve`, {});
+  confirmRequest(request_id: Id): Promise<CoachLessonRequestConfirmResponse> {
+    return this.post(`/coach/lesson-requests/${encodeURIComponent(request_id)}/confirm`, {});
+  }
+
+  getAppointmentCalendarLinks(appointment_id: Id): Promise<CalendarLinks> {
+    return this.get(`/coach/appointments/${encodeURIComponent(appointment_id)}/calendar-links`);
+  }
+
+  async downloadCalendarIcs(calendar_url: string): Promise<Blob> {
+    const target = trustedInstructorCalendarUrl(calendar_url, this.baseUrl, browserDocumentUrl(this.baseUrl));
+    const response = await fetch(target, {
+      method: "GET",
+      headers: { ...requestHeaders(this.authStore.get()), accept: "text/calendar" },
+      cache: "no-store",
+      redirect: "error",
+      referrerPolicy: "no-referrer",
+    });
+    if (!response.ok) {
+      const error = await toApiError(response);
+      if (error.isAuthFailure) this.authStore.clear();
+      throw error;
+    }
+    const contentType = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
+    if (contentType !== "text/calendar") {
+      throw new InstructorCommandApiError(
+        502,
+        "INVALID_CALENDAR_RESPONSE",
+        "Calendar download failed. Please try again.",
+      );
+    }
+    return response.blob();
   }
 
   requestAlternatives(_request_id: Id, _preferred_slot_ids: Id[]): Promise<CoachLessonRequestActionResponse> {
@@ -427,4 +510,61 @@ function addMinutes(isoDateTime: string, minutes: number): string {
   const nextMinute = `${date.getMinutes()}`.padStart(2, "0");
   const nextSecond = `${date.getSeconds()}`.padStart(2, "0");
   return `${year}-${month}-${day}T${nextHour}:${nextMinute}:${nextSecond}`;
+}
+
+function addDays(isoDateTime: string, days: number): string {
+  const date = new Date(`${isoDateTime}${hasTimezone(isoDateTime) ? "" : "Z"}`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().replace(/\.000Z$/, "");
+}
+
+function minutesBetweenIso(startIso: string, endIso: string): number {
+  const start = new Date(`${startIso}${hasTimezone(startIso) ? "" : "Z"}`);
+  const end = new Date(`${endIso}${hasTimezone(endIso) ? "" : "Z"}`);
+  return Math.round((end.getTime() - start.getTime()) / 60_000);
+}
+
+function hasTimezone(value: string): boolean {
+  return /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value);
+}
+
+function mockUtcIso(value: string): string {
+  return new Date(`${value}${hasTimezone(value) ? "" : "Z"}`).toISOString();
+}
+
+function mockCalendarLinks(
+  anchorAppointmentId: Id,
+  occurrences: Array<{ startIso: string; endIso: string }>,
+): CalendarLinks {
+  const google_events = occurrences.map((occurrence) => {
+    const start = mockUtcIso(occurrence.startIso);
+    const end = mockUtcIso(occurrence.endIso);
+    const query = new URLSearchParams({
+      action: "TEMPLATE",
+      text: "Appointment",
+      dates: `${start.replace(/[-:]/g, "").replace(".000", "")}/${end.replace(/[-:]/g, "").replace(".000", "")}`,
+      details: "Confirmed appointment.",
+    });
+    return {
+      start_iso: start,
+      end_iso: end,
+      url: `https://calendar.google.com/calendar/render?${query.toString()}`,
+    };
+  });
+  const download = `/api/coach/appointments/${encodeURIComponent(anchorAppointmentId)}/calendar.ics`;
+  return {
+    google: google_events[0].url,
+    google_events,
+    apple: download,
+    ics: download,
+  };
+}
+
+function browserDocumentUrl(apiBase: string): string {
+  if (typeof window !== "undefined" && window.location) return window.location.href;
+  try {
+    return `${new URL(apiBase).origin}/`;
+  } catch {
+    return "http://localhost/";
+  }
 }

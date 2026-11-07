@@ -1,7 +1,11 @@
 import "./styles.css";
 import { InstructorCommandApiError, instructorCommandApi } from "./api/instructorApi.js";
-import type { CommandCenterSnapshot, InstructorAuthSession, TimeSlotDTO } from "./api/types.js";
+import type { CalendarLinks, CommandCenterSnapshot, InstructorAuthSession, TimeSlotDTO } from "./api/types.js";
 import { renderAvailabilityFinder } from "./components/AvailabilityFinder.js";
+import {
+  renderCalendarHandoffModal,
+  type CalendarHandoffModalModel,
+} from "./components/CalendarHandoffModal.js";
 import { renderClientDetail } from "./components/ClientDetail.js";
 import { renderShell, type ScreenId } from "./components/Layout.js";
 import { renderRequestManagement } from "./components/RequestManagement.js";
@@ -25,6 +29,7 @@ type AppState = {
   authSession: InstructorAuthSession | null;
   snapshot: CommandCenterSnapshot | null;
   recommendedSlots: TimeSlotDTO[];
+  calendarHandoff: CalendarHandoffModalModel | null;
   toast: string;
   error: string;
 };
@@ -36,12 +41,14 @@ const state: AppState = {
   authSession: instructorCommandApi.getStoredSession(),
   snapshot: null,
   recommendedSlots: [],
+  calendarHandoff: null,
   toast: "",
   error: "",
 };
 
 const instructorId = import.meta.env?.VITE_INSTRUCTOR_ID || "inst_riley_001";
 const commandDate = import.meta.env?.VITE_INSTRUCTOR_COMMAND_DATE || "2026-08-27";
+const instructorApiBaseUrl = import.meta.env?.VITE_INSTRUCTOR_API_URL || "";
 
 void boot();
 
@@ -93,19 +100,32 @@ async function loadCommandCenter(): Promise<void> {
 
 function render(): void {
   if (instructorCommandApi.authMode === "live" && state.authStatus !== "signed_in") {
+    document.body.classList.remove("calendar-modal-open");
     app.innerHTML = renderLockedScreen();
     wireAuthEvents();
     return;
   }
 
   if (!state.snapshot) {
+    document.body.classList.remove("calendar-modal-open");
     app.innerHTML = `<main class="loading-screen">Loading command center${renderError()}</main>`;
     return;
   }
 
   const body = renderActiveScreen(state.snapshot);
-  app.innerHTML = `${renderShell(state.snapshot, state.activeScreen, `${renderError()}${body}`)}${renderToast()}`;
+  const modal = state.calendarHandoff
+    ? renderCalendarHandoffModal(state.calendarHandoff, instructorApiBaseUrl, window.location.href)
+    : "";
+  document.body.classList.toggle("calendar-modal-open", Boolean(state.calendarHandoff));
+  app.innerHTML = `
+    <div data-command-surface ${state.calendarHandoff ? "inert" : ""}>
+      ${renderShell(state.snapshot, state.activeScreen, `${renderError()}${body}`)}
+      ${renderToast()}
+    </div>
+    ${modal}
+  `;
   wireEvents();
+  wireCalendarHandoffEvents();
 }
 
 function renderLockedScreen(): string {
@@ -185,18 +205,22 @@ function wireEvents(): void {
   });
 
   app.querySelectorAll<HTMLButtonElement>("[data-slot-id]").forEach((button) => {
-    if (button.dataset.approveRequest) return;
     button.addEventListener("click", async () => {
-      await holdSlot(button.dataset.slotId ?? "");
+      await bookSlot(button.dataset.slotId ?? "", button.dataset.calendarFocus ?? "");
     });
   });
 
-  app.querySelectorAll<HTMLButtonElement>("[data-approve-request]").forEach((button) => {
+  app.querySelectorAll<HTMLButtonElement>("[data-confirm-request]").forEach((button) => {
     button.addEventListener("click", async () => {
       await runAction(async () => {
-        await instructorCommandApi.approveRequest(button.dataset.approveRequest ?? "", button.dataset.slotId ?? "");
-        state.snapshot = await instructorCommandApi.getSnapshot(instructorId, commandDate);
-        state.toast = "Request approved.";
+        const confirmation = await instructorCommandApi.confirmRequest(button.dataset.confirmRequest ?? "");
+        const appointmentId = confirmation.appointment_id ?? confirmation.appointment_ids[0] ?? null;
+        await completePersistedAction(
+          appointmentId,
+          confirmation.calendar_links ?? null,
+          button.dataset.calendarFocus ?? "",
+          "requests",
+        );
       });
     });
   });
@@ -249,6 +273,7 @@ async function signIn(form: HTMLFormElement): Promise<void> {
     state.authSession = await instructorCommandApi.signIn({ email, password });
     state.snapshot = null;
     state.recommendedSlots = [];
+    state.calendarHandoff = null;
     state.authStatus = "signed_in";
     state.toast = "Signed in.";
     await loadCommandCenter();
@@ -270,6 +295,7 @@ async function signOut(): Promise<void> {
     state.authSession = null;
     state.snapshot = null;
     state.recommendedSlots = [];
+    state.calendarHandoff = null;
     state.authStatus = "locked";
     state.toast = "";
     render();
@@ -284,7 +310,7 @@ async function refreshSlots(): Promise<void> {
   );
 }
 
-async function holdSlot(slotId: string): Promise<void> {
+async function bookSlot(slotId: string, returnFocusKey: string): Promise<void> {
   await runAction(async () => {
     if (!state.snapshot) return;
     const selectedClient = findFeaturedClient(state.snapshot, state.selectedClientId);
@@ -301,10 +327,75 @@ async function holdSlot(slotId: string): Promise<void> {
       is_instructor_facility: slot.target_location.is_instructor_facility,
       idempotency_key: `command:${selectedClient.id}:${slot.start_time}`,
     });
-    state.toast = booking.message;
+    await completePersistedAction(
+      booking.appointment_id,
+      booking.calendar_links ?? null,
+      returnFocusKey,
+      "finder",
+    );
+  });
+}
+
+async function completePersistedAction(
+  appointmentId: string | null,
+  mutationLinks: CalendarLinks | null,
+  returnFocusKey: string,
+  returnFocusFallback: "finder" | "requests",
+): Promise<void> {
+  state.toast = "";
+  let links = mutationLinks;
+
+  if (!links && appointmentId) {
+    try {
+      links = await instructorCommandApi.getAppointmentCalendarLinks(appointmentId);
+    } catch (error) {
+      if (handleAuthFailure(error, persistedAuthMessage())) return;
+      state.calendarHandoff = unavailableHandoff(appointmentId, returnFocusKey, returnFocusFallback);
+      await refreshAfterPersistence();
+      return;
+    }
+  }
+
+  state.calendarHandoff = links
+    ? {
+        status: "ready",
+        appointmentId,
+        links,
+        returnFocusKey,
+        returnFocusFallback,
+        downloadStatus: "idle",
+        inlineError: "",
+      }
+    : unavailableHandoff(appointmentId, returnFocusKey, returnFocusFallback);
+  await refreshAfterPersistence();
+}
+
+function unavailableHandoff(
+  appointmentId: string | null,
+  returnFocusKey: string,
+  returnFocusFallback: "finder" | "requests",
+): CalendarHandoffModalModel {
+  return {
+    status: "unavailable",
+    appointmentId,
+    links: null,
+    returnFocusKey,
+    returnFocusFallback,
+    downloadStatus: "idle",
+    inlineError: "",
+  };
+}
+
+async function refreshAfterPersistence(): Promise<void> {
+  if (state.authStatus !== "signed_in") return;
+  try {
     state.snapshot = await instructorCommandApi.getSnapshot(instructorId, commandDate);
     await refreshSlots();
-  });
+  } catch (error) {
+    if (!handleAuthFailure(error, persistedRefreshAuthMessage())) {
+      state.error = "The appointment was saved, but the schedule could not be refreshed. Reload to see the latest schedule.";
+    }
+  }
 }
 
 async function runAction(action: () => Promise<void>): Promise<void> {
@@ -320,7 +411,7 @@ async function runAction(action: () => Promise<void>): Promise<void> {
   }
 }
 
-function handleAuthFailure(error: unknown): boolean {
+function handleAuthFailure(error: unknown, persistedMessage?: string): boolean {
   if (instructorCommandApi.authMode !== "live") return false;
   if (!(error instanceof InstructorCommandApiError) || !error.isAuthFailure) return false;
 
@@ -328,9 +419,131 @@ function handleAuthFailure(error: unknown): boolean {
   state.authSession = null;
   state.snapshot = null;
   state.recommendedSlots = [];
+  state.calendarHandoff = null;
   state.authStatus = "expired";
-  state.error = "Your session expired. Sign in again to continue.";
+  state.error = persistedMessage ?? "Your session expired. Sign in again to continue.";
   return true;
+}
+
+function persistedAuthMessage(): string {
+  return "The appointment was saved, but calendar options could not load before your session expired. Sign in again; do not book it again.";
+}
+
+function persistedRefreshAuthMessage(): string {
+  return "The appointment was saved, but your session expired before the app finished refreshing. Sign in again; do not book it again.";
+}
+
+function wireCalendarHandoffEvents(): void {
+  const dialog = app.querySelector<HTMLElement>("[data-calendar-dialog]");
+  if (!dialog || !state.calendarHandoff) return;
+
+  app.querySelectorAll<HTMLButtonElement>("[data-calendar-close]").forEach((button) => {
+    button.addEventListener("click", closeCalendarHandoff);
+  });
+  app.querySelector<HTMLElement>("[data-calendar-backdrop]")?.addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) closeCalendarHandoff();
+  });
+  app.querySelector<HTMLButtonElement>("[data-calendar-ics]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget as HTMLButtonElement;
+    await downloadCalendarFile(button.dataset.calendarIcs ?? "");
+  });
+  dialog.addEventListener("keydown", (event) => trapCalendarDialogFocus(event, dialog));
+  dialog.focus();
+}
+
+function trapCalendarDialogFocus(event: KeyboardEvent, dialog: HTMLElement): void {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeCalendarHandoff();
+    return;
+  }
+  if (event.key !== "Tab") return;
+
+  const focusable = [...dialog.querySelectorAll<HTMLElement>(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )].filter((element) => !element.hasAttribute("hidden"));
+  if (!focusable.length) {
+    event.preventDefault();
+    dialog.focus();
+    return;
+  }
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (active === dialog) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+    return;
+  }
+  if (event.shiftKey && (active === first || !dialog.contains(active))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (active === last || !dialog.contains(active))) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function closeCalendarHandoff(): void {
+  const closing = state.calendarHandoff;
+  if (!closing) return;
+  state.calendarHandoff = null;
+  render();
+
+  const origin = [...app.querySelectorAll<HTMLElement>("[data-calendar-focus]")].find(
+    (element) => element.dataset.calendarFocus === closing.returnFocusKey,
+  );
+  const fallback = closing.returnFocusFallback === "finder"
+    ? app.querySelector<HTMLElement>("[data-refresh-slots]")
+    : app.querySelector<HTMLElement>('[data-screen="requests"]');
+  const target = origin ?? fallback ?? app.querySelector<HTMLElement>(".topbar h1");
+  if (target && !target.matches("button, a, input, select, textarea, [tabindex]")) target.tabIndex = -1;
+  target?.focus();
+}
+
+async function downloadCalendarFile(calendarUrl: string): Promise<void> {
+  const appointmentId = state.calendarHandoff?.appointmentId;
+  if (!state.calendarHandoff || state.calendarHandoff.status !== "ready") return;
+  state.calendarHandoff.downloadStatus = "downloading";
+  state.calendarHandoff.inlineError = "";
+  render();
+
+  try {
+    const blob = await instructorCommandApi.downloadCalendarIcs(calendarUrl);
+    if (!state.calendarHandoff || state.calendarHandoff.appointmentId !== appointmentId) return;
+    triggerCalendarDownload(blob);
+    state.calendarHandoff.downloadStatus = "downloaded";
+  } catch (error) {
+    if (handleAuthFailure(error, persistedAuthMessage())) {
+      render();
+      return;
+    }
+    if (!state.calendarHandoff || state.calendarHandoff.appointmentId !== appointmentId) return;
+    if (error instanceof InstructorCommandApiError && error.code === "CALENDAR_LINKS_UNAVAILABLE") {
+      state.calendarHandoff = unavailableHandoff(
+        appointmentId ?? null,
+        state.calendarHandoff.returnFocusKey,
+        state.calendarHandoff.returnFocusFallback,
+      );
+    } else {
+      state.calendarHandoff.downloadStatus = "idle";
+      state.calendarHandoff.inlineError = formatApiError(error);
+    }
+  }
+  render();
+}
+
+function triggerCalendarDownload(blob: Blob): void {
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = "appointment.ics";
+  anchor.rel = "noopener noreferrer";
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
 }
 
 function renderToast(): string {

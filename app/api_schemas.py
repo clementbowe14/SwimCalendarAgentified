@@ -191,6 +191,19 @@ class AvailabilitySearchResponse(BaseModel):
     available_slots: list[TimeSlotResponse]
 
 
+class GoogleCalendarEvent(BaseModel):
+    start_iso: datetime
+    end_iso: datetime
+    url: str
+
+
+class ClientInviteCalendarLinks(BaseModel):
+    google_events: list[GoogleCalendarEvent] = Field(default_factory=list)
+    google: str
+    apple: str
+    ics: str
+
+
 class CoachBookLessonRequest(BaseModel):
     client_name: str = Field(min_length=1, max_length=120)
     client_address: str = Field(min_length=1, max_length=300)
@@ -204,6 +217,7 @@ class BookLessonResponse(BaseModel):
     success: bool
     appointment_id: str
     message: str
+    calendar_links: Optional[ClientInviteCalendarLinks] = None
 
 
 class CoachLessonRequestActionResponse(BaseModel):
@@ -219,6 +233,7 @@ class CoachLessonRequestConfirmResponse(BaseModel):
     appointment_id: Optional[str] = None
     appointment_ids: list[str] = Field(default_factory=list)
     message: str
+    calendar_links: Optional[ClientInviteCalendarLinks] = None
 
 
 class CoachLessonRequestConfirmRequest(BaseModel):
@@ -378,19 +393,6 @@ class ClientInviteAvailabilityResponse(BaseModel):
 class ClientInviteLessonRequestCreate(BaseModel):
     slot_id: str = Field(min_length=1, max_length=120)
     idempotency_key: Optional[str] = Field(default=None, min_length=8, max_length=160)
-
-
-class GoogleCalendarEvent(BaseModel):
-    start_iso: datetime
-    end_iso: datetime
-    url: str
-
-
-class ClientInviteCalendarLinks(BaseModel):
-    google_events: list[GoogleCalendarEvent] = Field(default_factory=list)
-    google: str
-    apple: str
-    ics: str
 
 
 class ClientInviteLessonConfirmation(BaseModel):

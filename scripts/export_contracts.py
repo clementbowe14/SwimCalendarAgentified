@@ -11,7 +11,12 @@ if str(ROOT) not in sys.path:
 CONTRACT_ROOT = Path("contracts")
 
 from app.api import create_app
-from app.api_schemas import CoachCommandCenterSnapshot, CoachSchedulerRules
+from app.api_schemas import (
+    BookLessonResponse,
+    CoachCommandCenterSnapshot,
+    CoachLessonRequestConfirmResponse,
+    CoachSchedulerRules,
+)
 
 
 def build_contract_artifacts() -> dict[str, Any]:
@@ -26,6 +31,23 @@ def build_contract_artifacts() -> dict[str, Any]:
         "apple": "/api/public/calendar/req_contract_confirmed.ics",
         "ics": "/api/public/calendar/req_contract_confirmed.ics",
         "google_events": [{"start_iso": "2026-08-29T17:30:00Z", "end_iso": "2026-08-29T18:15:00Z", "url": google}],
+    }
+    coach_google = "https://calendar.google.com/calendar/render?" + urlencode({
+        "action": "TEMPLATE", "text": "Appointment",
+        "dates": "20260829T173000Z/20260829T181500Z",
+        "location": "820 Lakeview Dr, Austin, TX", "details": "Confirmed appointment.",
+    })
+    coach_calendar_links = {
+        "google": coach_google,
+        "apple": "/api/coach/appointments/app_contract_confirmed/calendar.ics",
+        "ics": "/api/coach/appointments/app_contract_confirmed/calendar.ics",
+        "google_events": [
+            {
+                "start_iso": "2026-08-29T17:30:00Z",
+                "end_iso": "2026-08-29T18:15:00Z",
+                "url": coach_google,
+            }
+        ],
     }
     return {
         "openapi.json": create_app().openapi(),
@@ -161,6 +183,27 @@ def build_contract_artifacts() -> dict[str, Any]:
                 "display_name": "Coach Sarah",
             },
         },
+        "fixtures/coach/calendar_links.json": coach_calendar_links,
+        "fixtures/coach/booking_response.json": BookLessonResponse.model_validate(
+            {
+                "success": True,
+                "appointment_id": "app_contract_confirmed",
+                "message": "Appointment booked.",
+                "calendar_links": coach_calendar_links,
+            }
+        ).model_dump(mode="json"),
+        "fixtures/coach/lesson_request_confirmation_response.json": (
+            CoachLessonRequestConfirmResponse.model_validate(
+                {
+                    "id": "req_contract_confirmed",
+                    "status": "confirmed",
+                    "appointment_id": "app_contract_confirmed",
+                    "appointment_ids": ["app_contract_confirmed"],
+                    "message": "Lesson request is confirmed.",
+                    "calendar_links": coach_calendar_links,
+                }
+            ).model_dump(mode="json")
+        ),
         "fixtures/coach/availability_search_response.json": {
             "status": "PRESENTING",
             "client_name": "Charlie",
@@ -376,6 +419,12 @@ Coach fixtures may include coach-only operational data and should only be consum
 instructor experiences. Instructor apps sign in with `POST /api/auth/coach/sign-in` or
 `POST /api/auth/coach/login`, persist the returned bearer token locally, and send it on `/api/coach/*`
 requests as `Authorization: Bearer <token>`.
+
+Instructor calendar handoffs use authenticated
+`GET /api/coach/appointments/{appointment_id}/calendar-links` and
+`GET /api/coach/appointments/{appointment_id}/calendar.ics` routes. The `.ics` download requires the
+same bearer session; the `apple` field is an alias of this provider-neutral download, not a direct
+calendar-provider write.
 
 Regenerate contracts with:
 

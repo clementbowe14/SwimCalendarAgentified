@@ -42,9 +42,11 @@ Protected coach endpoints:
 - `GET /api/coach/schedule?date=YYYY-MM-DD`
 - `POST /api/coach/availability`
 - `POST /api/coach/bookings`
+- `GET /api/coach/appointments/{appointment_id}/calendar-links`
+- `GET /api/coach/appointments/{appointment_id}/calendar.ics`
 - `GET /api/coach/settings`
 - `PUT /api/coach/settings`
-- `POST /api/coach/lesson-requests/{request_token}/approve`
+- `POST /api/coach/lesson-requests/{request_token}/confirm`
 - `POST /api/coach/lesson-requests/{request_token}/alternatives`
 - `POST /api/coach/lesson-requests/{request_token}/decline`
 
@@ -53,6 +55,7 @@ Protected coach endpoints:
 ```bash
 npm test
 npm run test:e2e
+npm run test:e2e:auth
 ```
 
-`npm test` covers screen models, renderers, and API adapter contracts. `npm run test:e2e` drives the browser prototype with the mock adapter by default, and includes skipped live-backend skeletons when `VITE_INSTRUCTOR_API_URL` is set.
+`npm test` covers screen models, renderers, calendar URL safety, and API adapter contracts. `npm run test:e2e` drives the browser prototype with the mock adapter by default. `npm run test:e2e:auth` exercises bearer-authenticated calendar fallback and failure states against intercepted API responses.

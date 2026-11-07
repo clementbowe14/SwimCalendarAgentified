@@ -140,6 +140,16 @@
             "title": "Appointment Id",
             "type": "string"
           },
+          "calendar_links": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClientInviteCalendarLinks"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "message": {
             "title": "Message",
             "type": "string"
@@ -1207,6 +1217,16 @@
             },
             "title": "Appointment Ids",
             "type": "array"
+          },
+          "calendar_links": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClientInviteCalendarLinks"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "title": "Id",
@@ -2321,6 +2341,100 @@
         "summary": "Logout Coach",
         "tags": [
           "coach-auth"
+        ]
+      }
+    },
+    "/api/coach/appointments/{appointment_id}/calendar-links": {
+      "get": {
+        "operationId": "read_appointment_calendar_links_api_coach_appointments__appointment_id__calendar_links_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "appointment_id",
+            "required": true,
+            "schema": {
+              "title": "Appointment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientInviteCalendarLinks"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Appointment Calendar Links",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/appointments/{appointment_id}/calendar.ics": {
+      "get": {
+        "operationId": "download_appointment_calendar_api_coach_appointments__appointment_id__calendar_ics_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "appointment_id",
+            "required": true,
+            "schema": {
+              "title": "Appointment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/calendar": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Download Appointment Calendar",
+        "tags": [
+          "coach"
         ]
       }
     },

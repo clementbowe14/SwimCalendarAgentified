@@ -20,6 +20,7 @@ export function renderRequestManagement(snapshot: CommandCenterSnapshot): string
 }
 
 function renderRequest(request: LessonRequest): string {
+  const isPending = request.status === "pending";
   return `
     <article class="request-card ${request.risk === "at_risk" ? "warn" : "clear"}">
       <div class="request-head">
@@ -28,14 +29,26 @@ function renderRequest(request: LessonRequest): string {
           <h2>${escapeHtml(request.client_name)}</h2>
           <span>${escapeHtml(requestDateLabel(request))}</span>
         </div>
-        <span class="status-chip">${escapeHtml(request.risk === "at_risk" ? "At risk" : "Clear")}</span>
+        <span class="status-chip">${escapeHtml(requestStatusLabel(request))}</span>
       </div>
       <p>${escapeHtml(request.note)}</p>
       <div class="request-facts">${escapeHtml(slotSafetyFacts(request.requested_slot))}</div>
-      <div class="request-actions">
-        <button class="primary-action" type="button" data-approve-request="${escapeHtml(request.id)}" data-slot-id="${escapeHtml(request.requested_slot.id)}">Approve</button>
-        <button class="secondary-action" type="button" data-alternatives-request="${escapeHtml(request.id)}">Alternatives</button>
-      </div>
+      ${
+        isPending
+          ? `<div class="request-actions">
+              <button class="primary-action" type="button" data-confirm-request="${escapeHtml(request.id)}" data-calendar-focus="request:${escapeHtml(request.id)}">Confirm</button>
+              <button class="secondary-action" type="button" data-alternatives-request="${escapeHtml(request.id)}">Alternatives</button>
+            </div>`
+          : ""
+      }
     </article>
   `;
+}
+
+function requestStatusLabel(request: LessonRequest): string {
+  if (request.status === "pending") return request.risk === "at_risk" ? "At risk" : "Clear";
+  if (request.status === "approved") return "Confirmed";
+  if (request.status === "needs_alternatives") return "Needs alternatives";
+  if (request.status === "expired") return "Expired";
+  return "Declined";
 }
