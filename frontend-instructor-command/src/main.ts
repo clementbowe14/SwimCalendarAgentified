@@ -1,6 +1,12 @@
 import "./styles.css";
 import { InstructorCommandApiError, instructorCommandApi } from "./api/instructorApi.js";
-import type { CalendarLinks, CommandCenterSnapshot, InstructorAuthSession, TimeSlotDTO } from "./api/types.js";
+import type {
+  CalendarLinks,
+  CommandCenterSnapshot,
+  InstructorAuthSession,
+  SchedulerRules,
+  TimeSlotDTO,
+} from "./api/types.js";
 import { renderAvailabilityFinder } from "./components/AvailabilityFinder.js";
 import {
   renderCalendarHandoffModal,
@@ -32,6 +38,8 @@ type AppState = {
   calendarHandoff: CalendarHandoffModalModel | null;
   toast: string;
   error: string;
+  settingsPending: boolean;
+  settingsError: string;
 };
 
 const state: AppState = {
@@ -44,6 +52,8 @@ const state: AppState = {
   calendarHandoff: null,
   toast: "",
   error: "",
+  settingsPending: false,
+  settingsError: "",
 };
 
 const instructorId = import.meta.env?.VITE_INSTRUCTOR_ID || "inst_riley_001";
@@ -174,7 +184,10 @@ function renderActiveScreen(snapshot: CommandCenterSnapshot): string {
   }
   if (state.activeScreen === "client") return renderClientDetail(snapshot, state.selectedClientId);
   if (state.activeScreen === "requests") return renderRequestManagement(snapshot);
-  return renderSettingsRules(snapshot.rules, instructorCommandApi.authMode === "live");
+  return renderSettingsRules(snapshot.rules, instructorCommandApi.authMode === "live", {
+    pending: state.settingsPending,
+    error: state.settingsError,
+  });
 }
 
 function wireEvents(): void {
@@ -235,14 +248,40 @@ function wireEvents(): void {
     });
   });
 
-  app.querySelector<HTMLButtonElement>("[data-save-rules]")?.addEventListener("click", async () => {
-    if (!state.snapshot) return;
-    await runAction(async () => {
-      if (!state.snapshot) return;
-      await instructorCommandApi.saveRules(state.snapshot.rules);
-      state.toast = "Rules saved to the adapter.";
-    });
+  app.querySelector<HTMLFormElement>("[data-rules-form]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!state.snapshot || state.settingsPending) return;
+    const payload = schedulerRulesFromForm(event.currentTarget as HTMLFormElement, state.snapshot.rules);
+    state.settingsPending = true;
+    state.settingsError = "";
+    render();
+    try {
+      const saved = await instructorCommandApi.saveRules(payload);
+      if (state.snapshot) state.snapshot = { ...state.snapshot, rules: saved };
+      state.toast = "Scheduling rules saved.";
+    } catch (error) {
+      if (!handleAuthFailure(error)) state.settingsError = formatApiError(error);
+    } finally {
+      state.settingsPending = false;
+      render();
+      app.querySelector<HTMLElement>("[data-settings-error]")?.focus();
+    }
   });
+}
+
+function schedulerRulesFromForm(form: HTMLFormElement, current: SchedulerRules): SchedulerRules {
+  const data = new FormData(form);
+  return {
+    ...current,
+    buffers_enabled: data.has("buffers_enabled"),
+    apply_distance_buffer_at_shift_start: data.has("apply_distance_buffer_at_shift_start"),
+    rounding_increment_mins: Number(data.get("rounding_increment_mins")) as SchedulerRules["rounding_increment_mins"],
+    post_break_buffer_mins: Number(data.get("post_break_buffer_mins")),
+    distance_buffer_tiers: current.distance_buffer_tiers.map((tier) => ({
+      ...tier,
+      buffer_mins: Number(data.get(`tier.${tier.id}.buffer_mins`)),
+    })),
+  };
 }
 
 function wireAuthEvents(): void {

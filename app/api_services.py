@@ -35,7 +35,6 @@ from app.api_schemas import (
     CoachBookLessonRequest,
     CoachClientResponse,
     CoachCommandCenterSnapshot,
-    CoachDistanceBufferTier,
     CoachLessonRequestActionResponse,
     CoachLessonRequestAlternativesRequest,
     CoachLessonRequestConfirmResponse,
@@ -43,7 +42,6 @@ from app.api_schemas import (
     CoachLessonRequestResponse,
     CoachScheduleItemResponse,
     CoachScheduleResponse,
-    CoachSchedulerPayments,
     CoachSchedulerRules,
     CoachTimeSlotResponse,
     CoachInstructorProfileResponse,
@@ -73,6 +71,8 @@ from app.routing import (
     RoutingProviderUnavailable,
     RoutingTimeout,
 )
+from app.engine import BufferPolicy
+from app.scheduler_settings import default_scheduler_rules, load_buffer_policy, load_scheduler_rules
 
 
 def get_instructor_profile(instructor_id: str) -> InstructorProfileResponse:
@@ -123,17 +123,18 @@ def get_coach_command_center_snapshot(
 
 
 def get_coach_scheduler_settings(instructor_id: str) -> CoachSchedulerRules:
-    saved = db.get_scheduler_settings(instructor_id)
-    if saved is None:
-        return _default_scheduler_rules()
-    return CoachSchedulerRules.model_validate(saved)
+    return load_scheduler_rules(instructor_id, operation="read_settings")
 
 
 def update_coach_scheduler_settings(
     instructor_id: str,
     rules: CoachSchedulerRules,
 ) -> CoachSchedulerRules:
-    saved = db.save_scheduler_settings(instructor_id, rules.model_dump(mode="json"))
+    saved = db.save_scheduler_settings(
+        instructor_id,
+        rules.model_dump(mode="json"),
+        explicit_fields=set(rules.model_fields_set),
+    )
     return CoachSchedulerRules.model_validate(saved)
 
 
@@ -294,38 +295,7 @@ def _request_status(status: str, computed_expired: bool = False) -> str:
 
 
 def _default_scheduler_rules() -> CoachSchedulerRules:
-    return CoachSchedulerRules(
-        rounding_increment_mins=15,
-        post_break_buffer_mins=15,
-        distance_buffer_tiers=[
-            CoachDistanceBufferTier(
-                id="near",
-                label="Under 5 mi",
-                min_miles=0,
-                max_miles=4.999,
-                buffer_mins=10,
-            ),
-            CoachDistanceBufferTier(
-                id="medium",
-                label="5-10 mi",
-                min_miles=5,
-                max_miles=10,
-                buffer_mins=20,
-            ),
-            CoachDistanceBufferTier(
-                id="far",
-                label="Over 10 mi",
-                min_miles=10.001,
-                max_miles=None,
-                buffer_mins=30,
-            ),
-        ],
-        payments=CoachSchedulerPayments(
-            enabled_methods=["card", "ach", "cash"],
-            cancellation_window_hours=12,
-            require_payment_method_for_new_clients=True,
-        ),
-    )
+    return default_scheduler_rules()
 
 
 def search_coach_availability(
@@ -478,14 +448,7 @@ def book_coach_lesson(instructor_id: str, request: CoachBookLessonRequest) -> Bo
             calendar_links=_optional_coach_calendar_links(instructor_id, [existing["id"]]),
         )
 
-    _require_available_start(
-        instructor_id=instructor_id,
-        requested_date=timezones.requested_local_date(requested_start, instructor.timezone),
-        client_address=request.client_address,
-        is_instructor_facility=request.is_instructor_facility,
-        duration_mins=request.duration_mins,
-        requested_start=requested_start,
-    )
+    policy = load_buffer_policy(instructor_id, operation="coach_booking")
     location = _resolve_location(instructor_id, request.client_address, request.is_instructor_facility)
     try:
         result = tools.book_swim_lesson(
@@ -496,6 +459,8 @@ def book_coach_lesson(instructor_id: str, request: CoachBookLessonRequest) -> Bo
             duration_mins=request.duration_mins,
             location_address=location.address,
             idempotency_key=request.idempotency_key,
+            is_instructor_facility=request.is_instructor_facility,
+            buffer_policy=policy,
         )
     except db.ScheduleConflictError as exc:
         raise SchedulingConflict() from exc
@@ -558,8 +523,9 @@ def confirm_coach_lesson_request(
         occurrences = _request_occurrences(lesson_request, selected_offer)
         _acquire_confirmation_locks(session, lesson_request.instructor_id, occurrences)
 
+        policy = load_buffer_policy(instructor_id, operation="confirm_lesson_request")
         try:
-            _validate_occurrences(lesson_request, occurrences)
+            _validate_occurrences(lesson_request, occurrences, policy)
             appointments = _insert_occurrence_appointments(session, lesson_request, occurrences)
         except SchedulingConflict:
             session.rollback()
@@ -802,6 +768,7 @@ def _acquire_confirmation_locks(
 def _validate_occurrences(
     lesson_request: LessonRequestDB,
     occurrences: list[tuple[datetime, datetime]],
+    buffer_policy: BufferPolicy,
 ) -> None:
     for start, _ in occurrences:
         requested_start = timezones.storage_to_aware_utc(start)
@@ -813,6 +780,7 @@ def _validate_occurrences(
             is_instructor_facility=lesson_request.location_type == "facility",
             duration_mins=lesson_request.duration_mins,
             requested_start=requested_start,
+            buffer_policy=buffer_policy,
         )
 
 
@@ -1056,6 +1024,7 @@ def create_public_lesson_request(
         )
 
     is_facility = request.location_type == "facility"
+    policy = load_buffer_policy(invite.instructor_id, operation="public_request_creation")
     selected_slot = _require_available_start(
         instructor_id=invite.instructor_id,
         requested_date=requested_date,
@@ -1063,6 +1032,7 @@ def create_public_lesson_request(
         is_instructor_facility=is_facility,
         duration_mins=request.duration_mins,
         requested_start=requested_start,
+        buffer_policy=policy,
     )
     location = _resolve_location(invite.instructor_id, request.client_address, is_facility)
     try:
@@ -1169,6 +1139,7 @@ def _find_slots(
     client_address: str,
     is_instructor_facility: bool,
     duration_mins: int,
+    buffer_policy: Optional[BufferPolicy] = None,
 ) -> list[TimeSlotDTO]:
     try:
         return tools.find_available_swim_slots(
@@ -1177,6 +1148,7 @@ def _find_slots(
             client_address=client_address,
             is_instructor_facility=is_instructor_facility,
             duration_mins=duration_mins,
+            buffer_policy=buffer_policy,
         )
     except GeocodeFailed as exc:
         raise GeocodingFailedApiError({"field": "client_address"}) from exc
@@ -1202,6 +1174,7 @@ def _require_available_start(
     is_instructor_facility: bool,
     duration_mins: int,
     requested_start: datetime,
+    buffer_policy: Optional[BufferPolicy] = None,
 ) -> TimeSlotDTO:
     slots = _find_slots(
         instructor_id=instructor_id,
@@ -1209,6 +1182,7 @@ def _require_available_start(
         client_address=client_address,
         is_instructor_facility=is_instructor_facility,
         duration_mins=duration_mins,
+        buffer_policy=buffer_policy,
     )
     requested_storage = timezones.to_utc_storage(requested_start)
     for slot in slots:

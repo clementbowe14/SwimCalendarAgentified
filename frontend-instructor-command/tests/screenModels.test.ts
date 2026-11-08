@@ -58,6 +58,10 @@ test("Settings screen stays aligned to Python engine buffer rules", () => {
   assert.equal(snapshot.rules.post_break_buffer_mins, 15);
   assert.match(html, /Under 5 mi/);
   assert.match(html, /Over 10 mi/);
+  assert.match(html, /name="buffers_enabled" type="checkbox" checked/);
+  assert.match(html, /name="rounding_increment_mins"/);
+  assert.match(html, /name="tier\.near\.buffer_mins"/);
+  assert.match(html, /<form data-rules-form>/);
 });
 
 test("Request management summarizes clear and at-risk pending requests", () => {

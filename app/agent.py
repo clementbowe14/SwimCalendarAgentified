@@ -113,7 +113,8 @@ class SwimSchedulingAgent:
             client_name=state["client_name"],
             start_time_iso=chosen["start_iso"],
             duration_mins=state["duration_mins"],
-            location_address=location_str
+            location_address=location_str,
+            is_instructor_facility=state["is_instructor_facility"],
         )
 
         state["booking_confirmation"] = booking_result

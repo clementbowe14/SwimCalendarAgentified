@@ -1,4 +1,6 @@
 {
+  "apply_distance_buffer_at_shift_start": false,
+  "buffers_enabled": true,
   "distance_buffer_tiers": [
     {
       "buffer_mins": 10,

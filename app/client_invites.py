@@ -36,7 +36,12 @@ from app.api_schemas import (
     ClientInviteUnavailableWindow,
 )
 from app.models import AppointmentDB, InviteIntakeDB, InviteSlotOfferDB, LessonRequestDB, TimeSlotDTO
-from app.public_tokens import InviteContext, create_lesson_request, resolve_invite
+from app.public_tokens import (
+    InviteContext,
+    create_lesson_request,
+    resolve_invite,
+    resolve_lesson_request_by_idempotency_key,
+)
 from app.routing import (
     GeocodeFailed,
     RouteEstimateFailed,
@@ -44,6 +49,8 @@ from app.routing import (
     RoutingProviderUnavailable,
     RoutingTimeout,
 )
+from app.engine import BufferPolicy
+from app.scheduler_settings import load_buffer_policy
 
 
 SLOT_OFFER_TTL_MINUTES = 30
@@ -120,6 +127,14 @@ def request_client_invite_lesson_slot(
     if offer.recurrence == "weekly" and not offer.recurrence_available:
         raise InvalidSchedulingRequest("The selected lesson time is not available for weekly booking.")
     idempotency_key = request.idempotency_key or f"public-slot:{invite.token}:{request.slot_id}"
+    existing = resolve_lesson_request_by_idempotency_key(idempotency_key)
+    if existing is not None:
+        if existing.invite_token != invite.token or existing.original_slot_offer_id != offer.id:
+            raise IdempotencyConflict()
+        return _lesson_request_response(existing.request_token)
+
+    policy = load_buffer_policy(invite.instructor_id, operation="client_invite_request_creation")
+    _validate_offer_occurrences(offer, policy)
     try:
         record = create_lesson_request(
             invite_token=invite.token,
@@ -215,6 +230,7 @@ def _find_slots(
     client_address: str,
     is_instructor_facility: bool,
     duration_mins: int,
+    buffer_policy: Optional[BufferPolicy] = None,
 ) -> list[TimeSlotDTO]:
     try:
         return tools.find_available_swim_slots(
@@ -223,6 +239,7 @@ def _find_slots(
             client_address=client_address,
             is_instructor_facility=is_instructor_facility,
             duration_mins=duration_mins,
+            buffer_policy=buffer_policy,
         )
     except GeocodeFailed as exc:
         raise GeocodingFailedApiError({"field": "location.address"}) from exc
@@ -239,6 +256,26 @@ def _find_slots(
         if "not found" in message.lower():
             raise ResourceNotFound("The instructor could not be found.") from exc
         raise InvalidSchedulingRequest("The scheduling request could not be evaluated.") from exc
+
+
+def _validate_offer_occurrences(offer: InviteSlotOfferDB, buffer_policy: BufferPolicy) -> None:
+    timezone_name = _instructor_timezone(offer.instructor_id)
+    base_local = timezones.storage_to_local(offer.slot_start, timezone_name)
+    count = offer.recurrence_count if offer.recurrence == "weekly" else 1
+    for index in range(count):
+        local_label = base_local.replace(tzinfo=None) + datetime.timedelta(days=7 * index)
+        occurrence = timezones.validate_local_datetime(local_label, timezone_name)
+        slots = _find_slots(
+            instructor_id=offer.instructor_id,
+            requested_date=occurrence.date(),
+            client_address=offer.client_address,
+            is_instructor_facility=offer.location_type == "facility",
+            duration_mins=offer.duration_mins,
+            buffer_policy=buffer_policy,
+        )
+        occurrence_storage = timezones.to_utc_storage(occurrence)
+        if not any(timezones.to_utc_storage(slot.start_time) == occurrence_storage for slot in slots):
+            raise InvalidSchedulingRequest("The selected lesson time is no longer available.")
 
 
 def _resolve_location(

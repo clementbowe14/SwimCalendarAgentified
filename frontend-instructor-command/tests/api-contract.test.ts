@@ -441,6 +441,8 @@ function snapshotContract(): CommandCenterSnapshot {
       },
     ],
     rules: {
+      buffers_enabled: true,
+      apply_distance_buffer_at_shift_start: false,
       rounding_increment_mins: 15,
       post_break_buffer_mins: 15,
       distance_buffer_tiers: [

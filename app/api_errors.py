@@ -212,11 +212,18 @@ async def api_exception_handler(_: Request, exc: ApiException) -> JSONResponse:
 
 
 async def validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
-    details = {"fields": exc.errors()}
+    details = {"fields": [_serializable_validation_error(error) for error in exc.errors()]}
     return JSONResponse(
         status_code=422,
         content=error_payload("VALIDATION_ERROR", "Request validation failed.", details),
     )
+
+
+def _serializable_validation_error(error: dict[str, Any]) -> dict[str, Any]:
+    serialized = dict(error)
+    if "ctx" in serialized:
+        serialized["ctx"] = {key: str(value) for key, value in serialized["ctx"].items()}
+    return serialized
 
 
 async def unexpected_exception_handler(request: Request, __: Exception) -> JSONResponse:
