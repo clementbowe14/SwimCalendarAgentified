@@ -75,12 +75,16 @@ test("Request management summarizes clear and at-risk pending requests", () => {
   assert.match(html, /At risk/);
 });
 
-test("API adapter mutates request status without changing DTO shape", async () => {
+test("API adapter confirms a request and returns its persisted calendar handoff", async () => {
   const api = new MockInstructorCommandApi();
-  const updated = await api.approveRequest("req_sofia_0827", candidateSlots[0].id);
+  const confirmed = await api.confirmRequest("req_sofia_0827");
+  const updated = await api.getSnapshot(snapshot.instructor.id, snapshot.date);
 
-  assert.equal(updated.status, "approved");
-  assert.equal(updated.requested_slot.start_time, candidateSlots[0].start_time);
+  assert.equal(confirmed.status, "confirmed");
+  assert.equal(confirmed.appointment_ids.length, 2);
+  assert.equal(confirmed.calendar_links?.google_events.length, 2);
+  assert.equal(updated.requests.find((request) => request.id === "req_sofia_0827")?.status, "approved");
+  assert.equal(candidateSlots[0].start_time, "2026-08-27T18:00:00");
 });
 
 test("Readiness report covers every representative screen and calls out backend gaps", () => {

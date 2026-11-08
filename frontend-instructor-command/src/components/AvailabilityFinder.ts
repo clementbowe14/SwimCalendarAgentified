@@ -114,7 +114,7 @@ function renderSlot(slot: TimeSlotDTO, snapshot: CommandCenterSnapshot): string 
         <span>${escapeHtml(slotSafetyFacts(slot))}</span>
         <p>${escapeHtml(slotExplanation(slot, snapshot.rules))}</p>
       </div>
-      <button class="secondary-action" type="button" data-slot-id="${escapeHtml(slot.id)}">Hold</button>
+      <button class="secondary-action" type="button" data-slot-id="${escapeHtml(slot.id)}" data-calendar-focus="slot:${escapeHtml(slot.id)}">Book lesson</button>
     </article>
   `;
 }

@@ -60,6 +60,20 @@ export type BookLessonResponse = {
   success: boolean;
   appointment_id: Id;
   message: string;
+  calendar_links: CalendarLinks | null;
+};
+
+export type GoogleCalendarEvent = {
+  start_iso: string;
+  end_iso: string;
+  url: string;
+};
+
+export type CalendarLinks = {
+  google: string;
+  google_events: GoogleCalendarEvent[];
+  apple: string;
+  ics: string;
 };
 
 export type InstructorAuthCredentials = {
@@ -84,6 +98,15 @@ export type CoachLessonRequestActionResponse = {
   status: "approved" | "needs_alternatives" | "declined";
   appointment_id?: Id | null;
   message: string;
+};
+
+export type CoachLessonRequestConfirmResponse = {
+  id: Id;
+  status: "confirmed";
+  appointment_id?: Id | null;
+  appointment_ids: Id[];
+  message: string;
+  calendar_links: CalendarLinks | null;
 };
 
 export type InstructorProfile = {
@@ -187,7 +210,9 @@ export type InstructorCommandApi = {
   getSnapshot(instructor_id: Id, date: string): Promise<CommandCenterSnapshot>;
   findAvailableSlots(request: BookingRequestDTO): Promise<TimeSlotDTO[]>;
   bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse>;
-  approveRequest(request_id: Id, slot_id: Id): Promise<LessonRequest | CoachLessonRequestActionResponse>;
+  confirmRequest(request_id: Id): Promise<CoachLessonRequestConfirmResponse>;
+  getAppointmentCalendarLinks(appointment_id: Id): Promise<CalendarLinks>;
+  downloadCalendarIcs(calendar_url: string): Promise<Blob>;
   requestAlternatives(request_id: Id, preferred_slot_ids: Id[]): Promise<LessonRequest | CoachLessonRequestActionResponse>;
   saveRules(rules: SchedulerRules): Promise<SchedulerRules>;
 };

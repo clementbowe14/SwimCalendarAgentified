@@ -59,9 +59,14 @@ def create_app() -> FastAPI:
     app.add_exception_handler(Exception, unexpected_exception_handler)
 
     @app.middleware("http")
-    async def protect_public_responses(request, call_next):
+    async def protect_sensitive_responses(request, call_next):
         response = await call_next(request)
-        if request.url.path.startswith("/api/public/"):
+        path = request.url.path
+        is_coach_calendar_handoff = (
+            path.startswith("/api/coach/appointments/")
+            and path.endswith(("/calendar-links", "/calendar.ics"))
+        )
+        if path.startswith("/api/public/") or is_coach_calendar_handoff:
             response.headers["Cache-Control"] = "private, no-store"
             response.headers["Referrer-Policy"] = "no-referrer"
         return response

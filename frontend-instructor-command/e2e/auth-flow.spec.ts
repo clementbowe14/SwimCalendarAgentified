@@ -69,6 +69,62 @@ describeWhenLiveApiConfigured("MVP coach auth flow", () => {
     await expect(page.getByRole("heading", { name: "Today schedule" })).toHaveCount(0);
   });
 
+  test("uses the exact direct-booking ID for an authenticated calendar fallback", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    await signInThroughUi(page);
+    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Book lesson" }).first().click();
+
+    const dialog = page.getByRole("dialog", { name: "Ready for your calendar" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("link", { name: /Open Google Calendar/ })).toBeVisible();
+    expect(api.protectedCalls().some((call) => call.path.endsWith("/coach/bookings"))).toBe(true);
+    expect(
+      api.protectedCalls().some((call) =>
+        call.path.endsWith("/coach/appointments/app_direct_123/calendar-links"),
+      ),
+    ).toBe(true);
+  });
+
+  test("confirms through the canonical route and renders every persisted occurrence", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    await signInThroughUi(page);
+    await page.getByRole("button", { name: "Requests", exact: true }).click();
+    await page.getByRole("button", { name: "Confirm" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "Ready for your calendar" });
+    await expect(dialog.getByRole("list", { name: "Google Calendar occurrences" }).getByRole("link")).toHaveCount(2);
+    expect(api.protectedCalls().some((call) => call.path.endsWith("/lesson-requests/req_live_1/confirm"))).toBe(true);
+    expect(api.protectedCalls().some((call) => call.path.endsWith("/approve"))).toBe(false);
+  });
+
+  test("keeps persistence truthful when the handoff becomes unavailable", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    api.failNextCalendarReadWith(409);
+    await signInThroughUi(page);
+    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Book lesson" }).first().click();
+
+    const dialog = page.getByRole("dialog", { name: "Calendar options unavailable" });
+    await expect(dialog).toContainText(/appointment is saved/i);
+    await expect(dialog.getByRole("link", { name: /Google Calendar/ })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "Download .ics" })).toHaveCount(0);
+    expect(api.protectedCalls().filter((call) => call.path.endsWith("/coach/bookings"))).toHaveLength(1);
+  });
+
+  test("locks an expired session without erasing the persisted booking outcome", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    api.failNextCalendarReadWith(401);
+    await signInThroughUi(page);
+    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Book lesson" }).first().click();
+
+    await expect(page.getByRole("heading", { name: "Session expired" })).toBeVisible();
+    await expect(page.getByRole("alert")).toContainText(/appointment was saved/i);
+    await expect(page.getByRole("alert")).toContainText(/do not book it again/i);
+    expect(api.protectedCalls().filter((call) => call.path.endsWith("/coach/bookings"))).toHaveLength(1);
+  });
+
   for (const status of [401, 403] as const) {
     test(`clears auth and shows session-expired sign-in UI after a protected ${status}`, async ({ page }) => {
       const api = await mockAuthenticatedCoachApi(page);
@@ -99,12 +155,14 @@ type ProtectedCall = {
 
 async function mockAuthenticatedCoachApi(page: Page): Promise<{
   expireProtectedRequestsWith(status: 401 | 403): void;
+  failNextCalendarReadWith(status: 401 | 409): void;
   logoutCalls(): number;
   protectedCalls(): ProtectedCall[];
   protectedCallsBeforeAuth(): ProtectedCall[];
 }> {
   let token: string | null = null;
   let expiredStatus: 401 | 403 | null = null;
+  let nextCalendarReadStatus: 401 | 409 | null = null;
   let logoutCallCount = 0;
   const protectedCalls: ProtectedCall[] = [];
 
@@ -157,6 +215,19 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
         return;
       }
 
+      if (url.pathname.endsWith("/calendar-links") && nextCalendarReadStatus) {
+        const status = nextCalendarReadStatus;
+        nextCalendarReadStatus = null;
+        await route.fulfill({
+          status,
+          json: apiError(
+            status === 401 ? "AUTH_REQUIRED" : "CALENDAR_LINKS_UNAVAILABLE",
+            status === 401 ? "Your session expired. Sign in again." : "Calendar options are unavailable.",
+          ),
+        });
+        return;
+      }
+
       await fulfillProtectedCoachRoute(route, url.pathname);
       return;
     }
@@ -167,6 +238,9 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
   return {
     expireProtectedRequestsWith(status: 401 | 403): void {
       expiredStatus = status;
+    },
+    failNextCalendarReadWith(status: 401 | 409): void {
+      nextCalendarReadStatus = status;
     },
     logoutCalls(): number {
       return logoutCallCount;
@@ -191,7 +265,55 @@ async function fulfillProtectedCoachRoute(route: Route, pathname: string): Promi
     return;
   }
 
+  if (pathname.endsWith("/coach/bookings")) {
+    await route.fulfill({
+      json: {
+        success: true,
+        appointment_id: "app_direct_123",
+        message: "Appointment booked.",
+        calendar_links: null,
+      },
+    });
+    return;
+  }
+
+  if (pathname.endsWith("/lesson-requests/req_live_1/confirm")) {
+    await route.fulfill({
+      json: {
+        id: "req_live_1",
+        status: "confirmed",
+        appointment_id: "app_request_1",
+        appointment_ids: ["app_request_1", "app_request_2"],
+        message: "Lesson request is confirmed.",
+        calendar_links: calendarLinksResponse("app_request_1", true),
+      },
+    });
+    return;
+  }
+
+  if (pathname.endsWith("/coach/appointments/app_direct_123/calendar-links")) {
+    await route.fulfill({ json: calendarLinksResponse("app_direct_123", false) });
+    return;
+  }
+
+  if (pathname.endsWith("/calendar.ics")) {
+    await route.fulfill({
+      contentType: "text/calendar; charset=utf-8",
+      headers: { "content-disposition": 'attachment; filename="appointment.ics"' },
+      body: "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n",
+    });
+    return;
+  }
+
   await route.fulfill({ json: {} });
+}
+
+async function signInThroughUi(page: Page): Promise<void> {
+  await page.goto("/");
+  await page.getByLabel(/email/i).fill(COACH_EMAIL);
+  await page.getByLabel(/password/i).fill(COACH_PASSWORD);
+  await page.getByRole("button", { name: /sign in/i }).click();
+  await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
 }
 
 function postBody(rawBody: string | null): Record<string, unknown> {
@@ -250,6 +372,26 @@ function availabilityResponse(): Record<string, unknown> {
   };
 }
 
+function calendarLinksResponse(anchor: string, recurring: boolean): Record<string, unknown> {
+  const google = "https://calendar.google.com/calendar/render?action=TEMPLATE";
+  const googleEvents = [
+    {
+      start_iso: "2026-08-27T20:00:00Z",
+      end_iso: "2026-08-27T20:45:00Z",
+      url: `${google}&dates=20260827T200000Z%2F20260827T204500Z`,
+    },
+  ];
+  if (recurring) {
+    googleEvents.push({
+      start_iso: "2026-09-03T20:00:00Z",
+      end_iso: "2026-09-03T20:45:00Z",
+      url: `${google}&dates=20260903T200000Z%2F20260903T204500Z`,
+    });
+  }
+  const ics = `/api/coach/appointments/${anchor}/calendar.ics`;
+  return { google: googleEvents[0].url, google_events: googleEvents, apple: ics, ics };
+}
+
 function commandCenterSnapshot(): Record<string, unknown> {
   return {
     instructor: {
@@ -301,7 +443,33 @@ function commandCenterSnapshot(): Record<string, unknown> {
         note: "Schedule loaded from backend",
       },
     ],
-    requests: [],
+    requests: [
+      {
+        id: "req_live_1",
+        client_id: "client_sofia",
+        client_name: "Sofia Martinez",
+        requested_slot: {
+          id: "slot_req_live_1",
+          start_time: "2026-08-27T16:00:00",
+          end_time: "2026-08-27T16:45:00",
+          travel_time_mins: 12,
+          buffer_mins: 10,
+          distance_miles: 2.1,
+          target_location: {
+            address: "820 Lakeview Dr, Austin, TX",
+            lat: 30.289,
+            lng: -97.739,
+            is_instructor_facility: false,
+          },
+        },
+        source: "client_invite",
+        status: "pending",
+        risk: "clear",
+        submitted_at: "2026-08-26T18:00:00",
+        note: "Client selected this time from an invite.",
+        alternative_slots: [],
+      },
+    ],
     rules: {
       rounding_increment_mins: 15,
       post_break_buffer_mins: 15,

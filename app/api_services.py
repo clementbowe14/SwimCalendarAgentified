@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 import hashlib
 import re
 from typing import Optional
+from urllib.parse import quote
 import uuid
 
 from sqlalchemy import text
@@ -12,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from app import db, timezones, tools
 from app.api_errors import (
     AlternativeSlotContextMismatch,
+    CalendarLinksUnavailable,
     GeocodingFailed as GeocodingFailedApiError,
     IdempotencyConflict,
     InvalidSchedulingRequest,
@@ -52,7 +54,9 @@ from app.api_schemas import (
     PublicLessonRequestResponse,
     PublicRequestStatusResponse,
     TimeSlotResponse,
+    ClientInviteCalendarLinks,
 )
+from app.calendar_handoff import calendar_ics, calendar_links
 from app.models import AppointmentDB, InviteSlotOfferDB, LessonRequestDB, TimeSlotDTO
 from app.public_tokens import (
     InviteContext,
@@ -315,6 +319,109 @@ def search_coach_availability(
     )
 
 
+INSTRUCTOR_CALENDAR_TITLE = "Appointment"
+INSTRUCTOR_CALENDAR_DESCRIPTION = "Confirmed appointment."
+
+
+def get_coach_calendar_links(
+    instructor_id: str,
+    appointment_id: str,
+) -> ClientInviteCalendarLinks:
+    appointments = _load_coach_calendar_appointments(instructor_id, appointment_id)
+    download_url = _coach_calendar_download_url(appointment_id)
+    return calendar_links(
+        appointment_id,
+        appointments,
+        download_url=download_url,
+        title=INSTRUCTOR_CALENDAR_TITLE,
+        description=INSTRUCTOR_CALENDAR_DESCRIPTION,
+    )
+
+
+def get_coach_calendar_ics(instructor_id: str, appointment_id: str) -> str:
+    appointments = _load_coach_calendar_appointments(instructor_id, appointment_id)
+    return calendar_ics(
+        appointments,
+        title=INSTRUCTOR_CALENDAR_TITLE,
+        description=INSTRUCTOR_CALENDAR_DESCRIPTION,
+    )
+
+
+def _coach_calendar_download_url(appointment_id: str) -> str:
+    encoded_id = quote(appointment_id, safe="")
+    return f"/api/coach/appointments/{encoded_id}/calendar.ics"
+
+
+def _load_coach_calendar_appointments(
+    instructor_id: str,
+    appointment_id: str,
+) -> list[AppointmentDB]:
+    session = db.SessionLocal()
+    try:
+        anchor = (
+            session.query(AppointmentDB)
+            .filter(
+                AppointmentDB.id == appointment_id,
+                AppointmentDB.instructor_id == instructor_id,
+            )
+            .first()
+        )
+        if anchor is None:
+            raise ResourceNotFound("The appointment could not be found.")
+
+        is_lesson_anchor = anchor.event_type == "lesson" and not anchor.is_break
+        if not is_lesson_anchor:
+            raise CalendarLinksUnavailable()
+
+        query = session.query(AppointmentDB).filter(
+            AppointmentDB.instructor_id == instructor_id,
+            AppointmentDB.event_type == "lesson",
+            AppointmentDB.status == "scheduled",
+            AppointmentDB.is_break.is_(False),
+            AppointmentDB.cancelled_at.is_(None),
+        )
+        if anchor.request_id is None:
+            query = query.filter(AppointmentDB.id == anchor.id)
+        else:
+            parent = (
+                session.query(LessonRequestDB)
+                .filter(
+                    LessonRequestDB.id == anchor.request_id,
+                    LessonRequestDB.instructor_id == instructor_id,
+                )
+                .first()
+            )
+            if parent is None or parent.status != "confirmed":
+                raise CalendarLinksUnavailable()
+            query = query.filter(AppointmentDB.request_id == anchor.request_id)
+
+        appointments = query.order_by(
+            AppointmentDB.start_time.asc(),
+            AppointmentDB.calendar_uid.asc(),
+        ).all()
+        if not appointments:
+            raise CalendarLinksUnavailable()
+        for appointment in appointments:
+            session.expunge(appointment)
+        return appointments
+    finally:
+        session.close()
+
+
+def _optional_coach_calendar_links(
+    instructor_id: str,
+    appointment_ids: list[str],
+) -> Optional[ClientInviteCalendarLinks]:
+    if not appointment_ids:
+        return None
+    try:
+        return get_coach_calendar_links(instructor_id, appointment_ids[0])
+    except Exception:
+        # Calendar handoff is secondary to an already committed booking. Never
+        # turn an artifact failure into a misleading persistence failure.
+        return None
+
+
 def book_coach_lesson(instructor_id: str, request: CoachBookLessonRequest) -> BookLessonResponse:
     instructor = db.get_instructor_info(instructor_id)
     if not instructor:
@@ -338,6 +445,7 @@ def book_coach_lesson(instructor_id: str, request: CoachBookLessonRequest) -> Bo
             success=True,
             appointment_id=existing["id"],
             message=f"Successfully booked swim lesson for {request.client_name} on {timezones.storage_to_local(existing['start_time'], instructor.timezone).strftime('%b %d, %Y at %I:%M %p')}!",
+            calendar_links=_optional_coach_calendar_links(instructor_id, [existing["id"]]),
         )
 
     policy = load_buffer_policy(instructor_id, operation="coach_booking")
@@ -358,7 +466,10 @@ def book_coach_lesson(instructor_id: str, request: CoachBookLessonRequest) -> Bo
         raise SchedulingConflict() from exc
     except db.IdempotencyKeyConflictError as exc:
         raise IdempotencyConflict() from exc
-    return BookLessonResponse(**result)
+    return BookLessonResponse(
+        **result,
+        calendar_links=_optional_coach_calendar_links(instructor_id, [result["appointment_id"]]),
+    )
 
 
 def approve_coach_lesson_request(
@@ -379,7 +490,7 @@ def confirm_coach_lesson_request(
     request: CoachLessonRequestConfirmRequest,
     *,
     legacy_response: bool = False,
-) -> CoachLessonRequestActionResponse:
+) -> CoachLessonRequestActionResponse | CoachLessonRequestConfirmResponse:
     session = db.SessionLocal()
     try:
         lesson_request = _query_coach_lesson_request(session, instructor_id, request_token).with_for_update().first()
@@ -397,6 +508,11 @@ def confirm_coach_lesson_request(
                 lesson_request,
                 appointment_ids,
                 status="approved" if legacy_response else "confirmed",
+                calendar_links=(
+                    None
+                    if legacy_response
+                    else _optional_coach_calendar_links(instructor_id, appointment_ids)
+                ),
             )
         if lesson_request.status not in {"pending", "alternatives_sent"}:
             raise InvalidSchedulingRequest("Only pending lesson requests can be confirmed.")
@@ -439,10 +555,16 @@ def confirm_coach_lesson_request(
         from app.notifications import enqueue_confirmation
         enqueue_confirmation(session, lesson_request, appointments)
         session.commit()
+        appointment_ids = [appointment.id for appointment in appointments]
         return _lesson_request_action_response(
             lesson_request,
-            [appointment.id for appointment in appointments],
+            appointment_ids,
             status="approved" if legacy_response else "confirmed",
+            calendar_links=(
+                None
+                if legacy_response
+                else _optional_coach_calendar_links(instructor_id, appointment_ids)
+            ),
         )
     finally:
         session.close()
@@ -533,6 +655,7 @@ def _lesson_request_action_response(
     appointment_ids: list[str],
     *,
     status: str,
+    calendar_links: Optional[ClientInviteCalendarLinks] = None,
 ) -> CoachLessonRequestActionResponse | CoachLessonRequestConfirmResponse:
     if status == "confirmed":
         return CoachLessonRequestConfirmResponse(
@@ -541,6 +664,7 @@ def _lesson_request_action_response(
             appointment_id=appointment_ids[0] if appointment_ids else None,
             appointment_ids=appointment_ids,
             message="Lesson request is confirmed.",
+            calendar_links=calendar_links,
         )
     return CoachLessonRequestActionResponse(
         id=lesson_request.request_token,

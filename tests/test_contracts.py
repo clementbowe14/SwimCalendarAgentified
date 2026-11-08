@@ -4,12 +4,14 @@ from typing import Any
 
 from app.api_schemas import (
     AvailabilitySearchResponse,
+    BookLessonResponse,
     ClientInviteAvailabilityResponse,
     ClientInviteCalendarLinks,
     ClientInviteEnvelopeResponse,
     ClientInviteLessonRequestResponse,
     CoachCommandCenterSnapshot,
     CoachAuthResponse,
+    CoachLessonRequestConfirmResponse,
     CoachScheduleResponse,
     CoachSchedulerRules,
     ErrorResponse,
@@ -26,6 +28,9 @@ FIXTURE_SCHEMAS = {
     "fixtures/public/calendar_links.json": ClientInviteCalendarLinks,
     "fixtures/public/error_invalid_token.json": ErrorResponse,
     "fixtures/coach/auth_response.json": CoachAuthResponse,
+    "fixtures/coach/calendar_links.json": ClientInviteCalendarLinks,
+    "fixtures/coach/booking_response.json": BookLessonResponse,
+    "fixtures/coach/lesson_request_confirmation_response.json": CoachLessonRequestConfirmResponse,
     "fixtures/coach/availability_search_response.json": AvailabilitySearchResponse,
     "fixtures/coach/schedule_response.json": CoachScheduleResponse,
     "fixtures/coach/settings.json": CoachSchedulerRules,
@@ -52,6 +57,11 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/auth/coach/sign-out" in paths
     assert "/api/coach/availability" in paths
     assert "/api/coach/command-center/snapshot" in paths
+    assert "/api/coach/appointments/{appointment_id}/calendar-links" in paths
+    assert "/api/coach/appointments/{appointment_id}/calendar.ics" in paths
+    assert "text/calendar" in openapi["paths"][
+        "/api/coach/appointments/{appointment_id}/calendar.ics"
+    ]["get"]["responses"]["200"]["content"]
     assert "/api/coach/lesson-requests/{request_token}/approve" in paths
     assert "/api/coach/lesson-requests/{request_token}/alternatives" in paths
     assert "/api/coach/lesson-requests/{request_token}/decline" in paths

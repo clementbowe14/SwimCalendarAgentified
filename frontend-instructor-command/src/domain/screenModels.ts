@@ -119,8 +119,8 @@ export function buildReadinessReport(): ScreenReadiness[] {
     {
       screen: "Request management",
       isReadyForBackend: false,
-      requiredApiMethods: ["approveRequest", "requestAlternatives"],
-      missingApiContracts: ["approve request mutation", "request alternatives mutation"],
+      requiredApiMethods: ["confirmRequest", "requestAlternatives"],
+      missingApiContracts: ["request alternatives mutation"],
     },
   ];
 }

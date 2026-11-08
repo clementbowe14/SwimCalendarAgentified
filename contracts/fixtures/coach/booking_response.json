@@ -1,0 +1,17 @@
+{
+  "appointment_id": "app_contract_confirmed",
+  "calendar_links": {
+    "apple": "/api/coach/appointments/app_contract_confirmed/calendar.ics",
+    "google": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Appointment&dates=20260829T173000Z%2F20260829T181500Z&location=820+Lakeview+Dr%2C+Austin%2C+TX&details=Confirmed+appointment.",
+    "google_events": [
+      {
+        "end_iso": "2026-08-29T18:15:00Z",
+        "start_iso": "2026-08-29T17:30:00Z",
+        "url": "https://calendar.google.com/calendar/render?action=TEMPLATE&text=Appointment&dates=20260829T173000Z%2F20260829T181500Z&location=820+Lakeview+Dr%2C+Austin%2C+TX&details=Confirmed+appointment."
+      }
+    ],
+    "ics": "/api/coach/appointments/app_contract_confirmed/calendar.ics"
+  },
+  "message": "Appointment booked.",
+  "success": true
+}

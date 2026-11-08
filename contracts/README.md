@@ -29,6 +29,12 @@ instructor experiences. Instructor apps sign in with `POST /api/auth/coach/sign-
 `POST /api/auth/coach/login`, persist the returned bearer token locally, and send it on `/api/coach/*`
 requests as `Authorization: Bearer <token>`.
 
+Instructor calendar handoffs use authenticated
+`GET /api/coach/appointments/{appointment_id}/calendar-links` and
+`GET /api/coach/appointments/{appointment_id}/calendar.ics` routes. The `.ics` download requires the
+same bearer session; the `apple` field is an alias of this provider-neutral download, not a direct
+calendar-provider write.
+
 Regenerate contracts with:
 
 ```bash

@@ -92,7 +92,7 @@ class CalendarLinksUnavailable(ApiException):
     def __init__(self):
         super().__init__(
             "CALENDAR_LINKS_UNAVAILABLE",
-            "Calendar links are unavailable until the lesson is confirmed.",
+            "Calendar links are unavailable for this appointment.",
             status_code=409,
         )
 

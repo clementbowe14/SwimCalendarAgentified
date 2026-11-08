@@ -73,6 +73,59 @@ def test_canonical_confirm_returns_confirmed_with_ordered_appointment_ids(authen
     assert payload["status"] == "confirmed"
     assert payload["appointment_id"] == payload["appointment_ids"][0]
     assert len(payload["appointment_ids"]) == 1
+    assert payload["calendar_links"]["ics"] == (
+        f"/api/coach/appointments/{payload['appointment_id']}/calendar.ics"
+    )
+    assert len(payload["calendar_links"]["google_events"]) == 1
+    assert _request_status(SEEDED_REQUEST_TOKEN) == "confirmed"
+
+    handoff = api_client.get(
+        f"/api/coach/appointments/{payload['appointment_id']}/calendar-links"
+    )
+    assert handoff.status_code == 200
+    assert handoff.json() == payload["calendar_links"]
+
+
+def test_confirmation_persistence_survives_handoff_generation_failure(
+    authenticated_api_client,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "app.api_services.get_coach_calendar_links",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("artifact failed")),
+    )
+
+    response = authenticated_api_client.post(
+        f"/api/coach/lesson-requests/{SEEDED_REQUEST_TOKEN}/confirm",
+        json={},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "confirmed"
+    assert response.json()["calendar_links"] is None
+    assert _request_status(SEEDED_REQUEST_TOKEN) == "confirmed"
+    assert _appointment_count_for_request(SEEDED_REQUEST_TOKEN) == 1
+
+
+def test_cancelled_confirmation_retry_keeps_success_and_omits_handoff(authenticated_api_client):
+    first = authenticated_api_client.post(
+        f"/api/coach/lesson-requests/{SEEDED_REQUEST_TOKEN}/confirm",
+        json={},
+    )
+    assert first.status_code == 200
+    appointment_id = first.json()["appointment_id"]
+    with db.SessionLocal() as session:
+        session.get(AppointmentDB, appointment_id).status = "cancelled"
+        session.commit()
+
+    retry = authenticated_api_client.post(
+        f"/api/coach/lesson-requests/{SEEDED_REQUEST_TOKEN}/confirm",
+        json={},
+    )
+
+    assert retry.status_code == 200
+    assert retry.json()["appointment_id"] == appointment_id
+    assert retry.json()["calendar_links"] is None
     assert _request_status(SEEDED_REQUEST_TOKEN) == "confirmed"
 
 
@@ -207,6 +260,10 @@ def test_weekly_confirm_creates_multiple_appointments_and_ics_events(authenticat
 
     assert confirmation.status_code == 200
     assert len(confirmation.json()["appointment_ids"]) == 4
+    assert len(confirmation.json()["calendar_links"]["google_events"]) == 4
+    coach_ics = api_client.get(confirmation.json()["calendar_links"]["ics"])
+    assert coach_ics.status_code == 200
+    assert coach_ics.text.count("BEGIN:VEVENT") == 4
     status = api_client.get(f"/api/public/lesson-requests/{request_token}")
     ics = api_client.get(status.json()["confirmation"]["calendar_links"]["ics"])
     assert ics.status_code == 200

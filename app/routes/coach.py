@@ -1,7 +1,8 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, Header, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
+from starlette.responses import PlainTextResponse
 
 from app.api_errors import ApiException
 from app.notifications import enqueue_invite
@@ -10,6 +11,7 @@ from app.api_schemas import (
     AvailabilitySearchRequest,
     AvailabilitySearchResponse,
     BookLessonResponse,
+    ClientInviteCalendarLinks,
     CoachBookLessonRequest,
     CoachCommandCenterSnapshot,
     CoachContext as CoachContextResponse,
@@ -27,6 +29,8 @@ from app.api_services import (
     confirm_coach_lesson_request,
     decline_coach_lesson_request,
     get_coach_command_center_snapshot,
+    get_coach_calendar_ics,
+    get_coach_calendar_links,
     get_coach_schedule,
     get_coach_scheduler_settings,
     request_alternatives_for_coach_lesson_request,
@@ -37,6 +41,10 @@ from app.dependencies import CoachContext, get_current_coach
 
 
 router = APIRouter(prefix="/api/coach", tags=["coach"])
+
+
+class CalendarTextResponse(PlainTextResponse):
+    media_type = "text/calendar"
 
 
 @router.post("/invites/{invite_token}/notifications", response_model=InviteNotificationResponse, status_code=202)
@@ -106,6 +114,38 @@ def create_booking(
     coach: CoachContext = Depends(get_current_coach),
 ) -> BookLessonResponse:
     return book_coach_lesson(coach.instructor_id, request)
+
+
+@router.get(
+    "/appointments/{appointment_id}/calendar-links",
+    response_model=ClientInviteCalendarLinks,
+)
+def read_appointment_calendar_links(
+    appointment_id: str,
+    response: Response,
+    coach: CoachContext = Depends(get_current_coach),
+) -> ClientInviteCalendarLinks:
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return get_coach_calendar_links(coach.instructor_id, appointment_id)
+
+
+@router.get(
+    "/appointments/{appointment_id}/calendar.ics",
+    response_class=CalendarTextResponse,
+)
+def download_appointment_calendar(
+    appointment_id: str,
+    coach: CoachContext = Depends(get_current_coach),
+) -> Response:
+    return CalendarTextResponse(
+        get_coach_calendar_ics(coach.instructor_id, appointment_id),
+        headers={
+            "Content-Disposition": 'attachment; filename="appointment.ics"',
+            "Cache-Control": "private, no-store",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
 
 
 @router.post("/lesson-requests/{request_token}/approve", response_model=CoachLessonRequestActionResponse)
