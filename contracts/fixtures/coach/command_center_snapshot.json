@@ -9,6 +9,7 @@
         "lng": -97.72
       },
       "email": "",
+      "guardian_name": null,
       "history_summary": "Loaded from client profile",
       "id": "client_alice",
       "lesson_duration_mins": 45,
@@ -27,6 +28,7 @@
       "client_id": "client_sofia",
       "client_name": "Sofia Martinez",
       "id": "delivery_contract_confirmation_email",
+      "issue": null,
       "kind": "confirmation",
       "request_token": "req_contract_confirmed",
       "source_state": "active",
@@ -117,6 +119,8 @@
         "distance_miles": 2.1,
         "end_time": "2026-08-20T16:45:00-05:00",
         "id": "slot_req_sofia_pending_0820",
+        "next_event_id": null,
+        "previous_event_id": null,
         "start_time": "2026-08-20T16:00:00-05:00",
         "target_location": {
           "address": "820 Lakeview Dr, Austin, TX",
@@ -154,6 +158,7 @@
         "buffer_mins": 30,
         "id": "far",
         "label": "Over 10 mi",
+        "max_miles": null,
         "min_miles": 10.001
       }
     ],
@@ -171,6 +176,7 @@
   },
   "schedule": [
     {
+      "buffer_mins": null,
       "client_id": "client_alice",
       "end_time": "2026-08-20T10:00:00-05:00",
       "id": "app_101",
@@ -181,9 +187,39 @@
         "lat": 30.33,
         "lng": -97.72
       },
+      "note": null,
       "start_time": "2026-08-20T09:00:00-05:00",
       "status": "scheduled",
-      "title": "Alice"
+      "title": "Alice",
+      "travel_time_mins": null
     }
-  ]
+  ],
+  "scheduling_policy": {
+    "distance_buffer_tiers": [
+      {
+        "buffer_mins": 10,
+        "id": "near",
+        "label": "Under 5 mi",
+        "max_miles": 4.999,
+        "min_miles": 0.0
+      },
+      {
+        "buffer_mins": 20,
+        "id": "medium",
+        "label": "5-10 mi",
+        "max_miles": 10.0,
+        "min_miles": 5.0
+      },
+      {
+        "buffer_mins": 30,
+        "id": "far",
+        "label": "Over 10 mi",
+        "max_miles": null,
+        "min_miles": 10.001
+      }
+    ],
+    "distance_buffers_enabled": true,
+    "post_break_recovery_mins": 15,
+    "revision": 0
+  }
 }

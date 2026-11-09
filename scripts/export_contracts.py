@@ -18,6 +18,7 @@ from app.api_schemas import (
     CoachEmailDeliveryResponse,
     CoachLessonRequestConfirmResponse,
     CoachProviderSettingsResponse,
+    CoachSchedulingPolicyResponse,
     CoachSchedulerRules,
     InviteNotificationResponse,
 )
@@ -25,6 +26,7 @@ from app.api_schemas import (
 
 def build_contract_artifacts() -> dict[str, Any]:
     coach_settings_fixture = _coach_settings_fixture()
+    coach_scheduling_policy_fixture = _coach_scheduling_policy_fixture()
     coach_provider_fixture = _coach_provider_fixture()
     coach_email_delivery = CoachEmailDeliveryResponse.model_validate(
         {
@@ -308,9 +310,11 @@ def build_contract_artifacts() -> dict[str, Any]:
             ],
         },
         "fixtures/coach/settings.json": coach_settings_fixture,
+        "fixtures/coach/scheduling_policy.json": coach_scheduling_policy_fixture,
         "fixtures/coach/provider.json": coach_provider_fixture,
         "fixtures/coach/command_center_snapshot.json": _coach_command_center_snapshot_fixture(
             coach_settings_fixture,
+            coach_scheduling_policy_fixture,
             coach_email_delivery,
         ),
     }
@@ -364,6 +368,21 @@ def _coach_settings_fixture() -> dict[str, Any]:
     ).model_dump(mode="json")
 
 
+def _coach_scheduling_policy_fixture() -> dict[str, Any]:
+    return CoachSchedulingPolicyResponse.model_validate(
+        {
+            "revision": 0,
+            "distance_buffers_enabled": True,
+            "post_break_recovery_mins": 15,
+            "distance_buffer_tiers": [
+                {"id": "near", "label": "Under 5 mi", "min_miles": 0, "max_miles": 4.999, "buffer_mins": 10},
+                {"id": "medium", "label": "5-10 mi", "min_miles": 5, "max_miles": 10, "buffer_mins": 20},
+                {"id": "far", "label": "Over 10 mi", "min_miles": 10.001, "max_miles": None, "buffer_mins": 30},
+            ],
+        }
+    ).model_dump(mode="json")
+
+
 def _coach_provider_fixture() -> dict[str, Any]:
     return CoachProviderSettingsResponse.model_validate(
         {
@@ -410,6 +429,7 @@ def _coach_provider_fixture() -> dict[str, Any]:
 
 def _coach_command_center_snapshot_fixture(
     rules: dict[str, Any],
+    scheduling_policy: dict[str, Any],
     email_delivery: dict[str, Any],
 ) -> dict[str, Any]:
     return CoachCommandCenterSnapshot.model_validate(
@@ -509,8 +529,9 @@ def _coach_command_center_snapshot_fixture(
             ],
             "email_deliveries": [email_delivery],
             "rules": rules,
+            "scheduling_policy": scheduling_policy,
         }
-    ).model_dump(mode="json", exclude_none=True)
+    ).model_dump(mode="json")
 
 
 def _contracts_readme() -> str:
@@ -552,8 +573,11 @@ invite requests remain unauthenticated and explicitly omit credentials.
 
 Authoritative provider identity, timezone, private base location, client-facing service location,
 default duration, and weekly hours use authenticated `GET /api/coach/provider` and full-replacement
-`PUT /api/coach/provider`. The existing `/api/coach/settings` resource remains scheduler buffer and
-payment policy. Public invite payloads expose only the service location, never the private base.
+`PUT /api/coach/provider`. Provider-owned availability rules use authenticated
+`GET /api/coach/scheduling-policy` and optimistic full-replacement
+`PUT /api/coach/scheduling-policy`. The deprecated `GET /api/coach/settings` response remains for
+read compatibility, while its legacy `PUT` returns 410 and cannot mutate policy or payment data.
+Public invite payloads expose only the service location, never the private base.
 
 Instructor calendar handoffs use authenticated
 `GET /api/coach/appointments/{appointment_id}/calendar-links` and

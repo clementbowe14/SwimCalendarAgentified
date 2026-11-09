@@ -28,6 +28,8 @@ from app.api_errors import (
     RoutingProviderUnavailable as RoutingProviderUnavailableApiError,
     RoutingTimeout as RoutingTimeoutApiError,
     SchedulingConflict,
+    SchedulingPolicyStale,
+    SchedulingPolicyValidationError,
 )
 from app.api_schemas import (
     AppointmentResponse,
@@ -46,6 +48,8 @@ from app.api_schemas import (
     CoachScheduleItemResponse,
     CoachScheduleResponse,
     CoachSchedulerRules,
+    CoachSchedulingPolicyResponse,
+    CoachSchedulingPolicyUpdate,
     CoachTimeSlotResponse,
     CoachInstructorProfileResponse,
     CoachProviderLocationResponse,
@@ -99,7 +103,13 @@ from app.routing import (
     RoutingTimeout,
 )
 from app.engine import BufferPolicy
-from app.scheduler_settings import default_scheduler_rules, load_buffer_policy, load_scheduler_rules
+from app.scheduler_settings import (
+    load_buffer_policy,
+    load_scheduler_rules,
+    load_scheduler_settings_projection,
+    load_scheduling_policy,
+    save_scheduling_policy,
+)
 
 
 def get_instructor_profile(instructor_id: str) -> InstructorProfileResponse:
@@ -293,6 +303,10 @@ def get_coach_command_center_snapshot(
         _coach_lesson_request_response(request)
         for request in db.get_pending_lesson_requests_for_instructor(instructor_id)
     ]
+    rules, scheduling_policy = load_scheduler_settings_projection(
+        instructor_id,
+        operation="command_center_snapshot",
+    )
     return CoachCommandCenterSnapshot(
         instructor=coach_instructor,
         date=snapshot_date,
@@ -300,7 +314,8 @@ def get_coach_command_center_snapshot(
         schedule=schedule,
         requests=requests,
         email_deliveries=list_coach_email_deliveries(instructor_id),
-        rules=get_coach_scheduler_settings(instructor_id),
+        rules=rules,
+        scheduling_policy=scheduling_policy,
     )
 
 
@@ -308,16 +323,51 @@ def get_coach_scheduler_settings(instructor_id: str) -> CoachSchedulerRules:
     return load_scheduler_rules(instructor_id, operation="read_settings")
 
 
-def update_coach_scheduler_settings(
+def get_coach_scheduling_policy(
     instructor_id: str,
-    rules: CoachSchedulerRules,
-) -> CoachSchedulerRules:
-    saved = db.save_scheduler_settings(
+) -> CoachSchedulingPolicyResponse:
+    return load_scheduling_policy(instructor_id, operation="read_scheduling_policy")
+
+
+def update_coach_scheduling_policy(
+    instructor_id: str,
+    update: CoachSchedulingPolicyUpdate,
+) -> CoachSchedulingPolicyResponse:
+    current = load_scheduling_policy(
         instructor_id,
-        rules.model_dump(mode="json"),
-        explicit_fields=set(rules.model_fields_set),
+        operation="update_scheduling_policy",
     )
-    return CoachSchedulerRules.model_validate(saved)
+    if update.expected_revision != current.revision:
+        raise SchedulingPolicyStale()
+
+    current_ids = [tier.id for tier in current.distance_buffer_tiers]
+    update_ids = [tier.id for tier in update.distance_buffer_tiers]
+    if update_ids != current_ids:
+        raise SchedulingPolicyValidationError(
+            "Distance buffer tier ids must exactly match the saved server order."
+        )
+
+    buffer_minutes_by_id = {
+        tier.id: tier.buffer_mins for tier in update.distance_buffer_tiers
+    }
+    merged_tiers = [
+        tier.model_copy(update={"buffer_mins": buffer_minutes_by_id[tier.id]})
+        for tier in current.distance_buffer_tiers
+    ]
+    candidate = CoachSchedulingPolicyResponse(
+        revision=current.revision,
+        distance_buffers_enabled=update.distance_buffers_enabled,
+        post_break_recovery_mins=update.post_break_recovery_mins,
+        distance_buffer_tiers=merged_tiers,
+    )
+    saved = save_scheduling_policy(
+        instructor_id,
+        expected_revision=update.expected_revision,
+        policy=candidate,
+    )
+    if saved is None:
+        raise SchedulingPolicyStale()
+    return saved
 
 
 def get_coach_schedule(instructor_id: str, schedule_date: date) -> CoachScheduleResponse:
@@ -461,10 +511,6 @@ def _request_status(status: str, computed_expired: bool = False) -> str:
     if status in {"declined", "cancelled"}:
         return "declined"
     return "pending"
-
-
-def _default_scheduler_rules() -> CoachSchedulerRules:
-    return default_scheduler_rules()
 
 
 def search_coach_availability(

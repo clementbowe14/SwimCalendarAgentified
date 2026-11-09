@@ -12,7 +12,8 @@ import type {
   InstructorAuthSession,
   ProviderConfiguration,
   ProviderConfigurationUpdate,
-  SchedulerRules,
+  SchedulingPolicy,
+  SchedulingPolicyUpdate,
 } from "../src/api/types.js";
 
 type FetchCall = {
@@ -468,19 +469,47 @@ test("HTTP instructor adapter preserves provider field-error details", async () 
   assert.deepEqual((caught as InstructorCommandApiError).details, details);
 });
 
-test("HTTP instructor adapter saves scheduler rules through the coach settings contract", async () => {
+test("HTTP instructor adapter reads and saves only the canonical scheduling policy contract", async () => {
   const calls: FetchCall[] = [];
   const api = new HttpInstructorCommandApi("http://api.test/api");
-  const rules = snapshotContract().rules;
+  const policy = schedulingPolicyContract();
+  const update: SchedulingPolicyUpdate = {
+    expected_revision: policy.revision,
+    distance_buffers_enabled: false,
+    post_break_recovery_mins: 25,
+    distance_buffer_tiers: policy.distance_buffer_tiers.map(({ id, buffer_mins }) => ({
+      id,
+      buffer_mins: buffer_mins + 5,
+    })),
+  };
+  const saved: SchedulingPolicy = {
+    ...policy,
+    revision: policy.revision + 1,
+    distance_buffers_enabled: update.distance_buffers_enabled,
+    post_break_recovery_mins: update.post_break_recovery_mins,
+    distance_buffer_tiers: policy.distance_buffer_tiers.map((tier, index) => ({
+      ...tier,
+      buffer_mins: update.distance_buffer_tiers[index].buffer_mins,
+    })),
+  };
 
-  await withMockFetch(calls, async () => jsonResponse(rules), async () => {
-    const saved = await api.saveRules(rules);
-    const body = JSON.parse(String(calls[0].init?.body)) as SchedulerRules;
+  await withMockFetch(calls, async (_input, init) =>
+    jsonResponse(init?.method === "PUT" ? saved : policy), async () => {
+    const read = await api.getSchedulingPolicy();
+    const response = await api.saveSchedulingPolicy(update);
+    const body = JSON.parse(String(calls[1].init?.body)) as SchedulingPolicyUpdate;
 
-    assert.equal(calls[0].url, "http://api.test/api/coach/settings");
-    assert.equal(calls[0].init?.method, "PUT");
-    assert.deepEqual(body, rules);
-    assert.deepEqual(saved, rules);
+    assert.equal(calls[0].url, "http://api.test/api/coach/scheduling-policy");
+    assert.equal(calls[0].init?.method, "GET");
+    assert.equal(calls[1].url, "http://api.test/api/coach/scheduling-policy");
+    assert.equal(calls[1].init?.method, "PUT");
+    assert.equal(headerValue(calls[1].init?.headers, "x-csrf-protection"), "1");
+    assert.deepEqual(body, update);
+    assert.equal("label" in body.distance_buffer_tiers[0], false);
+    assert.equal("min_miles" in body.distance_buffer_tiers[0], false);
+    assert.equal("payments" in body, false);
+    assert.deepEqual(read, policy);
+    assert.deepEqual(response, saved);
   });
 });
 
@@ -648,6 +677,7 @@ function snapshotContract(): CommandCenterSnapshot {
       },
     ],
     email_deliveries: [emailDeliveryContract()],
+    scheduling_policy: schedulingPolicyContract(),
     rules: {
       buffers_enabled: true,
       apply_distance_buffer_at_shift_start: false,
@@ -664,6 +694,19 @@ function snapshotContract(): CommandCenterSnapshot {
         require_payment_method_for_new_clients: true,
       },
     },
+  };
+}
+
+function schedulingPolicyContract(): SchedulingPolicy {
+  return {
+    revision: 4,
+    distance_buffers_enabled: true,
+    post_break_recovery_mins: 15,
+    distance_buffer_tiers: [
+      { id: "near", label: "Under 5 mi", min_miles: 0, max_miles: 4.999, buffer_mins: 10 },
+      { id: "medium", label: "5-10 mi", min_miles: 5, max_miles: 10, buffer_mins: 20 },
+      { id: "far", label: "Over 10 mi", min_miles: 10.001, max_miles: null, buffer_mins: 30 },
+    ],
   };
 }
 

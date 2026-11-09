@@ -26,7 +26,7 @@ test("saves one canonical provider configuration while keeping scheduler rules s
 
   await expect(page.getByRole("heading", { name: "Scheduling is ready" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Save provider settings" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Save rules" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save scheduling policy" })).toBeVisible();
 
   await page.getByLabel("Display name").fill("Jordan Lee");
   await page.getByLabel("Business name Optional").fill("");
@@ -67,7 +67,7 @@ for (const width of [320, 375]) {
 
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     const sunday = page.locator('[data-weekday="sunday"]');
-    const saveBar = page.locator(".provider-save-bar");
+    const saveBar = page.locator("[data-provider-form] .provider-save-bar");
     await expect(sunday).toBeVisible();
     await expect(saveBar).toBeVisible();
     const sundayBounds = await sunday.boundingBox();

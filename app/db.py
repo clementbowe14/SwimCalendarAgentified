@@ -3,7 +3,7 @@ import json
 import os
 import uuid
 from typing import Optional, List
-from sqlalchemy import create_engine, or_
+from sqlalchemy import create_engine, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from app import timezones
@@ -496,6 +496,7 @@ def get_scheduler_settings(instructor_id: str) -> Optional[dict]:
         if settings is None:
             return None
         return {
+            "policy_revision": settings.policy_revision,
             "buffers_enabled": settings.buffers_enabled,
             "apply_distance_buffer_at_shift_start": settings.apply_distance_buffer_at_shift_start,
             "rounding_increment_mins": settings.rounding_increment_mins,
@@ -509,6 +510,42 @@ def get_scheduler_settings(instructor_id: str) -> Optional[dict]:
         }
     finally:
         session.close()
+
+
+def get_scheduling_policy(instructor_id: str) -> Optional[dict]:
+    """Read only the physical columns owned by the canonical policy."""
+
+    session = SessionLocal()
+    try:
+        row = (
+            session.execute(
+                text(
+                    """
+                    SELECT
+                        policy_revision,
+                        buffers_enabled,
+                        post_break_buffer_mins,
+                        distance_buffer_tiers
+                    FROM scheduler_settings
+                    WHERE instructor_id = CAST(:instructor_id AS VARCHAR)
+                    """
+                ),
+                {"instructor_id": instructor_id},
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            return None
+        return {
+            "policy_revision": row["policy_revision"],
+            "buffers_enabled": row["buffers_enabled"],
+            "post_break_buffer_mins": row["post_break_buffer_mins"],
+            "distance_buffer_tiers": json.loads(row["distance_buffer_tiers"]),
+        }
+    finally:
+        session.close()
+
 
 def save_scheduler_settings(
     instructor_id: str,
@@ -541,6 +578,89 @@ def save_scheduler_settings(
     if saved is None:
         raise RuntimeError("Scheduler settings were not saved.")
     return saved
+
+
+def save_scheduling_policy_cas(
+    instructor_id: str,
+    *,
+    expected_revision: int,
+    distance_buffers_enabled: bool,
+    post_break_recovery_mins: int,
+    distance_buffer_tiers: list[dict],
+) -> Optional[dict]:
+    """Atomically insert or compare-and-swap the canonical scheduling policy."""
+
+    serialized_tiers = json.dumps(distance_buffer_tiers, sort_keys=True)
+    now = datetime.datetime.utcnow()
+    session = SessionLocal()
+    try:
+        row = (
+            session.execute(
+                text(
+                    """
+                    INSERT INTO scheduler_settings (
+                        instructor_id,
+                        buffers_enabled,
+                        post_break_buffer_mins,
+                        distance_buffer_tiers,
+                        policy_revision,
+                        updated_at
+                    )
+                    SELECT
+                        CAST(:instructor_id AS VARCHAR),
+                        CAST(:distance_buffers_enabled AS BOOLEAN),
+                        CAST(:post_break_recovery_mins AS INTEGER),
+                        CAST(:distance_buffer_tiers AS TEXT),
+                        1,
+                        CAST(:updated_at AS TIMESTAMP WITHOUT TIME ZONE)
+                    WHERE
+                        CAST(:expected_revision AS BIGINT) = 0
+                        OR EXISTS (
+                            SELECT 1
+                            FROM scheduler_settings
+                            WHERE instructor_id = CAST(:instructor_id AS VARCHAR)
+                        )
+                    ON CONFLICT (instructor_id) DO UPDATE
+                    SET
+                        buffers_enabled = EXCLUDED.buffers_enabled,
+                        post_break_buffer_mins = EXCLUDED.post_break_buffer_mins,
+                        distance_buffer_tiers = EXCLUDED.distance_buffer_tiers,
+                        policy_revision = scheduler_settings.policy_revision + 1,
+                        updated_at = EXCLUDED.updated_at
+                    WHERE scheduler_settings.policy_revision = CAST(:expected_revision AS BIGINT)
+                    RETURNING
+                        policy_revision,
+                        buffers_enabled,
+                        post_break_buffer_mins,
+                        distance_buffer_tiers
+                    """
+                ),
+                {
+                    "instructor_id": instructor_id,
+                    "expected_revision": expected_revision,
+                    "distance_buffers_enabled": distance_buffers_enabled,
+                    "post_break_recovery_mins": post_break_recovery_mins,
+                    "distance_buffer_tiers": serialized_tiers,
+                    "updated_at": now,
+                },
+            )
+            .mappings()
+            .one_or_none()
+        )
+        session.commit()
+        if row is None:
+            return None
+        return {
+            "policy_revision": row["policy_revision"],
+            "buffers_enabled": row["buffers_enabled"],
+            "post_break_buffer_mins": row["post_break_buffer_mins"],
+            "distance_buffer_tiers": json.loads(row["distance_buffer_tiers"]),
+        }
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 def _split_csv(value: Optional[str]) -> list[str]:
     if not value:

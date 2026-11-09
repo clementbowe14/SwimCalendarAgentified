@@ -3,6 +3,7 @@ import type {
   ProviderConfiguration,
   ProviderConfigurationUpdate,
   ProviderWorkingHour,
+  SchedulingPolicy,
 } from "../src/api/types";
 
 const SESSION_COOKIE_NAME = "swim_session";
@@ -144,7 +145,7 @@ test.describe("provider setup workflow", () => {
 
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
       const sunday = await page.locator('[data-weekday="sunday"]').boundingBox();
-      const save = await page.locator(".provider-save-bar").boundingBox();
+      const save = await page.locator("[data-provider-form] .provider-save-bar").boundingBox();
       expect((sunday?.y ?? 0) + (sunday?.height ?? 0)).toBeLessThanOrEqual((save?.y ?? 0) + 1);
     });
   }
@@ -166,6 +167,7 @@ async function installProviderApi(page: Page, options: ProviderApiOptions = {}):
 }> {
   let sessionActive = true;
   let provider = providerResponse(options.setupComplete ?? true);
+  let policy = schedulingPolicyResponse();
   let availabilityCallCount = 0;
   let confirmCallCount = 0;
   let providerPutCallCount = 0;
@@ -227,8 +229,35 @@ async function installProviderApi(page: Page, options: ProviderApiOptions = {}):
       await route.fulfill({ json: provider });
       return;
     }
+    if (pathname.endsWith("/coach/scheduling-policy") && request.method() === "GET") {
+      await route.fulfill({ json: policy });
+      return;
+    }
+    if (pathname.endsWith("/coach/scheduling-policy") && request.method() === "PUT") {
+      const payload = request.postDataJSON() as {
+        expected_revision: number;
+        distance_buffers_enabled: boolean;
+        post_break_recovery_mins: number;
+        distance_buffer_tiers: Array<{ id: string; buffer_mins: number }>;
+      };
+      if (payload.expected_revision !== policy.revision) {
+        await route.fulfill({ status: 409, json: apiError("SCHEDULING_POLICY_STALE", "Reload the saved policy.") });
+        return;
+      }
+      policy = {
+        revision: policy.revision + 1,
+        distance_buffers_enabled: payload.distance_buffers_enabled,
+        post_break_recovery_mins: payload.post_break_recovery_mins,
+        distance_buffer_tiers: policy.distance_buffer_tiers.map((tier, index) => ({
+          ...tier,
+          buffer_mins: payload.distance_buffer_tiers[index].buffer_mins,
+        })),
+      };
+      await route.fulfill({ json: policy });
+      return;
+    }
     if (pathname.endsWith("/coach/command-center/snapshot")) {
-      await route.fulfill({ json: snapshotResponse(provider) });
+      await route.fulfill({ json: snapshotResponse(provider, policy) });
       return;
     }
     if (pathname.endsWith("/coach/availability")) {
@@ -331,7 +360,7 @@ function authSession(): Record<string, unknown> {
   };
 }
 
-function snapshotResponse(provider: ProviderConfiguration): Record<string, unknown> {
+function snapshotResponse(provider: ProviderConfiguration, policy: SchedulingPolicy): Record<string, unknown> {
   const firstEnabled = provider.working_hours.find(({ enabled }) => enabled);
   return {
     instructor: {
@@ -383,6 +412,7 @@ function snapshotResponse(provider: ProviderConfiguration): Record<string, unkno
       alternative_slots: [],
     }],
     email_deliveries: [],
+    scheduling_policy: policy,
     rules: {
       buffers_enabled: true,
       apply_distance_buffer_at_shift_start: false,
@@ -395,6 +425,19 @@ function snapshotResponse(provider: ProviderConfiguration): Record<string, unkno
         require_payment_method_for_new_clients: false,
       },
     },
+  };
+}
+
+function schedulingPolicyResponse(): SchedulingPolicy {
+  return {
+    revision: 0,
+    distance_buffers_enabled: true,
+    post_break_recovery_mins: 15,
+    distance_buffer_tiers: [
+      { id: "near", label: "Under 5 mi", min_miles: 0, max_miles: 4.999, buffer_mins: 10 },
+      { id: "medium", label: "5-10 mi", min_miles: 5, max_miles: 10, buffer_mins: 20 },
+      { id: "far", label: "Over 10 mi", min_miles: 10.001, max_miles: null, buffer_mins: 30 },
+    ],
   };
 }
 

@@ -11,6 +11,7 @@ import type {
   CalendarLinks,
   CoachLessonRequestConfirmResponse,
   ProviderConfiguration,
+  SchedulingPolicy,
 } from "../src/api/types";
 
 const liveApiBase = readLiveApiBase();
@@ -140,7 +141,7 @@ test.describe("instructor command real-backend integration", () => {
     await page.reload();
     await page.getByRole("button", { name: "Settings" }).click();
     await expect(page.getByLabel("Display name")).toHaveValue(displayName);
-    await expect(page.getByRole("switch")).toHaveCount(7);
+    await expect(page.locator("[data-provider-form]").getByRole("switch")).toHaveCount(7);
 
     for (const width of [375, 320]) {
       await page.setViewportSize({ width, height: 720 });
@@ -152,6 +153,89 @@ test.describe("instructor command real-backend integration", () => {
       for (const control of await page.locator("[data-provider-form] input, [data-provider-form] select, [data-provider-form] button").all()) {
         expect((await control.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
       }
+    }
+  });
+
+  test("saves policy, changes live availability, reloads it, and restores the original", async ({ page }) => {
+    await signIn(page);
+    const coachRequest = page.context().request;
+    const original = await getJson<SchedulingPolicy>(
+      coachRequest,
+      `${liveApiBase}/coach/scheduling-policy`,
+      "original scheduling policy",
+    );
+    const searchPayload = {
+      client_name: "Policy browser verification",
+      client_address: "450 North Blvd, Austin, TX",
+      requested_date: "2026-08-20",
+      duration_mins: 60,
+      is_instructor_facility: false,
+    };
+    const before = await postCoachJson<{ available_slots: LiveSlot[] }>(
+      coachRequest,
+      `${liveApiBase}/coach/availability`,
+      searchPayload,
+      "availability before policy save",
+    );
+    const targetDistanceBuffersEnabled = true;
+    const targetTierMinutes = new Map(original.distance_buffer_tiers.map((tier) => {
+      const effectiveMinutes = original.distance_buffers_enabled ? tier.buffer_mins : 0;
+      return [tier.id, effectiveMinutes <= 120 ? 240 : 0];
+    }));
+
+    try {
+      await page.getByRole("button", { name: "Settings" }).click();
+      const form = page.locator("[data-scheduling-policy-form]");
+      await form.getByRole("switch", { name: "Distance-based buffers" }).setChecked(targetDistanceBuffersEnabled);
+      for (const tier of original.distance_buffer_tiers) {
+        await form.locator(`[data-policy-minute="tier.${tier.id}.buffer_mins"]`).fill(
+          String(targetTierMinutes.get(tier.id)),
+        );
+      }
+      const putResponsePromise = page.waitForResponse((response) =>
+        response.request().method() === "PUT" && response.url().endsWith("/coach/scheduling-policy"),
+      );
+      await form.getByRole("button", { name: "Save scheduling policy" }).click();
+      const putResponse = await putResponsePromise;
+      const saved = await jsonResponse<SchedulingPolicy>(putResponse, "scheduling policy save");
+      expect(saved.revision).toBe(original.revision + 1);
+
+      const after = await postCoachJson<{ available_slots: LiveSlot[] }>(
+        coachRequest,
+        `${liveApiBase}/coach/availability`,
+        searchPayload,
+        "availability after policy save",
+      );
+      expect(after.available_slots.map(({ start_iso }) => start_iso)).not.toEqual(
+        before.available_slots.map(({ start_iso }) => start_iso),
+      );
+
+      await page.reload();
+      await page.getByRole("button", { name: "Settings" }).click();
+      for (const tier of original.distance_buffer_tiers) {
+        await expect(form.locator(`[data-policy-minute="tier.${tier.id}.buffer_mins"]`)).toHaveValue(
+          String(targetTierMinutes.get(tier.id)),
+        );
+      }
+    } finally {
+      const latest = await getJson<SchedulingPolicy>(
+        coachRequest,
+        `${liveApiBase}/coach/scheduling-policy`,
+        "latest scheduling policy before restore",
+      );
+      const restore = await coachRequest.put(`${liveApiBase}/coach/scheduling-policy`, {
+        headers: { "X-CSRF-Protection": "1" },
+        data: {
+          expected_revision: latest.revision,
+          distance_buffers_enabled: original.distance_buffers_enabled,
+          post_break_recovery_mins: original.post_break_recovery_mins,
+          distance_buffer_tiers: original.distance_buffer_tiers.map(({ id, buffer_mins }) => ({ id, buffer_mins })),
+        },
+      });
+      const restored = await jsonResponse<SchedulingPolicy>(restore, "scheduling policy restore");
+      expect(restored.distance_buffers_enabled).toBe(original.distance_buffers_enabled);
+      expect(restored.post_break_recovery_mins).toBe(original.post_break_recovery_mins);
+      expect(restored.distance_buffer_tiers).toEqual(original.distance_buffer_tiers);
     }
   });
 

@@ -36,8 +36,11 @@ invite requests remain unauthenticated and explicitly omit credentials.
 
 Authoritative provider identity, timezone, private base location, client-facing service location,
 default duration, and weekly hours use authenticated `GET /api/coach/provider` and full-replacement
-`PUT /api/coach/provider`. The existing `/api/coach/settings` resource remains scheduler buffer and
-payment policy. Public invite payloads expose only the service location, never the private base.
+`PUT /api/coach/provider`. Provider-owned availability rules use authenticated
+`GET /api/coach/scheduling-policy` and optimistic full-replacement
+`PUT /api/coach/scheduling-policy`. The deprecated `GET /api/coach/settings` response remains for
+read compatibility, while its legacy `PUT` returns 410 and cannot mutate policy or payment data.
+Public invite payloads expose only the service location, never the private base.
 
 Instructor calendar handoffs use authenticated
 `GET /api/coach/appointments/{appointment_id}/calendar-links` and

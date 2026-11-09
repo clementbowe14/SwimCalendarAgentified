@@ -18,6 +18,7 @@ from app.api_schemas import (
     CoachProviderSettingsResponse,
     CoachScheduleResponse,
     CoachSchedulerRules,
+    CoachSchedulingPolicyResponse,
     ErrorResponse,
     InviteNotificationResponse,
 )
@@ -41,6 +42,7 @@ FIXTURE_SCHEMAS = {
     "fixtures/coach/availability_search_response.json": AvailabilitySearchResponse,
     "fixtures/coach/schedule_response.json": CoachScheduleResponse,
     "fixtures/coach/settings.json": CoachSchedulerRules,
+    "fixtures/coach/scheduling_policy.json": CoachSchedulingPolicyResponse,
     "fixtures/coach/provider.json": CoachProviderSettingsResponse,
     "fixtures/coach/command_center_snapshot.json": CoachCommandCenterSnapshot,
 }
@@ -88,6 +90,19 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/coach/lesson-requests/{request_token}/alternatives" in paths
     assert "/api/coach/lesson-requests/{request_token}/decline" in paths
     assert "/api/coach/settings" in paths
+    assert "/api/coach/scheduling-policy" in paths
+    assert openapi["paths"]["/api/coach/settings"]["get"]["deprecated"] is True
+    legacy_policy_put = openapi["paths"]["/api/coach/settings"]["put"]
+    assert legacy_policy_put["deprecated"] is True
+    assert "200" not in legacy_policy_put["responses"]
+    assert legacy_policy_put["responses"]["410"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ErrorResponse"
+    }
+    canonical_policy_put = openapi["paths"]["/api/coach/scheduling-policy"]["put"]
+    for status in ("409", "422"):
+        assert canonical_policy_put["responses"][status]["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/ErrorResponse"
+        }
     assert "/api/coach/provider" in paths
     assert "/api/coach/invites/{invite_token}/notifications" in paths
     assert "/api/coach/email-deliveries" in paths

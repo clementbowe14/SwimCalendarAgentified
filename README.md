@@ -64,6 +64,11 @@ single-location/single-hours model. See
 [`docs/provider-settings-runbook.md`](docs/provider-settings-runbook.md) for rollout verification and
 rollback prerequisites.
 
+Migration `20261109_0011` adds optimistic revisions for the authoritative provider scheduling policy.
+Its migration-first cutover requires old writers to be drained before the canonical policy endpoint is
+enabled. See [`docs/scheduling-policy-runbook.md`](docs/scheduling-policy-runbook.md) for preflight,
+deployment, verification, and rollback steps.
+
 ### Start The API
 
 ```bash

@@ -1,7 +1,7 @@
 import pytest
 import datetime
 from app.routing import BaseRoutingProvider, HaversineRoutingProvider, RouteEstimate
-from app.engine import SwimSchedulerConstraintEngine
+from app.engine import BufferPolicy, DistanceBufferTier, SwimSchedulerConstraintEngine
 from app.models import LocationInfo
 
 @pytest.fixture
@@ -9,8 +9,21 @@ def routing():
     return HaversineRoutingProvider()
 
 @pytest.fixture
-def engine(routing):
-    return SwimSchedulerConstraintEngine(routing)
+def policy():
+    return BufferPolicy(
+        distance_buffers_enabled=True,
+        post_break_recovery_mins=15,
+        distance_buffer_tiers=(
+            DistanceBufferTier(0, 4.999, 10),
+            DistanceBufferTier(5, 10, 20),
+            DistanceBufferTier(10.001, None, 30),
+        ),
+    )
+
+
+@pytest.fixture
+def engine(routing, policy):
+    return SwimSchedulerConstraintEngine(routing, policy)
 
 def test_distance_buffer_tiers(engine):
     # Tier 1: x < 5 miles -> 10 mins
@@ -109,9 +122,9 @@ class RecordingRoutingProvider(BaseRoutingProvider):
         return (30.2672, -97.7431)
 
 
-def test_engine_passes_departure_context_to_routing_provider():
+def test_engine_passes_departure_context_to_routing_provider(policy):
     routing = RecordingRoutingProvider()
-    engine = SwimSchedulerConstraintEngine(routing)
+    engine = SwimSchedulerConstraintEngine(routing, policy)
     main_loc = LocationInfo(address="Base", lat=30.0, lng=-97.0, is_instructor_facility=True)
     target_loc = LocationInfo(address="Target", lat=30.1, lng=-97.1, is_instructor_facility=False)
     next_loc = LocationInfo(address="Next", lat=30.2, lng=-97.2, is_instructor_facility=False)
@@ -152,7 +165,7 @@ class ReturnLegTrafficProvider(RecordingRoutingProvider):
                 "traffic_mode": traffic_mode,
             }
         )
-        travel_time = 40 if departure_time == datetime.datetime(2026, 8, 20, 9, 30) else 5
+        travel_time = 25 if departure_time == datetime.datetime(2026, 8, 20, 9, 30) else 5
         return RouteEstimate(
             distance_miles=1.0,
             travel_time_mins=travel_time,
@@ -161,17 +174,17 @@ class ReturnLegTrafficProvider(RecordingRoutingProvider):
         )
 
 
-def test_engine_uses_candidate_end_time_for_return_leg_routing():
+def test_engine_uses_candidate_end_time_for_return_leg_routing(policy):
     routing = ReturnLegTrafficProvider()
-    engine = SwimSchedulerConstraintEngine(routing)
+    engine = SwimSchedulerConstraintEngine(routing, policy)
     main_loc = LocationInfo(address="Base", lat=30.0, lng=-97.0, is_instructor_facility=True)
     target_loc = LocationInfo(address="Target", lat=30.1, lng=-97.1, is_instructor_facility=False)
 
-    slots = engine.find_available_slots_for_day(
-        day_start=datetime.datetime(2026, 8, 20, 8, 0),
-        day_end=datetime.datetime(2026, 8, 20, 11, 0),
-        instructor_main_location=main_loc,
-        existing_events=[
+    search = {
+        "day_start": datetime.datetime(2026, 8, 20, 8, 0),
+        "day_end": datetime.datetime(2026, 8, 20, 11, 0),
+        "instructor_main_location": main_loc,
+        "existing_events": [
             {
                 "id": "app_next",
                 "start_time": datetime.datetime(2026, 8, 20, 10, 0),
@@ -181,11 +194,34 @@ def test_engine_uses_candidate_end_time_for_return_leg_routing():
                 "is_break": False,
             }
         ],
-        target_location=target_loc,
-        duration_mins=30,
+        "target_location": target_loc,
+        "duration_mins": 30,
+    }
+    slots = engine.find_available_slots_for_day(**search)
+
+    no_distance_buffer_engine = SwimSchedulerConstraintEngine(
+        ReturnLegTrafficProvider(),
+        BufferPolicy(
+            distance_buffers_enabled=False,
+            post_break_recovery_mins=policy.post_break_recovery_mins,
+            distance_buffer_tiers=policy.distance_buffer_tiers,
+        ),
+    )
+    slots_without_outbound_buffer = no_distance_buffer_engine.find_available_slots_for_day(
+        **search
     )
 
-    assert datetime.datetime(2026, 8, 20, 9, 30) in {
+    return_leg_departure = datetime.datetime(2026, 8, 20, 9, 30)
+    candidate_start = datetime.datetime(2026, 8, 20, 9, 0)
+    assert return_leg_departure in {
         call["departure_time"] for call in routing.calls
     }
-    assert datetime.datetime(2026, 8, 20, 9, 0) not in {slot.start_time for slot in slots}
+    assert candidate_start in {
+        slot.start_time for slot in slots_without_outbound_buffer
+    }
+    assert candidate_start not in {slot.start_time for slot in slots}
+
+
+def test_engine_requires_an_explicit_policy(routing):
+    with pytest.raises(TypeError):
+        SwimSchedulerConstraintEngine(routing)

@@ -998,6 +998,9 @@
             },
             "title": "Schedule",
             "type": "array"
+          },
+          "scheduling_policy": {
+            "$ref": "#/components/schemas/CoachSchedulingPolicyResponse"
           }
         },
         "required": [
@@ -1006,7 +1009,8 @@
           "clients",
           "schedule",
           "requests",
-          "rules"
+          "rules",
+          "scheduling_policy"
         ],
         "title": "CoachCommandCenterSnapshot",
         "type": "object"
@@ -2028,6 +2032,102 @@
         "title": "CoachSchedulerRules",
         "type": "object"
       },
+      "CoachSchedulingPolicyResponse": {
+        "properties": {
+          "distance_buffer_tiers": {
+            "items": {
+              "$ref": "#/components/schemas/CoachDistanceBufferTier"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Distance Buffer Tiers",
+            "type": "array"
+          },
+          "distance_buffers_enabled": {
+            "title": "Distance Buffers Enabled",
+            "type": "boolean"
+          },
+          "post_break_recovery_mins": {
+            "maximum": 240.0,
+            "minimum": 0.0,
+            "title": "Post Break Recovery Mins",
+            "type": "integer"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "distance_buffers_enabled",
+          "post_break_recovery_mins",
+          "distance_buffer_tiers"
+        ],
+        "title": "CoachSchedulingPolicyResponse",
+        "type": "object"
+      },
+      "CoachSchedulingPolicyTierUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "buffer_mins": {
+            "maximum": 240.0,
+            "minimum": 0.0,
+            "title": "Buffer Mins",
+            "type": "integer"
+          },
+          "id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "buffer_mins"
+        ],
+        "title": "CoachSchedulingPolicyTierUpdate",
+        "type": "object"
+      },
+      "CoachSchedulingPolicyUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "distance_buffer_tiers": {
+            "items": {
+              "$ref": "#/components/schemas/CoachSchedulingPolicyTierUpdate"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Distance Buffer Tiers",
+            "type": "array"
+          },
+          "distance_buffers_enabled": {
+            "title": "Distance Buffers Enabled",
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "post_break_recovery_mins": {
+            "maximum": 240.0,
+            "minimum": 0.0,
+            "title": "Post Break Recovery Mins",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "distance_buffers_enabled",
+          "post_break_recovery_mins",
+          "distance_buffer_tiers"
+        ],
+        "title": "CoachSchedulingPolicyUpdate",
+        "type": "object"
+      },
       "CoachSessionResponse": {
         "properties": {
           "authenticated": {
@@ -2116,6 +2216,48 @@
           "target_location"
         ],
         "title": "CoachTimeSlotResponse",
+        "type": "object"
+      },
+      "ErrorBody": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorBody",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorResponse",
         "type": "object"
       },
       "GoogleCalendarEvent": {
@@ -3843,8 +3985,105 @@
         ]
       }
     },
+    "/api/coach/scheduling-policy": {
+      "get": {
+        "operationId": "read_scheduling_policy_api_coach_scheduling_policy_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachSchedulingPolicyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Read Scheduling Policy",
+        "tags": [
+          "coach"
+        ]
+      },
+      "put": {
+        "operationId": "save_scheduling_policy_api_coach_scheduling_policy_put",
+        "parameters": [
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoachSchedulingPolicyUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachSchedulingPolicyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The expected policy revision is stale."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The policy update is invalid."
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Save Scheduling Policy",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
     "/api/coach/settings": {
       "get": {
+        "deprecated": true,
         "operationId": "read_scheduler_settings_api_coach_settings_get",
         "responses": {
           "200": {
@@ -3869,7 +4108,8 @@
         ]
       },
       "put": {
-        "operationId": "save_scheduler_settings_api_coach_settings_put",
+        "deprecated": true,
+        "operationId": "reject_legacy_scheduler_settings_write_api_coach_settings_put",
         "parameters": [
           {
             "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
@@ -3886,36 +4126,16 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CoachSchedulerRules"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
-          "200": {
+          "410": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CoachSchedulerRules"
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
+            "description": "Scheduling policy endpoint moved."
           }
         },
         "security": [
@@ -3923,7 +4143,7 @@
             "CoachSessionCookie": []
           }
         ],
-        "summary": "Save Scheduler Settings",
+        "summary": "Reject Legacy Scheduler Settings Write",
         "tags": [
           "coach"
         ]

@@ -10,6 +10,7 @@ import type {
   ProviderWorkingHour,
   SchedulerRules,
   ScheduleItem,
+  SchedulingPolicy,
   TimeSlotDTO,
 } from "./types.js";
 
@@ -485,6 +486,17 @@ export const rules: SchedulerRules = {
   },
 };
 
+export const schedulingPolicy: SchedulingPolicy = {
+  revision: 0,
+  distance_buffers_enabled: true,
+  post_break_recovery_mins: 15,
+  distance_buffer_tiers: [
+    { id: "near", label: "Under 5 mi", min_miles: 0, max_miles: 4.999, buffer_mins: 10 },
+    { id: "medium", label: "5-10 mi", min_miles: 5, max_miles: 10, buffer_mins: 20 },
+    { id: "far", label: "Over 10 mi", min_miles: 10.001, max_miles: null, buffer_mins: 30 },
+  ],
+};
+
 export const snapshot: CommandCenterSnapshot = {
   instructor,
   date: "2026-08-27",
@@ -492,5 +504,6 @@ export const snapshot: CommandCenterSnapshot = {
   schedule,
   requests,
   email_deliveries: emailDeliveries,
+  scheduling_policy: schedulingPolicy,
   rules,
 };
