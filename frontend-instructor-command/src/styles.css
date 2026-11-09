@@ -675,6 +675,9 @@ select {
   display: grid;
   grid-column: 1 / -1;
   gap: 14px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 18px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -685,9 +688,21 @@ select {
 .email-delivery-heading,
 .email-delivery-card-head {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
+}
+
+.email-delivery-heading > *,
+.email-delivery-card-head > *,
+.email-delivery-list,
+.email-delivery-list > li,
+.email-correction-form,
+.email-correction-form > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .email-delivery-heading h2,
@@ -708,6 +723,7 @@ select {
   margin: 6px 0 0;
   color: var(--muted);
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .delivery-refresh-action {
@@ -767,6 +783,7 @@ select {
   font-weight: 900;
   line-height: 1.2;
   text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .delivery-status-progress {
@@ -841,6 +858,12 @@ select {
 
 .email-correction-form label {
   min-width: 0;
+}
+
+.email-delivery-section button,
+.email-delivery-section input {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .email-correction-form .delivery-field-help,
@@ -1604,6 +1627,10 @@ select {
   .email-correction-form .primary-action {
     width: 100%;
     min-height: 48px;
+    padding-block: 8px;
+    line-height: 1.2;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .email-correction-form {

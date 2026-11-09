@@ -148,7 +148,47 @@ test("keeps email recovery controls one-handed at 320px", async ({ page }) => {
     const bounds = await control.boundingBox();
     expect(bounds?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
-  expect(await section.evaluate((element) => element.scrollWidth > element.clientWidth + 1)).toBe(false);
+  const overflow = await section.evaluate((element) => {
+    const sectionBounds = element.getBoundingClientRect();
+    return {
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      descendants: Array.from(element.querySelectorAll<HTMLElement>("*"))
+        .map((child) => {
+          const bounds = child.getBoundingClientRect();
+          return {
+            className: child.className,
+            clientWidth: child.clientWidth,
+            extendsLeft: bounds.left < sectionBounds.left - 1,
+            extendsRight: bounds.right > sectionBounds.right + 1,
+            scrollWidth: child.scrollWidth,
+            tagName: child.tagName,
+            text: child.textContent?.trim().slice(0, 80) ?? "",
+          };
+        })
+        .filter(
+          (child) =>
+            child.scrollWidth > child.clientWidth + 1 || child.extendsLeft || child.extendsRight,
+        ),
+    };
+  });
+  expect(
+    overflow.scrollWidth > overflow.clientWidth + 1,
+    `Email delivery overflow: ${JSON.stringify(overflow)}`,
+  ).toBe(false);
+
+  const pageOverflow = await page.evaluate(() => ({
+    body: { clientWidth: document.body.clientWidth, scrollWidth: document.body.scrollWidth },
+    root: {
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    },
+  }));
+  expect(
+    pageOverflow.body.scrollWidth > pageOverflow.body.clientWidth + 1 ||
+      pageOverflow.root.scrollWidth > pageOverflow.root.clientWidth + 1,
+    `Requests page overflow: ${JSON.stringify(pageOverflow)}`,
+  ).toBe(false);
 });
 
 test("hands a directly booked persisted appointment to the instructor calendar", async ({ page }) => {
