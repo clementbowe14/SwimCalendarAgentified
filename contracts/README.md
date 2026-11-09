@@ -35,6 +35,12 @@ Instructor calendar handoffs use authenticated
 same bearer session; the `apple` field is an alias of this provider-neutral download, not a direct
 calendar-provider write.
 
+Instructor email delivery state is available through authenticated
+`GET /api/coach/email-deliveries`. Safe recovery uses
+`POST /api/coach/email-deliveries/{delivery_id}/resend` and
+`PUT /api/coach/email-deliveries/{delivery_id}/contact`. Coach delivery responses intentionally omit
+recipient addresses, provider identifiers, raw failures, attempts, leases, and retry timestamps.
+
 Regenerate contracts with:
 
 ```bash

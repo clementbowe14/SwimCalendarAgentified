@@ -657,6 +657,209 @@ select {
   flex-wrap: wrap;
 }
 
+.email-delivery-section {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 32px rgba(4, 48, 93, 0.08);
+}
+
+.email-delivery-heading,
+.email-delivery-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.email-delivery-heading h2,
+.email-delivery-card h3 {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.1;
+}
+
+.email-delivery-heading h2 {
+  font-size: 30px;
+}
+
+.email-delivery-heading p:not(.eyebrow),
+.delivery-status-detail,
+.delivery-updated,
+.delivery-field-help {
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.delivery-refresh-action {
+  flex: 0 0 auto;
+}
+
+.email-delivery-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.email-delivery-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid rgba(7, 109, 228, 0.15);
+  border-left: 5px solid #718096;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.email-delivery-card.delivery-progress {
+  border-left-color: var(--water);
+}
+
+.email-delivery-card.delivery-success {
+  border-left-color: var(--green);
+}
+
+.email-delivery-card.delivery-warning {
+  border-left-color: var(--sun);
+  background: #fffdf7;
+}
+
+.email-delivery-card.delivery-danger {
+  border-left-color: var(--rose);
+  background: #fffaf8;
+}
+
+.email-delivery-card h3 {
+  overflow-wrap: anywhere;
+  font-size: 22px;
+}
+
+.delivery-status {
+  flex: 0 0 auto;
+  max-width: 240px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  color: #35465b;
+  background: #edf2f7;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.delivery-status-progress {
+  color: #0055b9;
+  background: #e8f4ff;
+}
+
+.delivery-status-success {
+  color: #08713a;
+  background: #e8fff0;
+}
+
+.delivery-status-warning {
+  color: #7b4d00;
+  background: #fff1c7;
+}
+
+.delivery-status-danger {
+  color: #8e3218;
+  background: #fff0ea;
+}
+
+.delivery-status-detail,
+.delivery-updated,
+.delivery-field-help {
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.delivery-lifecycle-note,
+.delivery-section-error,
+.delivery-card-error,
+.delivery-field-error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(185, 74, 37, 0.28);
+  border-radius: 8px;
+  color: #8e3218;
+  background: #fff4ef;
+  font-size: 13px;
+  font-weight: 850;
+  line-height: 1.4;
+}
+
+.delivery-section-result,
+.delivery-card-result {
+  margin: 0;
+  color: #08713a;
+  font-size: 13px;
+  font-weight: 850;
+  line-height: 1.4;
+}
+
+.delivery-section-result:empty,
+.delivery-card-result:empty,
+.delivery-card-feedback:empty {
+  display: none;
+}
+
+.email-delivery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.email-correction-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  align-items: end;
+}
+
+.email-correction-form label {
+  min-width: 0;
+}
+
+.email-correction-form .delivery-field-help,
+.email-correction-form .delivery-field-error {
+  grid-column: 1 / -1;
+}
+
+.email-delivery-card[aria-busy="true"] {
+  box-shadow: inset 0 0 0 2px rgba(7, 109, 228, 0.14);
+}
+
+.email-delivery-card :disabled,
+.delivery-refresh-action:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.email-delivery-card:focus-visible,
+.email-delivery-card :focus-visible,
+.delivery-refresh-action:focus-visible {
+  outline: 3px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.email-delivery-empty {
+  margin: 0;
+  padding: 16px;
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--soft);
+  font-weight: 800;
+}
+
 .rules-overview {
   justify-content: space-between;
   gap: 18px;
@@ -983,7 +1186,9 @@ select {
   }
 
   .topbar-actions,
-  .history-strip {
+  .history-strip,
+  .email-delivery-heading,
+  .email-delivery-card-head {
     align-items: stretch;
     flex-direction: column;
   }
@@ -1024,5 +1229,30 @@ select {
   .calendar-action,
   .calendar-done-action {
     min-height: 52px;
+  }
+
+  .email-delivery-section {
+    padding: 14px;
+  }
+
+  .delivery-refresh-action,
+  .email-delivery-actions .primary-action,
+  .email-correction-form .primary-action {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .email-correction-form {
+    grid-template-columns: 1fr;
+  }
+
+  .email-correction-form .delivery-field-help,
+  .email-correction-form .delivery-field-error {
+    grid-column: 1;
+  }
+
+  .delivery-status {
+    align-self: flex-start;
+    max-width: 100%;
   }
 }

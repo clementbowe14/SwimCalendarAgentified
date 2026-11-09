@@ -2,6 +2,7 @@ import "./styles.css";
 import { InstructorCommandApiError, instructorCommandApi } from "./api/instructorApi.js";
 import type {
   CalendarLinks,
+  CoachEmailDelivery,
   CommandCenterSnapshot,
   InstructorAuthSession,
   SchedulerRules,
@@ -14,10 +15,15 @@ import {
 } from "./components/CalendarHandoffModal.js";
 import { renderClientDetail } from "./components/ClientDetail.js";
 import { renderShell, type ScreenId } from "./components/Layout.js";
-import { renderRequestManagement } from "./components/RequestManagement.js";
+import {
+  emptyDeliveryCardState,
+  renderRequestManagement,
+  type DeliveryCardUiState,
+} from "./components/RequestManagement.js";
 import { renderSettingsRules } from "./components/SettingsRules.js";
 import { renderTodaySchedule } from "./components/TodaySchedule.js";
 import { buildFindSlotsRequest, findFeaturedClient } from "./domain/screenModels.js";
+import { mergeEmailDeliveries } from "./domain/emailDelivery.js";
 import { escapeHtml } from "./lib/html.js";
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -34,6 +40,12 @@ type AppState = {
   authStatus: "checking" | "locked" | "expired" | "signed_in";
   authSession: InstructorAuthSession | null;
   snapshot: CommandCenterSnapshot | null;
+  emailDeliveries: CoachEmailDelivery[];
+  deliveryCards: Record<string, DeliveryCardUiState>;
+  deliveryRefreshPending: boolean;
+  deliveryRefreshResult: string;
+  deliveryRefreshError: string;
+  deliveryFocus: { primary: string; fallback?: string } | null;
   recommendedSlots: TimeSlotDTO[];
   calendarHandoff: CalendarHandoffModalModel | null;
   toast: string;
@@ -48,6 +60,12 @@ const state: AppState = {
   authStatus: instructorCommandApi.authMode === "live" ? "checking" : "signed_in",
   authSession: instructorCommandApi.getStoredSession(),
   snapshot: null,
+  emailDeliveries: [],
+  deliveryCards: {},
+  deliveryRefreshPending: false,
+  deliveryRefreshResult: "",
+  deliveryRefreshError: "",
+  deliveryFocus: null,
   recommendedSlots: [],
   calendarHandoff: null,
   toast: "",
@@ -92,7 +110,8 @@ async function boot(): Promise<void> {
 
 async function loadCommandCenter(): Promise<void> {
   try {
-    state.snapshot = await instructorCommandApi.getSnapshot(instructorId, commandDate);
+    applySnapshot(await instructorCommandApi.getSnapshot(instructorId, commandDate));
+    if (!state.snapshot) return;
     if (!state.snapshot.clients.some((client) => client.id === state.selectedClientId)) {
       state.selectedClientId = state.snapshot.clients[0]?.id ?? "client_new";
     }
@@ -136,6 +155,7 @@ function render(): void {
   `;
   wireEvents();
   wireCalendarHandoffEvents();
+  restoreDeliveryFocus();
 }
 
 function renderLockedScreen(): string {
@@ -183,7 +203,15 @@ function renderActiveScreen(snapshot: CommandCenterSnapshot): string {
     return renderAvailabilityFinder(snapshot, findFeaturedClient(snapshot, state.selectedClientId), state.recommendedSlots);
   }
   if (state.activeScreen === "client") return renderClientDetail(snapshot, state.selectedClientId);
-  if (state.activeScreen === "requests") return renderRequestManagement(snapshot);
+  if (state.activeScreen === "requests") {
+    return renderRequestManagement(snapshot, {
+      deliveries: state.emailDeliveries,
+      cards: state.deliveryCards,
+      refreshPending: state.deliveryRefreshPending,
+      refreshResult: state.deliveryRefreshResult,
+      refreshError: state.deliveryRefreshError,
+    });
+  }
   return renderSettingsRules(snapshot.rules, instructorCommandApi.authMode === "live", {
     pending: state.settingsPending,
     error: state.settingsError,
@@ -227,6 +255,7 @@ function wireEvents(): void {
     button.addEventListener("click", async () => {
       await runAction(async () => {
         const confirmation = await instructorCommandApi.confirmRequest(button.dataset.confirmRequest ?? "");
+        if (confirmation.email_delivery) patchEmailDeliveries([confirmation.email_delivery]);
         const appointmentId = confirmation.appointment_id ?? confirmation.appointment_ids[0] ?? null;
         await completePersistedAction(
           appointmentId,
@@ -242,11 +271,13 @@ function wireEvents(): void {
     button.addEventListener("click", async () => {
       await runAction(async () => {
         await instructorCommandApi.requestAlternatives(button.dataset.alternativesRequest ?? "", []);
-        state.snapshot = await instructorCommandApi.getSnapshot(instructorId, commandDate);
+        applySnapshot(await instructorCommandApi.getSnapshot(instructorId, commandDate));
         state.toast = "Alternatives requested.";
       });
     });
   });
+
+  wireEmailDeliveryEvents();
 
   app.querySelector<HTMLFormElement>("[data-rules-form]")?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -267,6 +298,181 @@ function wireEvents(): void {
       app.querySelector<HTMLElement>("[data-settings-error]")?.focus();
     }
   });
+}
+
+function wireEmailDeliveryEvents(): void {
+  app.querySelector<HTMLButtonElement>("[data-refresh-email-deliveries]")?.addEventListener("click", async () => {
+    await refreshEmailDeliveries();
+  });
+
+  app.querySelectorAll<HTMLInputElement>("[data-email-delivery-draft]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const deliveryId = input.dataset.emailDeliveryDraft ?? "";
+      if (!deliveryId) return;
+      deliveryCardState(deliveryId).draft = input.value;
+    });
+  });
+
+  app.querySelectorAll<HTMLButtonElement>("[data-resend-email-delivery]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await resendEmailDelivery(button.dataset.resendEmailDelivery ?? "");
+    });
+  });
+
+  app.querySelectorAll<HTMLFormElement>("[data-email-contact-form]").forEach((form) => {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const deliveryId = form.dataset.emailContactForm ?? "";
+      const email = String(new FormData(form).get("email") ?? "").trim();
+      await updateEmailDeliveryContact(deliveryId, email);
+    });
+  });
+}
+
+async function refreshEmailDeliveries(): Promise<void> {
+  if (state.deliveryRefreshPending) return;
+  state.deliveryRefreshPending = true;
+  state.deliveryRefreshResult = "";
+  state.deliveryRefreshError = "";
+  state.deliveryFocus = { primary: "refresh" };
+  render();
+
+  try {
+    patchEmailDeliveries(await instructorCommandApi.getEmailDeliveries());
+    state.deliveryRefreshResult = "Delivery status refreshed.";
+  } catch (error) {
+    if (!handleAuthFailure(error)) {
+      state.deliveryRefreshError = "Delivery status could not be refreshed. Your last-known statuses are still shown.";
+    }
+  } finally {
+    state.deliveryRefreshPending = false;
+    if (state.authStatus === "signed_in") state.deliveryFocus = { primary: "refresh" };
+    render();
+  }
+}
+
+async function resendEmailDelivery(deliveryId: string): Promise<void> {
+  if (!deliveryId) return;
+  const card = deliveryCardState(deliveryId);
+  if (card.pending) return;
+  card.pending = "resend";
+  card.result = "";
+  card.error = "";
+  card.fieldError = "";
+  state.deliveryFocus = { primary: `card:${deliveryId}` };
+  render();
+
+  try {
+    const delivery = await instructorCommandApi.resendEmailDelivery(deliveryId);
+    patchEmailDeliveries([delivery]);
+    card.pending = null;
+    card.result = delivery.status === "queued"
+      ? "Queued to send again"
+      : "Delivery status updated. No new email was queued.";
+    state.deliveryFocus = { primary: `resend:${deliveryId}`, fallback: `card:${deliveryId}` };
+  } catch (error) {
+    card.pending = null;
+    if (!handleAuthFailure(error)) {
+      card.error = safeDeliveryActionError(error);
+      state.deliveryFocus = { primary: `resend:${deliveryId}`, fallback: `card:${deliveryId}` };
+    }
+  }
+  render();
+}
+
+async function updateEmailDeliveryContact(deliveryId: string, email: string): Promise<void> {
+  if (!deliveryId) return;
+  const card = deliveryCardState(deliveryId);
+  if (card.pending) return;
+  card.draft = email;
+  card.result = "";
+  card.error = "";
+
+  if (!isValidEmailAddress(email)) {
+    card.fieldError = "Enter a valid email address.";
+    state.deliveryFocus = { primary: `email:${deliveryId}`, fallback: `card:${deliveryId}` };
+    render();
+    return;
+  }
+
+  card.fieldError = "";
+  card.pending = "contact";
+  state.deliveryFocus = { primary: `card:${deliveryId}` };
+  render();
+
+  try {
+    const delivery = await instructorCommandApi.updateEmailDeliveryContact(deliveryId, email);
+    patchEmailDeliveries([delivery]);
+    card.pending = null;
+    card.draft = "";
+    card.result = "Email updated and queued";
+    state.deliveryFocus = { primary: `contact:${deliveryId}`, fallback: `card:${deliveryId}` };
+  } catch (error) {
+    card.pending = null;
+    if (handleAuthFailure(error)) {
+      render();
+      return;
+    }
+    if (error instanceof InstructorCommandApiError && error.status === 422) {
+      card.fieldError = "Enter a valid email address.";
+      state.deliveryFocus = { primary: `email:${deliveryId}`, fallback: `card:${deliveryId}` };
+    } else {
+      card.error = safeDeliveryActionError(error);
+      state.deliveryFocus = { primary: `contact:${deliveryId}`, fallback: `card:${deliveryId}` };
+    }
+  }
+  render();
+}
+
+function safeDeliveryActionError(error: unknown): string {
+  if (error instanceof InstructorCommandApiError && error.status === 409) {
+    return "This delivery changed before the update completed. Refresh delivery status before trying again.";
+  }
+  if (error instanceof InstructorCommandApiError && error.status === 404) {
+    return "This delivery is no longer available. Refresh delivery status to see the latest activity.";
+  }
+  return "We could not confirm that change. Your last-known delivery status is still shown; refresh before trying again.";
+}
+
+function deliveryCardState(deliveryId: string): DeliveryCardUiState {
+  state.deliveryCards[deliveryId] ??= emptyDeliveryCardState();
+  return state.deliveryCards[deliveryId];
+}
+
+function isValidEmailAddress(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function applySnapshot(snapshot: CommandCenterSnapshot): void {
+  const mergedDeliveries = mergeEmailDeliveries(state.emailDeliveries, snapshot.email_deliveries ?? []);
+  state.emailDeliveries = mergedDeliveries;
+  state.snapshot = { ...snapshot, email_deliveries: mergedDeliveries };
+}
+
+function patchEmailDeliveries(deliveries: CoachEmailDelivery[]): void {
+  state.emailDeliveries = mergeEmailDeliveries(state.emailDeliveries, deliveries);
+  if (state.snapshot) {
+    state.snapshot = { ...state.snapshot, email_deliveries: state.emailDeliveries };
+  }
+}
+
+function clearEmailDeliveryState(): void {
+  state.emailDeliveries = [];
+  state.deliveryCards = {};
+  state.deliveryRefreshPending = false;
+  state.deliveryRefreshResult = "";
+  state.deliveryRefreshError = "";
+  state.deliveryFocus = null;
+}
+
+function restoreDeliveryFocus(): void {
+  const request = state.deliveryFocus;
+  if (!request || state.activeScreen !== "requests" || state.calendarHandoff) return;
+  const candidates = [...app.querySelectorAll<HTMLElement>("[data-delivery-focus]")];
+  const target = candidates.find((element) => element.dataset.deliveryFocus === request.primary)
+    ?? candidates.find((element) => element.dataset.deliveryFocus === request.fallback);
+  state.deliveryFocus = null;
+  target?.focus();
 }
 
 function schedulerRulesFromForm(form: HTMLFormElement, current: SchedulerRules): SchedulerRules {
@@ -313,6 +519,7 @@ async function signIn(form: HTMLFormElement): Promise<void> {
     state.snapshot = null;
     state.recommendedSlots = [];
     state.calendarHandoff = null;
+    clearEmailDeliveryState();
     state.authStatus = "signed_in";
     state.toast = "Signed in.";
     await loadCommandCenter();
@@ -335,6 +542,7 @@ async function signOut(): Promise<void> {
     state.snapshot = null;
     state.recommendedSlots = [];
     state.calendarHandoff = null;
+    clearEmailDeliveryState();
     state.authStatus = "locked";
     state.toast = "";
     render();
@@ -428,7 +636,7 @@ function unavailableHandoff(
 async function refreshAfterPersistence(): Promise<void> {
   if (state.authStatus !== "signed_in") return;
   try {
-    state.snapshot = await instructorCommandApi.getSnapshot(instructorId, commandDate);
+    applySnapshot(await instructorCommandApi.getSnapshot(instructorId, commandDate));
     await refreshSlots();
   } catch (error) {
     if (!handleAuthFailure(error, persistedRefreshAuthMessage())) {
@@ -459,6 +667,7 @@ function handleAuthFailure(error: unknown, persistedMessage?: string): boolean {
   state.snapshot = null;
   state.recommendedSlots = [];
   state.calendarHandoff = null;
+  clearEmailDeliveryState();
   state.authStatus = "expired";
   state.error = persistedMessage ?? "Your session expired. Sign in again to continue.";
   return true;

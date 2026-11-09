@@ -22,6 +22,81 @@ testWhenMockAdapter("navigates the instructor command screens with the local ada
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
 });
 
+testWhenMockAdapter("renders truthful email delivery states and server-authorized recovery", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Requests", exact: true }).click();
+
+  const deliverySection = page.getByRole("region", { name: "Email delivery" });
+  await expect(deliverySection).toContainText("Queued to send");
+  await expect(deliverySection).toContainText("Sending");
+  await expect(deliverySection).toContainText("Accepted by email service");
+  await expect(deliverySection).toContainText("Delivered");
+  await expect(deliverySection).toContainText("Delivery failed");
+  await expect(deliverySection).toContainText("Not sent");
+
+  const accepted = page.locator('[data-email-delivery-card="delivery_accepted"]');
+  await expect(accepted).toContainText("Delivery is not confirmed");
+  const queuedUncertain = page.locator('[data-email-delivery-card="delivery_uncertain_queued"]');
+  await expect(queuedUncertain).toContainText("may already have sent");
+  await expect(queuedUncertain).toContainText("automatic retry is queued");
+  await expect(queuedUncertain.getByRole("button", { name: "Resend safely" })).toHaveCount(0);
+  const failedUncertain = page.locator('[data-email-delivery-card="delivery_uncertain_failed"]');
+  await expect(failedUncertain).toContainText("Do not resend it");
+  await expect(failedUncertain.getByRole("button", { name: "Resend safely" })).toHaveCount(0);
+
+  const inactiveInvite = page.locator('[data-email-delivery-card="delivery_inactive_invite"]');
+  await expect(inactiveInvite).toContainText("Invite link is no longer active");
+  await expect(inactiveInvite.locator("button, input")).toHaveCount(0);
+  const missingIntake = page.locator('[data-email-delivery-card="delivery_missing_intake"]');
+  await expect(missingIntake).toContainText("contact editing is unavailable");
+  await expect(missingIntake.getByRole("textbox")).toHaveCount(0);
+});
+
+testWhenMockAdapter("resends and corrects contact with persistent focus and card-local feedback", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Requests", exact: true }).click();
+
+  const resendCard = page.locator('[data-email-delivery-card="delivery_failed_resend"]');
+  await resendCard.getByRole("button", { name: "Resend safely" }).click();
+  await expect(resendCard).toContainText("Queued to send");
+  await expect(resendCard.getByRole("status")).toContainText("Queued to send again");
+  await expect(resendCard).toBeFocused();
+
+  const editCard = page.locator('[data-email-delivery-card="delivery_skipped_editable"]');
+  const input = editCard.getByLabel("Corrected email address");
+  await input.fill("not-an-email");
+  await editCard.getByRole("button", { name: "Update email and queue" }).click();
+  await expect(editCard.getByRole("alert")).toContainText("Enter a valid email address");
+  await expect(input).toBeFocused();
+
+  await input.fill("maya@example.test");
+  await editCard.getByRole("button", { name: "Update email and queue" }).click();
+  await expect(editCard).toContainText("Queued to send");
+  await expect(editCard.getByRole("status")).toContainText("Email updated and queued");
+  await expect(editCard).toBeFocused();
+
+  const refresh = page.getByRole("button", { name: "Refresh delivery status" });
+  await refresh.click();
+  await expect(page.getByRole("region", { name: "Email delivery" }).getByRole("status").first()).toContainText(
+    "Delivery status refreshed",
+  );
+  await expect(refresh).toBeFocused();
+});
+
+testWhenMockAdapter("keeps email recovery controls one-handed at 320px", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Requests", exact: true }).click();
+
+  const section = page.getByRole("region", { name: "Email delivery" });
+  const controls = section.locator("button, input");
+  for (const control of await controls.all()) {
+    const bounds = await control.boundingBox();
+    expect(bounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+  }
+  expect(await section.evaluate((element) => element.scrollWidth > element.clientWidth + 1)).toBe(false);
+});
+
 testWhenMockAdapter("hands a directly booked persisted appointment to the instructor calendar", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Find" }).click();
@@ -74,6 +149,9 @@ testWhenMockAdapter("uses confirmation IDs for a recurring request handoff", asy
 
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Requests", exact: true })).toBeFocused();
+  await expect(page.locator('[data-email-delivery-card="delivery_confirmation_req_sofia_0827"]')).toContainText(
+    "Queued to send",
+  );
 });
 
 testWhenMockAdapter("keeps calendar handoff controls usable at 320px", async ({ page }) => {

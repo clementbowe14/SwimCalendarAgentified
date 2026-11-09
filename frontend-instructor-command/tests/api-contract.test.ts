@@ -5,7 +5,13 @@ import {
   HttpInstructorCommandApi,
   InstructorCommandApiError,
 } from "../src/api/instructorApi.js";
-import type { BookingRequestDTO, CommandCenterSnapshot, InstructorAuthSession, SchedulerRules } from "../src/api/types.js";
+import type {
+  BookingRequestDTO,
+  CoachEmailDelivery,
+  CommandCenterSnapshot,
+  InstructorAuthSession,
+  SchedulerRules,
+} from "../src/api/types.js";
 
 type FetchCall = {
   url: string;
@@ -177,6 +183,7 @@ test("HTTP instructor adapter uses canonical confirmation and preserves returned
   const calls: FetchCall[] = [];
   const api = new HttpInstructorCommandApi("http://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
   const calendarLinks = calendarLinksContract("app_request_1");
+  const emailDelivery = emailDeliveryContract({ id: "delivery-confirm-1", status: "queued" });
 
   await withMockFetch(calls, async () =>
     jsonResponse({
@@ -186,6 +193,7 @@ test("HTTP instructor adapter uses canonical confirmation and preserves returned
       appointment_ids: ["app_request_1", "app_request_2"],
       message: "Lesson request is confirmed.",
       calendar_links: calendarLinks,
+      email_delivery: emailDelivery,
     }),
     async () => {
       const response = await api.confirmRequest("request/one");
@@ -197,8 +205,43 @@ test("HTTP instructor adapter uses canonical confirmation and preserves returned
       assert.deepEqual(body, {});
       assert.deepEqual(response.appointment_ids, ["app_request_1", "app_request_2"]);
       assert.equal(response.calendar_links?.google_events.length, 2);
+      assert.equal(response.email_delivery?.id, "delivery-confirm-1");
     },
   );
+});
+
+test("HTTP instructor adapter refreshes, resends without a body, and corrects email delivery contact", async () => {
+  const calls: FetchCall[] = [];
+  const api = new HttpInstructorCommandApi("http://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
+  const delivery = emailDeliveryContract({ id: "delivery/one", status: "failed", can_resend: true });
+
+  await withMockFetch(
+    calls,
+    async (input) => {
+      const url = requestUrl(input);
+      if (url.endsWith("/coach/email-deliveries")) return jsonResponse([delivery]);
+      return jsonResponse({ ...delivery, status: "queued", can_resend: false, updated_at: "2026-08-27T16:01:00Z" });
+    },
+    async () => {
+      const deliveries = await api.getEmailDeliveries();
+      const resent = await api.resendEmailDelivery("delivery/one");
+      const corrected = await api.updateEmailDeliveryContact("delivery/one", "client@example.test");
+
+      assert.equal(deliveries[0].id, "delivery/one");
+      assert.equal(resent.status, "queued");
+      assert.equal(corrected.status, "queued");
+    },
+  );
+
+  assert.equal(calls[0].url, "http://api.test/api/coach/email-deliveries");
+  assert.equal(calls[0].init?.method, "GET");
+  assert.equal(calls[1].url, "http://api.test/api/coach/email-deliveries/delivery%2Fone/resend");
+  assert.equal(calls[1].init?.method, "POST");
+  assert.equal(calls[1].init?.body, undefined);
+  assert.equal(calls[2].url, "http://api.test/api/coach/email-deliveries/delivery%2Fone/contact");
+  assert.equal(calls[2].init?.method, "PUT");
+  assert.deepEqual(JSON.parse(String(calls[2].init?.body)), { email: "client@example.test" });
+  assert.equal(headerValue(calls[2].init?.headers, "authorization"), "Bearer signed.jwt");
 });
 
 test("HTTP instructor adapter reads handoff by exact appointment and downloads authenticated ICS", async () => {
@@ -363,6 +406,25 @@ function calendarLinksContract(anchor: string) {
   };
 }
 
+function emailDeliveryContract(
+  overrides: Partial<CoachEmailDelivery> = {},
+): CoachEmailDelivery {
+  return {
+    id: "delivery-1",
+    kind: "confirmation",
+    status: "delivered",
+    updated_at: "2026-08-27T16:00:00Z",
+    client_id: "client_alice",
+    client_name: "Alice",
+    request_token: "request-1",
+    issue: null,
+    source_state: "active",
+    can_resend: false,
+    can_edit_contact: false,
+    ...overrides,
+  };
+}
+
 function snapshotContract(): CommandCenterSnapshot {
   return {
     instructor: {
@@ -440,6 +502,7 @@ function snapshotContract(): CommandCenterSnapshot {
         alternative_slots: [],
       },
     ],
+    email_deliveries: [emailDeliveryContract()],
     rules: {
       buffers_enabled: true,
       apply_distance_buffer_at_shift_start: false,

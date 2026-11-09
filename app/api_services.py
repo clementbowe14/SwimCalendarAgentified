@@ -35,6 +35,7 @@ from app.api_schemas import (
     CoachBookLessonRequest,
     CoachClientResponse,
     CoachCommandCenterSnapshot,
+    CoachEmailDeliveryResponse,
     CoachLessonRequestActionResponse,
     CoachLessonRequestAlternativesRequest,
     CoachLessonRequestConfirmResponse,
@@ -58,6 +59,7 @@ from app.api_schemas import (
 )
 from app.calendar_handoff import calendar_ics, calendar_links
 from app.models import AppointmentDB, InviteSlotOfferDB, LessonRequestDB, TimeSlotDTO
+from app.notifications import coach_email_delivery_for_request, list_coach_email_deliveries
 from app.public_tokens import (
     InviteContext,
     create_lesson_request,
@@ -118,6 +120,7 @@ def get_coach_command_center_snapshot(
         clients=clients,
         schedule=schedule,
         requests=requests,
+        email_deliveries=list_coach_email_deliveries(instructor_id),
         rules=get_coach_scheduler_settings(instructor_id),
     )
 
@@ -504,6 +507,11 @@ def confirm_coach_lesson_request(
             appointment_ids = [appointment.id for appointment in existing_appointments]
             if not _confirmed_slot_matches(lesson_request, request.slot_id):
                 raise LessonRequestConfirmConflict()
+            email_delivery = (
+                None
+                if legacy_response
+                else coach_email_delivery_for_request(session, instructor_id, lesson_request.id)
+            )
             return _lesson_request_action_response(
                 lesson_request,
                 appointment_ids,
@@ -513,6 +521,7 @@ def confirm_coach_lesson_request(
                     if legacy_response
                     else _optional_coach_calendar_links(instructor_id, appointment_ids)
                 ),
+                email_delivery=email_delivery,
             )
         if lesson_request.status not in {"pending", "alternatives_sent"}:
             raise InvalidSchedulingRequest("Only pending lesson requests can be confirmed.")
@@ -554,6 +563,11 @@ def confirm_coach_lesson_request(
         lesson_request.updated_at = now
         from app.notifications import enqueue_confirmation
         enqueue_confirmation(session, lesson_request, appointments)
+        email_delivery = (
+            None
+            if legacy_response
+            else coach_email_delivery_for_request(session, instructor_id, lesson_request.id)
+        )
         session.commit()
         appointment_ids = [appointment.id for appointment in appointments]
         return _lesson_request_action_response(
@@ -565,6 +579,7 @@ def confirm_coach_lesson_request(
                 if legacy_response
                 else _optional_coach_calendar_links(instructor_id, appointment_ids)
             ),
+            email_delivery=email_delivery,
         )
     finally:
         session.close()
@@ -656,6 +671,7 @@ def _lesson_request_action_response(
     *,
     status: str,
     calendar_links: Optional[ClientInviteCalendarLinks] = None,
+    email_delivery: Optional[CoachEmailDeliveryResponse] = None,
 ) -> CoachLessonRequestActionResponse | CoachLessonRequestConfirmResponse:
     if status == "confirmed":
         return CoachLessonRequestConfirmResponse(
@@ -665,6 +681,7 @@ def _lesson_request_action_response(
             appointment_ids=appointment_ids,
             message="Lesson request is confirmed.",
             calendar_links=calendar_links,
+            email_delivery=email_delivery,
         )
     return CoachLessonRequestActionResponse(
         id=lesson_request.request_token,

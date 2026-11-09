@@ -5,6 +5,7 @@ import type {
   BookLessonResponse,
   BookingRequestDTO,
   CalendarLinks,
+  CoachEmailDelivery,
   CoachLessonRequestActionResponse,
   CoachLessonRequestConfirmResponse,
   CommandCenterSnapshot,
@@ -122,6 +123,27 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
     for (const appointmentId of appointment_ids) {
       this.calendarHandoffs.set(appointmentId, calendar_links);
     }
+    const deliveryId = `delivery_confirmation_${request_id}`;
+    const existingDelivery = this.currentSnapshot.email_deliveries.find((delivery) => delivery.id === deliveryId);
+    const email_delivery = existingDelivery ?? {
+      id: deliveryId,
+      kind: "confirmation" as const,
+      status: "queued" as const,
+      updated_at: nextMockUpdatedAt(this.currentSnapshot.email_deliveries),
+      client_id: updated.client_id,
+      client_name: updated.client_name,
+      request_token: request_id,
+      issue: null,
+      source_state: "active" as const,
+      can_resend: false,
+      can_edit_contact: false,
+    };
+    if (!existingDelivery) {
+      this.currentSnapshot = {
+        ...this.currentSnapshot,
+        email_deliveries: [email_delivery, ...this.currentSnapshot.email_deliveries],
+      };
+    }
     return {
       id: request_id,
       status: "confirmed",
@@ -129,7 +151,55 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
       appointment_ids,
       message: "Lesson request is confirmed.",
       calendar_links,
+      email_delivery: clone(email_delivery),
     };
+  }
+
+  async getEmailDeliveries(): Promise<CoachEmailDelivery[]> {
+    return clone(this.currentSnapshot.email_deliveries);
+  }
+
+  async resendEmailDelivery(delivery_id: Id): Promise<CoachEmailDelivery> {
+    return this.updateEmailDelivery(delivery_id, (delivery) => {
+      if (!delivery.can_resend) {
+        throw new InstructorCommandApiError(
+          409,
+          "EMAIL_DELIVERY_NOT_RESENDABLE",
+          "This email cannot be safely queued again.",
+        );
+      }
+      return {
+        ...delivery,
+        status: "queued",
+        updated_at: nextMockUpdatedAt(this.currentSnapshot.email_deliveries),
+        issue: null,
+        can_resend: false,
+        can_edit_contact: false,
+      };
+    });
+  }
+
+  async updateEmailDeliveryContact(delivery_id: Id, email: string): Promise<CoachEmailDelivery> {
+    if (!isMockEmailAddress(email)) {
+      throw new InstructorCommandApiError(422, "VALIDATION_ERROR", "Enter a valid email address.");
+    }
+    return this.updateEmailDelivery(delivery_id, (delivery) => {
+      if (!delivery.can_edit_contact) {
+        throw new InstructorCommandApiError(
+          409,
+          "EMAIL_CONTACT_NOT_EDITABLE",
+          "Contact editing is unavailable for this email.",
+        );
+      }
+      return {
+        ...delivery,
+        status: "queued",
+        updated_at: nextMockUpdatedAt(this.currentSnapshot.email_deliveries),
+        issue: null,
+        can_resend: false,
+        can_edit_contact: false,
+      };
+    });
   }
 
   async getAppointmentCalendarLinks(appointment_id: Id): Promise<CalendarLinks> {
@@ -190,6 +260,25 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
       throw new Error(`Request ${request_id} was not found.`);
     }
 
+    return clone(updated);
+  }
+
+  private updateEmailDelivery(
+    delivery_id: Id,
+    update: (delivery: CoachEmailDelivery) => CoachEmailDelivery,
+  ): CoachEmailDelivery {
+    let updated: CoachEmailDelivery | undefined;
+    this.currentSnapshot = {
+      ...this.currentSnapshot,
+      email_deliveries: this.currentSnapshot.email_deliveries.map((delivery) => {
+        if (delivery.id !== delivery_id) return delivery;
+        updated = update(delivery);
+        return updated;
+      }),
+    };
+    if (!updated) {
+      throw new InstructorCommandApiError(404, "EMAIL_DELIVERY_NOT_FOUND", "Email delivery was not found.");
+    }
     return clone(updated);
   }
 }
@@ -271,6 +360,18 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     return this.post(`/coach/lesson-requests/${encodeURIComponent(request_id)}/confirm`, {});
   }
 
+  getEmailDeliveries(): Promise<CoachEmailDelivery[]> {
+    return this.get("/coach/email-deliveries");
+  }
+
+  resendEmailDelivery(delivery_id: Id): Promise<CoachEmailDelivery> {
+    return this.postWithoutBody(`/coach/email-deliveries/${encodeURIComponent(delivery_id)}/resend`);
+  }
+
+  updateEmailDeliveryContact(delivery_id: Id, email: string): Promise<CoachEmailDelivery> {
+    return this.put(`/coach/email-deliveries/${encodeURIComponent(delivery_id)}/contact`, { email });
+  }
+
   getAppointmentCalendarLinks(appointment_id: Id): Promise<CalendarLinks> {
     return this.get(`/coach/appointments/${encodeURIComponent(appointment_id)}/calendar-links`);
   }
@@ -317,6 +418,11 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
 
   private async post<T>(path: string, body: unknown): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, requestInit("POST", body, this.authStore.get()));
+    return parseResponse<T>(response, this.authStore);
+  }
+
+  private async postWithoutBody<T>(path: string): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, noBodyRequestInit("POST", this.authStore.get()));
     return parseResponse<T>(response, this.authStore);
   }
 
@@ -399,6 +505,13 @@ function requestInit(method: "POST" | "PUT", body: unknown, session?: Instructor
 }
 
 function authenticatedInit(method: "GET", session: InstructorAuthSession | null): RequestInit {
+  return {
+    method,
+    headers: requestHeaders(session),
+  };
+}
+
+function noBodyRequestInit(method: "POST", session: InstructorAuthSession | null): RequestInit {
   return {
     method,
     headers: requestHeaders(session),
@@ -496,6 +609,15 @@ function readStoredSession(raw: string | null): InstructorAuthSession | null {
     return null;
   }
   return null;
+}
+
+function nextMockUpdatedAt(deliveries: readonly CoachEmailDelivery[]): string {
+  const newest = deliveries.reduce((latest, delivery) => Math.max(latest, Date.parse(delivery.updated_at)), 0);
+  return new Date(newest + 1_000).toISOString();
+}
+
+function isMockEmailAddress(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
 function addMinutes(isoDateTime: string, minutes: number): string {

@@ -956,6 +956,13 @@
             "title": "Date",
             "type": "string"
           },
+          "email_deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/CoachEmailDeliveryResponse"
+            },
+            "title": "Email Deliveries",
+            "type": "array"
+          },
           "instructor": {
             "$ref": "#/components/schemas/CoachInstructorProfileResponse"
           },
@@ -1053,6 +1060,128 @@
           "buffer_mins"
         ],
         "title": "CoachDistanceBufferTier",
+        "type": "object"
+      },
+      "CoachEmailContactUpdateRequest": {
+        "properties": {
+          "email": {
+            "maxLength": 254,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "CoachEmailContactUpdateRequest",
+        "type": "object"
+      },
+      "CoachEmailDeliveryResponse": {
+        "properties": {
+          "can_edit_contact": {
+            "title": "Can Edit Contact",
+            "type": "boolean"
+          },
+          "can_resend": {
+            "title": "Can Resend",
+            "type": "boolean"
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "client_name": {
+            "title": "Client Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "issue": {
+            "anyOf": [
+              {
+                "enum": [
+                  "invalid_address",
+                  "missing_address",
+                  "temporary_failure",
+                  "permanent_failure",
+                  "delivery_uncertain",
+                  "retries_exhausted"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issue"
+          },
+          "kind": {
+            "enum": [
+              "invite",
+              "confirmation"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "request_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Token"
+          },
+          "source_state": {
+            "enum": [
+              "active",
+              "invite_inactive",
+              "appointment_inactive"
+            ],
+            "title": "Source State",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "processing",
+              "accepted",
+              "delivered",
+              "failed",
+              "skipped"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "updated_at",
+          "client_name",
+          "source_state",
+          "can_resend",
+          "can_edit_contact"
+        ],
+        "title": "CoachEmailDeliveryResponse",
         "type": "object"
       },
       "CoachInstructorProfileResponse": {
@@ -1228,6 +1357,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ClientInviteCalendarLinks"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "email_delivery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CoachEmailDeliveryResponse"
               },
               {
                 "type": "null"
@@ -1770,6 +1909,16 @@
       },
       "InviteNotificationResponse": {
         "properties": {
+          "email_delivery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CoachEmailDeliveryResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "notifications": {
             "items": {
               "$ref": "#/components/schemas/NotificationStatus"
@@ -2596,6 +2745,140 @@
           }
         ],
         "summary": "Read Command Center Snapshot",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/email-deliveries": {
+      "get": {
+        "operationId": "read_email_deliveries_api_coach_email_deliveries_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CoachEmailDeliveryResponse"
+                  },
+                  "title": "Response Read Email Deliveries Api Coach Email Deliveries Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Email Deliveries",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/email-deliveries/{delivery_id}/contact": {
+      "put": {
+        "operationId": "update_email_delivery_contact_api_coach_email_deliveries__delivery_id__contact_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "delivery_id",
+            "required": true,
+            "schema": {
+              "title": "Delivery Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoachEmailContactUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachEmailDeliveryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Email Delivery Contact",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/email-deliveries/{delivery_id}/resend": {
+      "post": {
+        "operationId": "resend_email_delivery_api_coach_email_deliveries__delivery_id__resend_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "delivery_id",
+            "required": true,
+            "schema": {
+              "title": "Delivery Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachEmailDeliveryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Resend Email Delivery",
         "tags": [
           "coach"
         ]

@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 import re
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TYPE_CHECKING
 from uuid import uuid4
 from urllib.parse import urlencode, urlsplit
 
@@ -16,11 +16,34 @@ from sqlalchemy import and_, or_
 
 from app import db
 from app.api_errors import ApiException, IdempotencyConflict, InviteExpired, InviteNotFound
-from app.models import InstructorDB, InviteIntakeDB, InviteTokenDB, NotificationEventDB
+from app.models import (
+    AppointmentDB,
+    ClientDB,
+    InstructorDB,
+    InviteIntakeDB,
+    InviteTokenDB,
+    LessonRequestDB,
+    NotificationEventDB,
+)
+
+if TYPE_CHECKING:
+    from app.api_schemas import CoachEmailDeliveryResponse, NotificationStatus
 
 
 def utcnow():
     return datetime.now(timezone.utc)
+
+
+KNOWN_RESEND_FAILURES = {"provider_retryable", "provider_permanent", "attempts_exhausted"}
+EDITABLE_RECIPIENT_FAILURES = {"invalid_recipient", "missing_recipient"}
+FAILURE_ISSUES = {
+    "invalid_recipient": "invalid_address",
+    "missing_recipient": "missing_address",
+    "provider_retryable": "temporary_failure",
+    "provider_permanent": "permanent_failure",
+    "outcome_unknown": "delivery_uncertain",
+    "attempts_exhausted": "retries_exhausted",
+}
 
 
 def _recipient(channel, raw):
@@ -89,7 +112,13 @@ def _invite_context(invite_token):
     return {"title": "Swim lesson invitation", "invite_url": origin.rstrip("/") + "/?" + urlencode({"invite_token": invite_token})}
 
 
-def enqueue_invite(instructor_id, invite_token, idempotency_key):
+@dataclass(frozen=True)
+class CoachInviteNotificationResult:
+    notifications: list["NotificationStatus"]
+    email_delivery: "CoachEmailDeliveryResponse | None"
+
+
+def enqueue_invite_for_coach(instructor_id, invite_token, idempotency_key):
     logical_key = "invite:" + hashlib.sha256(json.dumps([instructor_id, "invite", idempotency_key]).encode()).hexdigest()
     with db.SessionLocal() as session:
         session.query(InstructorDB).filter_by(id=instructor_id).with_for_update().first()
@@ -103,9 +132,378 @@ def enqueue_invite(instructor_id, invite_token, idempotency_key):
             raise IdempotencyConflict()
         if not events:
             events = _enqueue(session, invite_token, instructor_id, "invite", logical_key, _invite_context(invite_token))
-        result = _statuses(events)
+        result = CoachInviteNotificationResult(
+            notifications=_statuses(events),
+            email_delivery=_project_email_event(
+                session,
+                next((event for event in events if event.channel == "email"), None),
+            ),
+        )
         session.commit()
         return result
+
+
+def enqueue_invite(instructor_id, invite_token, idempotency_key):
+    return enqueue_invite_for_coach(instructor_id, invite_token, idempotency_key).notifications
+
+
+@dataclass(frozen=True)
+class _DeliverySourceGraph:
+    invite: InviteTokenDB | None
+    intake: InviteIntakeDB | None
+    lesson_request: LessonRequestDB | None
+    appointments: list[AppointmentDB]
+    client: ClientDB | None
+    client_link_valid: bool
+
+
+def list_coach_email_deliveries(instructor_id: str) -> list["CoachEmailDeliveryResponse"]:
+    with db.SessionLocal() as session:
+        events = (
+            session.query(NotificationEventDB)
+            .filter_by(instructor_id=instructor_id, channel="email")
+            .order_by(NotificationEventDB.updated_at.desc(), NotificationEventDB.id.desc())
+            .all()
+        )
+        return [_project_email_event(session, event) for event in events]
+
+
+def coach_email_delivery_for_request(
+    session,
+    instructor_id: str,
+    request_id: str,
+) -> "CoachEmailDeliveryResponse | None":
+    event = (
+        session.query(NotificationEventDB)
+        .filter_by(
+            instructor_id=instructor_id,
+            request_id=request_id,
+            kind="confirmation",
+            channel="email",
+        )
+        .order_by(NotificationEventDB.created_at.desc(), NotificationEventDB.id.desc())
+        .first()
+    )
+    return _project_email_event(session, event)
+
+
+def resend_coach_email_delivery(
+    instructor_id: str,
+    delivery_id: str,
+) -> "CoachEmailDeliveryResponse":
+    with db.SessionLocal() as session:
+        event = _lock_email_event(session, instructor_id, delivery_id)
+        graph = _load_source_graph(session, event, for_update=True)
+        source_state = _source_state(event, graph)
+        if source_state != "active" or not graph.client_link_valid:
+            raise _delivery_conflict()
+
+        if event.status in {"queued", "processing", "accepted", "delivered"}:
+            return _coach_delivery_response(event, graph, source_state)
+        if (
+            event.status != "failed"
+            or event.failure_code not in KNOWN_RESEND_FAILURES
+            or not event.recipient
+        ):
+            raise _delivery_conflict()
+
+        now = utcnow()
+        event.status = "queued"
+        event.attempt_count = 0
+        event.next_attempt_at = now
+        event.lease_expires_at = None
+        event.attempt_token = None
+        event.failure_code = None
+        event.provider_message_id = None
+        event.updated_at = now
+        session.flush()
+        response = _coach_delivery_response(event, graph, source_state)
+        session.commit()
+        return response
+
+
+def correct_coach_email_delivery_contact(
+    instructor_id: str,
+    delivery_id: str,
+    email: str,
+) -> "CoachEmailDeliveryResponse":
+    normalized = _recipient("email", email)
+    if normalized is None:
+        raise ApiException("INVALID_EMAIL_ADDRESS", "Enter a valid email address.", 422)
+
+    with db.SessionLocal() as session:
+        event = _lock_email_event(session, instructor_id, delivery_id)
+        graph = _load_source_graph(session, event, for_update=True)
+        source_state = _source_state(event, graph)
+        if (
+            source_state != "active"
+            or not graph.client_link_valid
+            or graph.intake is None
+        ):
+            raise _delivery_conflict()
+
+        if event.status == "queued" and event.recipient == normalized:
+            return _coach_delivery_response(event, graph, source_state)
+        if (
+            event.status != "skipped"
+            or event.attempt_count != 0
+            or event.failure_code not in EDITABLE_RECIPIENT_FAILURES
+        ):
+            raise _delivery_conflict()
+
+        now = utcnow()
+        event.recipient = normalized
+        event.status = "queued"
+        event.attempt_count = 0
+        event.next_attempt_at = now
+        event.lease_expires_at = None
+        event.attempt_token = None
+        event.failure_code = None
+        event.provider_message_id = None
+        event.updated_at = now
+
+        graph.intake.guardian_email = normalized
+        graph.intake.updated_at = datetime.utcnow()
+        if graph.lesson_request is not None:
+            graph.lesson_request.client_email = normalized
+            graph.lesson_request.updated_at = datetime.utcnow()
+        if graph.client is not None:
+            graph.client.email = normalized
+            graph.client.updated_at = datetime.utcnow()
+
+        session.flush()
+        response = _coach_delivery_response(event, graph, source_state)
+        session.commit()
+        return response
+
+
+def _lock_email_event(session, instructor_id: str, delivery_id: str) -> NotificationEventDB:
+    event = (
+        session.query(NotificationEventDB)
+        .filter_by(id=delivery_id, instructor_id=instructor_id, channel="email")
+        .with_for_update()
+        .first()
+    )
+    if event is None:
+        raise ApiException("EMAIL_DELIVERY_NOT_FOUND", "The email delivery could not be found.", 404)
+    return event
+
+
+def _load_source_graph(
+    session,
+    event: NotificationEventDB,
+    *,
+    for_update: bool,
+) -> _DeliverySourceGraph:
+    invite_query = session.query(InviteTokenDB).filter_by(
+        token=event.invite_token,
+        instructor_id=event.instructor_id,
+    )
+    invite = _first(invite_query, for_update)
+
+    intake = None
+    if invite is not None:
+        intake = _first(
+            session.query(InviteIntakeDB).filter_by(invite_token=invite.token),
+            for_update,
+        )
+
+    lesson_request = None
+    if event.request_id is not None:
+        lesson_request = _first(
+            session.query(LessonRequestDB).filter_by(
+                id=event.request_id,
+                invite_token=event.invite_token,
+                instructor_id=event.instructor_id,
+            ),
+            for_update,
+        )
+
+    appointments: list[AppointmentDB] = []
+    if lesson_request is not None:
+        appointment_query = (
+            session.query(AppointmentDB)
+            .filter_by(
+                request_id=lesson_request.id,
+                instructor_id=event.instructor_id,
+            )
+            .order_by(AppointmentDB.id.asc())
+        )
+        if for_update:
+            appointment_query = appointment_query.with_for_update()
+        appointments = appointment_query.all()
+
+    invite_client_id = invite.client_id if invite is not None else None
+    request_client_id = lesson_request.client_id if lesson_request is not None else None
+    client_link_valid = not (
+        invite_client_id is not None
+        and request_client_id is not None
+        and invite_client_id != request_client_id
+    )
+    client_id = request_client_id or invite_client_id
+    client = None
+    if client_link_valid and client_id is not None:
+        client = _first(
+            session.query(ClientDB).filter_by(
+                id=client_id,
+                instructor_id=event.instructor_id,
+            ),
+            for_update,
+        )
+        client_link_valid = client is not None
+
+    return _DeliverySourceGraph(
+        invite=invite,
+        intake=intake,
+        lesson_request=lesson_request,
+        appointments=appointments,
+        client=client,
+        client_link_valid=client_link_valid,
+    )
+
+
+def _first(query, for_update: bool):
+    return (query.with_for_update() if for_update else query).first()
+
+
+def _project_email_event(session, event) -> "CoachEmailDeliveryResponse | None":
+    if event is None:
+        return None
+    graph = _load_source_graph(session, event, for_update=False)
+    return _coach_delivery_response(event, graph, _source_state(event, graph))
+
+
+def _coach_delivery_response(
+    event: NotificationEventDB,
+    graph: _DeliverySourceGraph,
+    source_state: str,
+) -> "CoachEmailDeliveryResponse":
+    from app.api_schemas import CoachEmailDeliveryResponse
+
+    active = source_state == "active" and graph.client_link_valid
+    can_resend = (
+        active
+        and event.status == "failed"
+        and event.failure_code in KNOWN_RESEND_FAILURES
+        and bool(event.recipient)
+    )
+    can_edit_contact = (
+        active
+        and graph.intake is not None
+        and event.status == "skipped"
+        and event.attempt_count == 0
+        and event.failure_code in EDITABLE_RECIPIENT_FAILURES
+    )
+    client_name = (
+        graph.lesson_request.client_name
+        if graph.lesson_request is not None
+        else graph.intake.client_name
+        if graph.intake is not None
+        else "Client"
+    )
+    updated_at = event.updated_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    return CoachEmailDeliveryResponse(
+        id=event.id,
+        kind=event.kind,
+        status=event.status,
+        updated_at=updated_at,
+        client_id=graph.client.id if graph.client is not None else None,
+        client_name=client_name,
+        request_token=(
+            graph.lesson_request.request_token
+            if graph.lesson_request is not None
+            else None
+        ),
+        issue=FAILURE_ISSUES.get(event.failure_code),
+        source_state=source_state,
+        can_resend=can_resend,
+        can_edit_contact=can_edit_contact,
+    )
+
+
+def _source_state(event: NotificationEventDB, graph: _DeliverySourceGraph) -> str:
+    if event.kind == "invite":
+        invite = graph.invite
+        if (
+            invite is None
+            or invite.revoked_at is not None
+            or invite.expires_at <= datetime.utcnow()
+        ):
+            return "invite_inactive"
+        return "active"
+    return "active" if _confirmation_source_is_active(event, graph) else "appointment_inactive"
+
+
+def _confirmation_source_is_active(
+    event: NotificationEventDB,
+    graph: _DeliverySourceGraph,
+) -> bool:
+    lesson_request = graph.lesson_request
+    if lesson_request is None or lesson_request.status != "confirmed":
+        return False
+    context = event.template_context if isinstance(event.template_context, dict) else {}
+    occurrences = context.get("occurrences")
+    address = context.get("address")
+    if (
+        not isinstance(occurrences, list)
+        or not occurrences
+        or not isinstance(address, str)
+        or not graph.appointments
+    ):
+        return False
+    try:
+        expected = sorted(
+            (
+                _snapshot_instant(item["start_iso"]),
+                _snapshot_instant(item["end_iso"]),
+            )
+            for item in occurrences
+            if isinstance(item, dict)
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    if len(expected) != len(occurrences) or len(expected) != len(graph.appointments):
+        return False
+    if any(
+        appointment.status != "scheduled"
+        or appointment.cancelled_at is not None
+        or appointment.event_type != "lesson"
+        or appointment.is_break
+        or appointment.location_address != address
+        for appointment in graph.appointments
+    ):
+        return False
+    actual = sorted(
+        (
+            _storage_instant(appointment.start_time),
+            _storage_instant(appointment.end_time),
+        )
+        for appointment in graph.appointments
+    )
+    return actual == expected
+
+
+def _snapshot_instant(value) -> datetime:
+    if not isinstance(value, str):
+        raise TypeError("Notification occurrence instants must be strings.")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return _storage_instant(parsed)
+
+
+def _storage_instant(value: datetime) -> datetime:
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _delivery_conflict() -> ApiException:
+    return ApiException(
+        "EMAIL_DELIVERY_NOT_ACTIONABLE",
+        "The email delivery is no longer actionable.",
+        409,
+    )
 
 
 @dataclass(frozen=True)

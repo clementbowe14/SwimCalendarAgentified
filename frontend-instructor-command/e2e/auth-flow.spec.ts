@@ -98,6 +98,77 @@ describeWhenLiveApiConfigured("MVP coach auth flow", () => {
     expect(api.protectedCalls().some((call) => call.path.endsWith("/approve"))).toBe(false);
   });
 
+  test("keeps newer and omitted delivery cards when refresh data is stale or unavailable", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    await signInThroughUi(page);
+    await page.getByRole("button", { name: "Requests", exact: true }).click();
+
+    const failedCard = page.locator('[data-email-delivery-card="delivery-live-resend"]');
+    const deliveredCard = page.locator('[data-email-delivery-card="delivery-live-delivered"]');
+    const refreshButton = page.getByRole("button", { name: "Refresh delivery status" });
+    await expect(failedCard.getByText("Delivery failed", { exact: true })).toBeVisible();
+    await expect(deliveredCard).toBeVisible();
+
+    api.respondToNextEmailRefreshWith([
+      emailDeliveryResponse({
+        id: "delivery-live-resend",
+        status: "accepted",
+        issue: null,
+        can_resend: false,
+        client_name: "Sofia Martinez",
+        updated_at: "2026-08-27T15:05:00Z",
+      }),
+    ]);
+    await refreshButton.click();
+
+    await expect(failedCard.getByText("Delivery failed", { exact: true })).toBeVisible();
+    await expect(failedCard.getByRole("button", { name: "Resend safely" })).toBeVisible();
+    await expect(deliveredCard).toBeVisible();
+
+    api.failNextEmailRefreshWith(503);
+    await refreshButton.click();
+
+    await expect(page.getByRole("alert")).toContainText(/last-known statuses are still shown/i);
+    await expect(failedCard).toBeVisible();
+    await expect(deliveredCard).toBeVisible();
+    await expect(refreshButton).toBeFocused();
+  });
+
+  test("keeps the last-known delivery card when a safe resend cannot be confirmed", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    await signInThroughUi(page);
+    await page.getByRole("button", { name: "Requests", exact: true }).click();
+
+    const failedCard = page.locator('[data-email-delivery-card="delivery-live-resend"]');
+    const resendButton = failedCard.getByRole("button", { name: "Resend safely" });
+    api.failNextEmailActionWith(503);
+    await resendButton.click();
+
+    await expect(failedCard.getByRole("alert")).toContainText(/last-known delivery status is still shown/i);
+    await expect(failedCard.getByText("Delivery failed", { exact: true })).toBeVisible();
+    await expect(resendButton).toBeVisible();
+    await expect(resendButton).toBeFocused();
+  });
+
+  test("preserves confirmation delivery state when the post-booking snapshot refresh fails", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    await signInThroughUi(page);
+    await page.getByRole("button", { name: "Requests", exact: true }).click();
+
+    api.failNextSnapshotWith(503);
+    await page.getByRole("button", { name: "Confirm" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "Ready for your calendar" });
+    await expect(dialog).toBeVisible();
+    await expect(page.getByRole("alert")).toContainText(/appointment was saved.*schedule could not be refreshed/i);
+    await dialog.getByRole("button", { name: "Done" }).click();
+
+    const confirmationCard = page.locator('[data-email-delivery-card="delivery-confirm-live"]');
+    await expect(confirmationCard).toBeVisible();
+    await expect(confirmationCard.getByText("Queued to send", { exact: true })).toBeVisible();
+    expect(api.protectedCalls().some((call) => call.path.endsWith("/lesson-requests/req_live_1/confirm"))).toBe(true);
+  });
+
   test("keeps persistence truthful when the handoff becomes unavailable", async ({ page }) => {
     const api = await mockAuthenticatedCoachApi(page);
     api.failNextCalendarReadWith(409);
@@ -153,9 +224,21 @@ type ProtectedCall = {
   beforeAuth: boolean;
 };
 
+type MockCoachApiState = {
+  emailDeliveries: Array<Record<string, unknown>>;
+  nextEmailRefreshStatus: number | null;
+  nextEmailActionStatus: number | null;
+  nextEmailRefreshResponse: Array<Record<string, unknown>> | null;
+  nextSnapshotStatus: number | null;
+};
+
 async function mockAuthenticatedCoachApi(page: Page): Promise<{
   expireProtectedRequestsWith(status: 401 | 403): void;
   failNextCalendarReadWith(status: 401 | 409): void;
+  failNextEmailRefreshWith(status: number): void;
+  failNextEmailActionWith(status: number): void;
+  respondToNextEmailRefreshWith(deliveries: Array<Record<string, unknown>>): void;
+  failNextSnapshotWith(status: number): void;
   logoutCalls(): number;
   protectedCalls(): ProtectedCall[];
   protectedCallsBeforeAuth(): ProtectedCall[];
@@ -165,6 +248,13 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
   let nextCalendarReadStatus: 401 | 409 | null = null;
   let logoutCallCount = 0;
   const protectedCalls: ProtectedCall[] = [];
+  const state: MockCoachApiState = {
+    emailDeliveries: emailDeliveryResponses(),
+    nextEmailRefreshStatus: null,
+    nextEmailActionStatus: null,
+    nextEmailRefreshResponse: null,
+    nextSnapshotStatus: null,
+  };
 
   await page.route(/\/api\/(?:auth|coach)\//, async (route) => {
     const request = route.request();
@@ -228,7 +318,53 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
         return;
       }
 
-      await fulfillProtectedCoachRoute(route, url.pathname);
+      if (url.pathname.endsWith("/coach/command-center/snapshot") && state.nextSnapshotStatus) {
+        const status = state.nextSnapshotStatus;
+        state.nextSnapshotStatus = null;
+        await route.fulfill({ status, json: apiError("SNAPSHOT_UNAVAILABLE", "Command center refresh is unavailable.") });
+        return;
+      }
+
+      if (url.pathname.endsWith("/coach/email-deliveries") && request.method() === "GET") {
+        if (state.nextEmailRefreshStatus) {
+          const status = state.nextEmailRefreshStatus;
+          state.nextEmailRefreshStatus = null;
+          await route.fulfill({ status, json: apiError("DELIVERY_REFRESH_FAILED", "Delivery refresh failed.") });
+          return;
+        }
+        const response = state.nextEmailRefreshResponse ?? state.emailDeliveries;
+        state.nextEmailRefreshResponse = null;
+        await route.fulfill({ json: response });
+        return;
+      }
+
+      if (/\/coach\/email-deliveries\/[^/]+\/(?:resend|contact)$/.test(url.pathname)) {
+        if (state.nextEmailActionStatus) {
+          const status = state.nextEmailActionStatus;
+          state.nextEmailActionStatus = null;
+          await route.fulfill({ status, json: apiError("DELIVERY_ACTION_FAILED", "Delivery action failed.") });
+          return;
+        }
+        const deliveryId = decodeURIComponent(url.pathname.split("/").at(-2) ?? "");
+        const current = state.emailDeliveries.find((delivery) => delivery.id === deliveryId);
+        if (!current) {
+          await route.fulfill({ status: 404, json: apiError("NOT_FOUND", "Delivery was not found.") });
+          return;
+        }
+        const updated = {
+          ...current,
+          status: "queued",
+          issue: null,
+          can_resend: false,
+          can_edit_contact: false,
+          updated_at: "2026-08-27T17:00:00Z",
+        };
+        state.emailDeliveries = state.emailDeliveries.map((delivery) => delivery.id === deliveryId ? updated : delivery);
+        await route.fulfill({ json: updated });
+        return;
+      }
+
+      await fulfillProtectedCoachRoute(route, url.pathname, state);
       return;
     }
 
@@ -242,6 +378,18 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
     failNextCalendarReadWith(status: 401 | 409): void {
       nextCalendarReadStatus = status;
     },
+    failNextEmailRefreshWith(status: number): void {
+      state.nextEmailRefreshStatus = status;
+    },
+    failNextEmailActionWith(status: number): void {
+      state.nextEmailActionStatus = status;
+    },
+    respondToNextEmailRefreshWith(deliveries: Array<Record<string, unknown>>): void {
+      state.nextEmailRefreshResponse = deliveries;
+    },
+    failNextSnapshotWith(status: number): void {
+      state.nextSnapshotStatus = status;
+    },
     logoutCalls(): number {
       return logoutCallCount;
     },
@@ -254,9 +402,13 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
   };
 }
 
-async function fulfillProtectedCoachRoute(route: Route, pathname: string): Promise<void> {
+async function fulfillProtectedCoachRoute(
+  route: Route,
+  pathname: string,
+  state: MockCoachApiState,
+): Promise<void> {
   if (pathname.endsWith("/coach/command-center/snapshot")) {
-    await route.fulfill({ json: commandCenterSnapshot() });
+    await route.fulfill({ json: commandCenterSnapshot(state.emailDeliveries) });
     return;
   }
 
@@ -278,6 +430,15 @@ async function fulfillProtectedCoachRoute(route: Route, pathname: string): Promi
   }
 
   if (pathname.endsWith("/lesson-requests/req_live_1/confirm")) {
+    const emailDelivery = emailDeliveryResponse({
+      id: "delivery-confirm-live",
+      kind: "confirmation",
+      status: "queued",
+      client_name: "Sofia Martinez",
+      request_token: "req_live_1",
+      updated_at: "2026-08-27T17:05:00Z",
+    });
+    state.emailDeliveries = [emailDelivery, ...state.emailDeliveries.filter((item) => item.id !== emailDelivery.id)];
     await route.fulfill({
       json: {
         id: "req_live_1",
@@ -286,6 +447,7 @@ async function fulfillProtectedCoachRoute(route: Route, pathname: string): Promi
         appointment_ids: ["app_request_1", "app_request_2"],
         message: "Lesson request is confirmed.",
         calendar_links: calendarLinksResponse("app_request_1", true),
+        email_delivery: emailDelivery,
       },
     });
     return;
@@ -392,7 +554,7 @@ function calendarLinksResponse(anchor: string, recurring: boolean): Record<strin
   return { google: googleEvents[0].url, google_events: googleEvents, apple: ics, ics };
 }
 
-function commandCenterSnapshot(): Record<string, unknown> {
+function commandCenterSnapshot(emailDeliveries: Array<Record<string, unknown>>): Record<string, unknown> {
   return {
     instructor: {
       id: "inst_001",
@@ -470,6 +632,7 @@ function commandCenterSnapshot(): Record<string, unknown> {
         alternative_slots: [],
       },
     ],
+    email_deliveries: emailDeliveries,
     rules: {
       rounding_increment_mins: 15,
       post_break_buffer_mins: 15,
@@ -483,5 +646,51 @@ function commandCenterSnapshot(): Record<string, unknown> {
         require_payment_method_for_new_clients: true,
       },
     },
+  };
+}
+
+function emailDeliveryResponses(): Array<Record<string, unknown>> {
+  return [
+    emailDeliveryResponse({
+      id: "delivery-live-resend",
+      status: "failed",
+      issue: "temporary_failure",
+      can_resend: true,
+      client_name: "Sofia Martinez",
+      updated_at: "2026-08-27T16:05:00Z",
+    }),
+    emailDeliveryResponse({
+      id: "delivery-live-edit",
+      kind: "invite",
+      status: "skipped",
+      issue: "missing_address",
+      can_edit_contact: true,
+      client_name: "Maya Chen",
+      request_token: null,
+      updated_at: "2026-08-27T16:04:00Z",
+    }),
+    emailDeliveryResponse({
+      id: "delivery-live-delivered",
+      status: "delivered",
+      client_name: "Noah Patel",
+      updated_at: "2026-08-27T16:03:00Z",
+    }),
+  ];
+}
+
+function emailDeliveryResponse(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "delivery-live",
+    kind: "confirmation",
+    status: "accepted",
+    updated_at: "2026-08-27T16:00:00Z",
+    client_id: "client_sofia",
+    client_name: "Sofia Martinez",
+    request_token: "req_live_1",
+    issue: null,
+    source_state: "active",
+    can_resend: false,
+    can_edit_contact: false,
+    ...overrides,
   };
 }

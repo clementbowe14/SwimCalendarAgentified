@@ -138,6 +138,38 @@ class CoachLessonRequestResponse(BaseModel):
     alternative_slots: list[CoachTimeSlotResponse] = Field(default_factory=list)
 
 
+class CoachEmailDeliveryResponse(BaseModel):
+    id: str
+    kind: Literal["invite", "confirmation"]
+    status: Literal["queued", "processing", "accepted", "delivered", "failed", "skipped"]
+    updated_at: AwareDatetime
+    client_id: Optional[str] = None
+    client_name: str
+    request_token: Optional[str] = None
+    issue: Optional[
+        Literal[
+            "invalid_address",
+            "missing_address",
+            "temporary_failure",
+            "permanent_failure",
+            "delivery_uncertain",
+            "retries_exhausted",
+        ]
+    ] = None
+    source_state: Literal["active", "invite_inactive", "appointment_inactive"]
+    can_resend: bool
+    can_edit_contact: bool
+
+    @field_validator("updated_at")
+    @classmethod
+    def normalize_utc(cls, value: datetime) -> datetime:
+        return value.astimezone(timezone.utc)
+
+
+class CoachEmailContactUpdateRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+
+
 class CoachDistanceBufferTier(BaseModel):
     id: str = Field(min_length=1, max_length=64)
     label: str = Field(min_length=1, max_length=120)
@@ -215,6 +247,7 @@ class CoachCommandCenterSnapshot(BaseModel):
     clients: list[CoachClientResponse]
     schedule: list[CoachScheduleItemResponse]
     requests: list[CoachLessonRequestResponse]
+    email_deliveries: list[CoachEmailDeliveryResponse] = Field(default_factory=list)
     rules: CoachSchedulerRules
 
 
@@ -287,6 +320,7 @@ class CoachLessonRequestConfirmResponse(BaseModel):
     appointment_ids: list[str] = Field(default_factory=list)
     message: str
     calendar_links: Optional[ClientInviteCalendarLinks] = None
+    email_delivery: Optional[CoachEmailDeliveryResponse] = None
 
 
 class CoachLessonRequestConfirmRequest(BaseModel):
@@ -349,6 +383,7 @@ class NotificationStatus(BaseModel):
 
 class InviteNotificationResponse(BaseModel):
     notifications: list[NotificationStatus]
+    email_delivery: Optional[CoachEmailDeliveryResponse] = None
 
 
 class PublicLessonRequestResponse(BaseModel):
