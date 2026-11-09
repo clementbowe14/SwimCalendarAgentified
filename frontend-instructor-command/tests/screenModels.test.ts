@@ -83,6 +83,7 @@ test("API adapter confirms a request and returns its persisted calendar handoff"
   assert.equal(confirmed.status, "confirmed");
   assert.equal(confirmed.appointment_ids.length, 2);
   assert.equal(confirmed.calendar_links?.google_events.length, 2);
+  assert.equal(confirmed.email_delivery?.status, "queued");
   assert.equal(updated.requests.find((request) => request.id === "req_sofia_0827")?.status, "approved");
   assert.equal(candidateSlots[0].start_time, "2026-08-27T18:00:00");
 });

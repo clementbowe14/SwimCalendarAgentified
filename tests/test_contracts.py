@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from pydantic import TypeAdapter
+
 from app.api_schemas import (
     AvailabilitySearchResponse,
     BookLessonResponse,
@@ -10,11 +12,13 @@ from app.api_schemas import (
     ClientInviteEnvelopeResponse,
     ClientInviteLessonRequestResponse,
     CoachCommandCenterSnapshot,
+    CoachEmailDeliveryResponse,
     CoachAuthResponse,
     CoachLessonRequestConfirmResponse,
     CoachScheduleResponse,
     CoachSchedulerRules,
     ErrorResponse,
+    InviteNotificationResponse,
 )
 from scripts.export_contracts import CONTRACT_ROOT, check_contracts
 
@@ -30,6 +34,8 @@ FIXTURE_SCHEMAS = {
     "fixtures/coach/auth_response.json": CoachAuthResponse,
     "fixtures/coach/calendar_links.json": ClientInviteCalendarLinks,
     "fixtures/coach/booking_response.json": BookLessonResponse,
+    "fixtures/coach/email_delivery.json": CoachEmailDeliveryResponse,
+    "fixtures/coach/invite_notification_response.json": InviteNotificationResponse,
     "fixtures/coach/lesson_request_confirmation_response.json": CoachLessonRequestConfirmResponse,
     "fixtures/coach/availability_search_response.json": AvailabilitySearchResponse,
     "fixtures/coach/schedule_response.json": CoachScheduleResponse,
@@ -67,6 +73,9 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/coach/lesson-requests/{request_token}/decline" in paths
     assert "/api/coach/settings" in paths
     assert "/api/coach/invites/{invite_token}/notifications" in paths
+    assert "/api/coach/email-deliveries" in paths
+    assert "/api/coach/email-deliveries/{delivery_id}/resend" in paths
+    assert "/api/coach/email-deliveries/{delivery_id}/contact" in paths
     assert "/api/public/command-center/snapshot" not in paths
     assert "/api/public/settings" not in paths
 
@@ -74,6 +83,36 @@ def test_openapi_contract_includes_public_and_coach_routes():
 def test_fixtures_validate_against_response_schemas():
     for relative_path, schema in FIXTURE_SCHEMAS.items():
         schema.model_validate(_load_json(CONTRACT_ROOT / relative_path))
+    TypeAdapter(list[CoachEmailDeliveryResponse]).validate_python(
+        _load_json(CONTRACT_ROOT / "fixtures/coach/email_deliveries.json")
+    )
+
+
+def test_coach_email_delivery_fixture_is_allowlisted_and_privacy_safe():
+    payload = _load_json(CONTRACT_ROOT / "fixtures/coach/email_delivery.json")
+    assert set(payload) == {
+        "id",
+        "kind",
+        "status",
+        "updated_at",
+        "client_id",
+        "client_name",
+        "request_token",
+        "issue",
+        "source_state",
+        "can_resend",
+        "can_edit_contact",
+    }
+    assert {
+        "recipient",
+        "failure_code",
+        "provider_message_id",
+        "template_context",
+        "attempt_count",
+        "next_attempt_at",
+        "lease_expires_at",
+        "attempt_token",
+    }.isdisjoint(payload)
 
 
 def test_confirmation_fixture_has_safe_delivery_states_and_occurrence_links():
@@ -99,7 +138,7 @@ def test_public_fixtures_do_not_leak_private_identifiers_or_schedule_details():
 
 
 def test_required_fixture_files_exist_for_frontend_contract_tests():
-    required = set(FIXTURE_SCHEMAS.keys())
+    required = set(FIXTURE_SCHEMAS.keys()) | {"fixtures/coach/email_deliveries.json"}
 
     for relative_path in required:
         assert (CONTRACT_ROOT / relative_path).exists()

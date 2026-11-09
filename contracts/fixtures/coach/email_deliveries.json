@@ -1,0 +1,15 @@
+[
+  {
+    "can_edit_contact": false,
+    "can_resend": false,
+    "client_id": "client_sofia",
+    "client_name": "Sofia Martinez",
+    "id": "delivery_contract_confirmation_email",
+    "issue": null,
+    "kind": "confirmation",
+    "request_token": "req_contract_confirmed",
+    "source_state": "active",
+    "status": "queued",
+    "updated_at": "2026-08-28T16:35:00Z"
+  }
+]

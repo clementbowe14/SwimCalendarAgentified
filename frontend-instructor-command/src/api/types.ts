@@ -10,6 +10,34 @@ export type AppointmentKind = "lesson" | "travel" | "buffer" | "break" | "open_g
 
 export type LessonStatus = "scheduled" | "rescheduled" | "canceled";
 
+export type EmailDeliveryKind = "invite" | "confirmation";
+
+export type EmailDeliveryStatus = "queued" | "processing" | "accepted" | "delivered" | "failed" | "skipped";
+
+export type EmailDeliveryIssue =
+  | "invalid_address"
+  | "missing_address"
+  | "temporary_failure"
+  | "permanent_failure"
+  | "delivery_uncertain"
+  | "retries_exhausted";
+
+export type EmailDeliverySourceState = "active" | "invite_inactive" | "appointment_inactive";
+
+export type CoachEmailDelivery = {
+  id: Id;
+  kind: EmailDeliveryKind;
+  status: EmailDeliveryStatus;
+  updated_at: string;
+  client_id?: Id | null;
+  client_name: string;
+  request_token?: string | null;
+  issue: EmailDeliveryIssue | null;
+  source_state: EmailDeliverySourceState;
+  can_resend: boolean;
+  can_edit_contact: boolean;
+};
+
 export type AvailabilityWindow = {
   id: Id;
   days: string[];
@@ -107,6 +135,7 @@ export type CoachLessonRequestConfirmResponse = {
   appointment_ids: Id[];
   message: string;
   calendar_links: CalendarLinks | null;
+  email_delivery: CoachEmailDelivery | null;
 };
 
 export type InstructorProfile = {
@@ -187,6 +216,7 @@ export type CommandCenterSnapshot = {
   clients: Client[];
   schedule: ScheduleItem[];
   requests: LessonRequest[];
+  email_deliveries: CoachEmailDelivery[];
   rules: SchedulerRules;
 };
 
@@ -211,6 +241,9 @@ export type InstructorCommandApi = {
   findAvailableSlots(request: BookingRequestDTO): Promise<TimeSlotDTO[]>;
   bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse>;
   confirmRequest(request_id: Id): Promise<CoachLessonRequestConfirmResponse>;
+  getEmailDeliveries(): Promise<CoachEmailDelivery[]>;
+  resendEmailDelivery(delivery_id: Id): Promise<CoachEmailDelivery>;
+  updateEmailDeliveryContact(delivery_id: Id, email: string): Promise<CoachEmailDelivery>;
   getAppointmentCalendarLinks(appointment_id: Id): Promise<CalendarLinks>;
   downloadCalendarIcs(calendar_url: string): Promise<Blob>;
   requestAlternatives(request_id: Id, preferred_slot_ids: Id[]): Promise<LessonRequest | CoachLessonRequestActionResponse>;

@@ -14,13 +14,30 @@ from app.api import create_app
 from app.api_schemas import (
     BookLessonResponse,
     CoachCommandCenterSnapshot,
+    CoachEmailDeliveryResponse,
     CoachLessonRequestConfirmResponse,
     CoachSchedulerRules,
+    InviteNotificationResponse,
 )
 
 
 def build_contract_artifacts() -> dict[str, Any]:
     coach_settings_fixture = _coach_settings_fixture()
+    coach_email_delivery = CoachEmailDeliveryResponse.model_validate(
+        {
+            "id": "delivery_contract_confirmation_email",
+            "kind": "confirmation",
+            "status": "queued",
+            "updated_at": "2026-08-28T16:35:00Z",
+            "client_id": "client_sofia",
+            "client_name": "Sofia Martinez",
+            "request_token": "req_contract_confirmed",
+            "issue": None,
+            "source_state": "active",
+            "can_resend": False,
+            "can_edit_contact": False,
+        }
+    ).model_dump(mode="json")
     google = "https://calendar.google.com/calendar/render?" + urlencode({
         "action": "TEMPLATE", "text": "Swim lesson",
         "dates": "20260829T173000Z/20260829T181500Z",
@@ -192,6 +209,34 @@ def build_contract_artifacts() -> dict[str, Any]:
                 "calendar_links": coach_calendar_links,
             }
         ).model_dump(mode="json"),
+        "fixtures/coach/email_delivery.json": coach_email_delivery,
+        "fixtures/coach/email_deliveries.json": [coach_email_delivery],
+        "fixtures/coach/invite_notification_response.json": (
+            InviteNotificationResponse.model_validate(
+                {
+                    "notifications": [
+                        {
+                            "kind": "invite",
+                            "channel": "sms",
+                            "status": "skipped",
+                            "updated_at": "2026-08-28T16:30:00Z",
+                        },
+                        {
+                            "kind": "invite",
+                            "channel": "email",
+                            "status": "queued",
+                            "updated_at": "2026-08-28T16:30:00Z",
+                        },
+                    ],
+                    "email_delivery": {
+                        **coach_email_delivery,
+                        "id": "delivery_contract_invite_email",
+                        "kind": "invite",
+                        "request_token": None,
+                    },
+                }
+            ).model_dump(mode="json")
+        ),
         "fixtures/coach/lesson_request_confirmation_response.json": (
             CoachLessonRequestConfirmResponse.model_validate(
                 {
@@ -201,6 +246,7 @@ def build_contract_artifacts() -> dict[str, Any]:
                     "appointment_ids": ["app_contract_confirmed"],
                     "message": "Lesson request is confirmed.",
                     "calendar_links": coach_calendar_links,
+                    "email_delivery": coach_email_delivery,
                 }
             ).model_dump(mode="json")
         ),
@@ -252,7 +298,10 @@ def build_contract_artifacts() -> dict[str, Any]:
             ],
         },
         "fixtures/coach/settings.json": coach_settings_fixture,
-        "fixtures/coach/command_center_snapshot.json": _coach_command_center_snapshot_fixture(coach_settings_fixture),
+        "fixtures/coach/command_center_snapshot.json": _coach_command_center_snapshot_fixture(
+            coach_settings_fixture,
+            coach_email_delivery,
+        ),
     }
 
 
@@ -304,7 +353,10 @@ def _coach_settings_fixture() -> dict[str, Any]:
     ).model_dump(mode="json")
 
 
-def _coach_command_center_snapshot_fixture(rules: dict[str, Any]) -> dict[str, Any]:
+def _coach_command_center_snapshot_fixture(
+    rules: dict[str, Any],
+    email_delivery: dict[str, Any],
+) -> dict[str, Any]:
     return CoachCommandCenterSnapshot.model_validate(
         {
             "instructor": {
@@ -383,6 +435,7 @@ def _coach_command_center_snapshot_fixture(rules: dict[str, Any]) -> dict[str, A
                     "alternative_slots": [],
                 }
             ],
+            "email_deliveries": [email_delivery],
             "rules": rules,
         }
     ).model_dump(mode="json", exclude_none=True)
@@ -425,6 +478,12 @@ Instructor calendar handoffs use authenticated
 `GET /api/coach/appointments/{appointment_id}/calendar.ics` routes. The `.ics` download requires the
 same bearer session; the `apple` field is an alias of this provider-neutral download, not a direct
 calendar-provider write.
+
+Instructor email delivery state is available through authenticated
+`GET /api/coach/email-deliveries`. Safe recovery uses
+`POST /api/coach/email-deliveries/{delivery_id}/resend` and
+`PUT /api/coach/email-deliveries/{delivery_id}/contact`. Coach delivery responses intentionally omit
+recipient addresses, provider identifiers, raw failures, attempts, leases, and retry timestamps.
 
 Regenerate contracts with:
 
