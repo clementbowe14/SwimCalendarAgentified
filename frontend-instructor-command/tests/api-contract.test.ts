@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createMemoryInstructorAuthStore,
+  clearLegacyInstructorAuthState,
   HttpInstructorCommandApi,
   InstructorCommandApiError,
 } from "../src/api/instructorApi.js";
@@ -18,54 +18,58 @@ type FetchCall = {
   init?: RequestInit;
 };
 
-test("HTTP instructor adapter signs in through the MVP auth endpoint and persists the bearer session", async () => {
+test("HTTP instructor adapter signs in with cookie credentials, CSRF protection, and metadata-only JSON", async () => {
   const calls: FetchCall[] = [];
-  const store = createMemoryInstructorAuthStore();
-  const api = new HttpInstructorCommandApi("http://api.test/api", store);
+  const api = new HttpInstructorCommandApi("http://api.test/api");
 
-  await withMockFetch(calls, async () => jsonResponse(authSessionContract()), async () => {
+  await withMockFetch(calls, async () => jsonResponse({
+    ...authSessionContract(),
+    access_token: "must-not-reach-application-state",
+    token_type: "bearer",
+  }), async () => {
     const session = await api.signIn({ email: "coach@example.test", password: "dev-secret" });
     const body = JSON.parse(String(calls[0].init?.body));
 
     assert.equal(calls[0].url, "http://api.test/api/auth/coach/sign-in");
     assert.equal(calls[0].init?.method, "POST");
+    assert.equal(calls[0].init?.credentials, "include");
+    assert.equal(headerValue(calls[0].init?.headers, "x-csrf-protection"), "1");
+    assert.equal(headerValue(calls[0].init?.headers, "authorization"), null);
     assert.deepEqual(body, { email: "coach@example.test", password: "dev-secret" });
-    assert.equal(session.access_token, "signed.jwt");
-    assert.equal(store.get()?.access_token, "signed.jwt");
+    assert.equal(session.authenticated, true);
+    assert.deepEqual(session.coach, { instructor_id: "inst_001", display_name: "Coach Sarah" });
+    assert.equal("access_token" in session, false);
+    assert.equal("token_type" in session, false);
   });
 });
 
-test("HTTP instructor adapter sends bearer auth with protected coach requests", async () => {
+test("HTTP instructor adapter sends cookie credentials and no bearer header with protected coach requests", async () => {
   const calls: FetchCall[] = [];
-  const api = new HttpInstructorCommandApi("http://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
+  const api = new HttpInstructorCommandApi("http://api.test/api");
 
   await withMockFetch(calls, async () => jsonResponse(snapshotContract()), async () => {
     await api.getSnapshot("frontend-should-not-route-by-this-id", "2026-08-20");
 
     assert.equal(calls[0].url, "http://api.test/api/coach/command-center/snapshot?date=2026-08-20");
-    assert.equal(headerValue(calls[0].init?.headers, "authorization"), "Bearer signed.jwt");
+    assert.equal(calls[0].init?.credentials, "include");
+    assert.equal(headerValue(calls[0].init?.headers, "authorization"), null);
+    assert.equal(headerValue(calls[0].init?.headers, "x-csrf-protection"), null);
   });
 });
 
-test("HTTP instructor adapter validates stored bearer sessions with the backend", async () => {
+test("HTTP instructor adapter validates the HttpOnly session with the backend", async () => {
   const calls: FetchCall[] = [];
-  const api = new HttpInstructorCommandApi("http://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
+  const api = new HttpInstructorCommandApi("http://api.test/api");
 
-  await withMockFetch(calls, async () =>
-    jsonResponse({
-      authenticated: true,
-      coach: {
-        instructor_id: "inst_001",
-        display_name: "Coach Sarah",
-      },
-    }),
+  await withMockFetch(calls, async () => jsonResponse(authSessionContract()),
     async () => {
-      const coach = await api.validateSession();
+      const session = await api.validateSession();
 
       assert.equal(calls[0].url, "http://api.test/api/auth/coach/session");
       assert.equal(calls[0].init?.method, "GET");
-      assert.equal(headerValue(calls[0].init?.headers, "authorization"), "Bearer signed.jwt");
-      assert.deepEqual(coach, {
+      assert.equal(calls[0].init?.credentials, "include");
+      assert.equal(headerValue(calls[0].init?.headers, "authorization"), null);
+      assert.deepEqual(session.coach, {
         instructor_id: "inst_001",
         display_name: "Coach Sarah",
       });
@@ -73,9 +77,8 @@ test("HTTP instructor adapter validates stored bearer sessions with the backend"
   );
 });
 
-test("HTTP instructor adapter clears stored auth after protected 401 responses", async () => {
-  const store = createMemoryInstructorAuthStore(authSessionContract());
-  const api = new HttpInstructorCommandApi("http://api.test/api", store);
+test("HTTP instructor adapter classifies only protected 401 responses as authentication failures", async () => {
+  const api = new HttpInstructorCommandApi("http://api.test/api");
   let caught: unknown;
 
   await withMockFetch([], async () =>
@@ -99,7 +102,46 @@ test("HTTP instructor adapter clears stored auth after protected 401 responses",
 
   assert.equal(caught instanceof InstructorCommandApiError, true);
   assert.equal((caught as InstructorCommandApiError).isAuthFailure, true);
-  assert.equal(store.get(), null);
+
+  await withMockFetch([], async () =>
+    jsonResponse({ error: { code: "CSRF_VALIDATION_FAILED", message: "Request origin was rejected." } }, { status: 403 }),
+    async () => {
+      await assert.rejects(
+        () => api.bookLesson({
+          instructor_id: "inst_001",
+          client_id: "client_001",
+          client_name: "Alice",
+          start_time_iso: "2026-08-29T12:30:00",
+          duration_mins: 45,
+          location_address: "450 North Blvd, Austin, TX",
+        }),
+        (error: unknown) => error instanceof InstructorCommandApiError && !error.isAuthFailure,
+      );
+    },
+  );
+});
+
+test("legacy browser bearer state is deleted without being parsed or migrated", () => {
+  const removals: string[] = [];
+  clearLegacyInstructorAuthState({ removeItem: (key) => removals.push(key) });
+  assert.deepEqual(removals, ["swim-command:coach-session:v1"]);
+});
+
+test("HTTP instructor sign-out is unconditional, bodyless, credentialed, and CSRF protected", async () => {
+  const calls: FetchCall[] = [];
+  const api = new HttpInstructorCommandApi("http://api.test/api");
+
+  await withMockFetch(calls, async () => jsonResponse({ success: true, message: "Signed out." }), async () => {
+    await api.signOut();
+  });
+
+  assert.equal(calls[0].url, "http://api.test/api/auth/coach/sign-out");
+  assert.equal(calls[0].init?.method, "POST");
+  assert.equal(calls[0].init?.credentials, "include");
+  assert.equal(calls[0].init?.body, undefined);
+  assert.equal(headerValue(calls[0].init?.headers, "content-type"), null);
+  assert.equal(headerValue(calls[0].init?.headers, "x-csrf-protection"), "1");
+  assert.equal(headerValue(calls[0].init?.headers, "authorization"), null);
 });
 
 test("HTTP instructor adapter reads the coach command-center snapshot without raw instructor routing", async () => {
@@ -166,6 +208,9 @@ test("HTTP instructor adapter maps prototype availability requests onto the coac
       const body = JSON.parse(String(calls[0].init?.body));
 
       assert.equal(calls[0].url, "http://api.test/api/coach/availability");
+      assert.equal(calls[0].init?.credentials, "include");
+      assert.equal(headerValue(calls[0].init?.headers, "x-csrf-protection"), "1");
+      assert.equal(headerValue(calls[0].init?.headers, "authorization"), null);
       assert.deepEqual(body, {
         client_name: "Sofia Martinez",
         client_address: "820 Lakeview Dr, Austin, TX",
@@ -181,7 +226,7 @@ test("HTTP instructor adapter maps prototype availability requests onto the coac
 
 test("HTTP instructor adapter uses canonical confirmation and preserves returned occurrence IDs", async () => {
   const calls: FetchCall[] = [];
-  const api = new HttpInstructorCommandApi("http://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
+  const api = new HttpInstructorCommandApi("http://api.test/api");
   const calendarLinks = calendarLinksContract("app_request_1");
   const emailDelivery = emailDeliveryContract({ id: "delivery-confirm-1", status: "queued" });
 
@@ -201,7 +246,9 @@ test("HTTP instructor adapter uses canonical confirmation and preserves returned
 
       assert.equal(calls[0].url, "http://api.test/api/coach/lesson-requests/request%2Fone/confirm");
       assert.equal(calls[0].init?.method, "POST");
-      assert.equal(headerValue(calls[0].init?.headers, "authorization"), "Bearer signed.jwt");
+      assert.equal(calls[0].init?.credentials, "include");
+      assert.equal(headerValue(calls[0].init?.headers, "authorization"), null);
+      assert.equal(headerValue(calls[0].init?.headers, "x-csrf-protection"), "1");
       assert.deepEqual(body, {});
       assert.deepEqual(response.appointment_ids, ["app_request_1", "app_request_2"]);
       assert.equal(response.calendar_links?.google_events.length, 2);
@@ -212,7 +259,7 @@ test("HTTP instructor adapter uses canonical confirmation and preserves returned
 
 test("HTTP instructor adapter posts the exact selected-alternative confirmation body", async () => {
   const calls: FetchCall[] = [];
-  const api = new HttpInstructorCommandApi("http://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
+  const api = new HttpInstructorCommandApi("http://api.test/api");
 
   await withMockFetch(calls, async () =>
     jsonResponse({
@@ -236,7 +283,7 @@ test("HTTP instructor adapter posts the exact selected-alternative confirmation 
 
 test("HTTP instructor adapter refreshes, resends without a body, and corrects email delivery contact", async () => {
   const calls: FetchCall[] = [];
-  const api = new HttpInstructorCommandApi("http://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
+  const api = new HttpInstructorCommandApi("http://api.test/api");
   const delivery = emailDeliveryContract({ id: "delivery/one", status: "failed", can_resend: true });
 
   await withMockFetch(
@@ -265,12 +312,17 @@ test("HTTP instructor adapter refreshes, resends without a body, and corrects em
   assert.equal(calls[2].url, "http://api.test/api/coach/email-deliveries/delivery%2Fone/contact");
   assert.equal(calls[2].init?.method, "PUT");
   assert.deepEqual(JSON.parse(String(calls[2].init?.body)), { email: "client@example.test" });
-  assert.equal(headerValue(calls[2].init?.headers, "authorization"), "Bearer signed.jwt");
+  for (const call of calls) {
+    assert.equal(call.init?.credentials, "include");
+    assert.equal(headerValue(call.init?.headers, "authorization"), null);
+  }
+  assert.equal(headerValue(calls[1].init?.headers, "x-csrf-protection"), "1");
+  assert.equal(headerValue(calls[2].init?.headers, "x-csrf-protection"), "1");
 });
 
 test("HTTP instructor adapter reads handoff by exact appointment and downloads authenticated ICS", async () => {
   const calls: FetchCall[] = [];
-  const api = new HttpInstructorCommandApi("http://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
+  const api = new HttpInstructorCommandApi("http://api.test/api");
   const links = calendarLinksContract("app/direct one");
 
   await withMockFetch(
@@ -288,8 +340,10 @@ test("HTTP instructor adapter reads handoff by exact appointment and downloads a
 
       assert.equal(calls[0].url, "http://api.test/api/coach/appointments/app%2Fdirect%20one/calendar-links");
       assert.equal(calls[1].url, "http://api.test/api/coach/appointments/app%2Fdirect%20one/calendar.ics");
-      assert.equal(headerValue(calls[0].init?.headers, "authorization"), "Bearer signed.jwt");
-      assert.equal(headerValue(calls[1].init?.headers, "authorization"), "Bearer signed.jwt");
+      assert.equal(calls[0].init?.credentials, "include");
+      assert.equal(calls[1].init?.credentials, "include");
+      assert.equal(headerValue(calls[0].init?.headers, "authorization"), null);
+      assert.equal(headerValue(calls[1].init?.headers, "authorization"), null);
       assert.equal(calls[1].init?.cache, "no-store");
       assert.equal(calls[1].init?.redirect, "error");
       assert.equal(calls[1].init?.referrerPolicy, "no-referrer");
@@ -300,7 +354,7 @@ test("HTTP instructor adapter reads handoff by exact appointment and downloads a
 
 test("HTTP instructor adapter rejects untrusted and non-calendar downloads", async () => {
   const calls: FetchCall[] = [];
-  const api = new HttpInstructorCommandApi("https://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
+  const api = new HttpInstructorCommandApi("https://api.test/api");
 
   await assert.rejects(() => api.downloadCalendarIcs("https://evil.test/api/coach/appointments/app_1/calendar.ics"));
   assert.equal(calls.length, 0);
@@ -406,8 +460,7 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 
 function authSessionContract(): InstructorAuthSession {
   return {
-    access_token: "signed.jwt",
-    token_type: "bearer",
+    authenticated: true,
     coach: {
       instructor_id: "inst_001",
       display_name: "Coach Sarah",

@@ -39,6 +39,7 @@ from app.models import AppointmentDB, InviteIntakeDB, InviteSlotOfferDB, LessonR
 from app.public_tokens import (
     InviteContext,
     create_lesson_request,
+    demo_invite_is_enabled,
     resolve_invite,
     resolve_lesson_request_by_idempotency_key,
 )
@@ -178,7 +179,12 @@ def select_client_lesson_request_alternative(
             .with_for_update()
             .first()
         )
-        if lesson_request is None or lesson_request.invite is None or lesson_request.invite.revoked_at is not None:
+        if (
+            lesson_request is None
+            or lesson_request.invite is None
+            or not demo_invite_is_enabled(lesson_request.invite)
+            or lesson_request.invite.revoked_at is not None
+        ):
             raise LessonRequestNotFound()
         has_appointment = (
             session.query(AppointmentDB.id)
@@ -535,7 +541,12 @@ def _load_request_and_appointments(request_token: str) -> tuple[LessonRequestDB,
     session = db.SessionLocal()
     try:
         request = session.query(LessonRequestDB).filter_by(request_token=request_token).first()
-        if request is None or request.invite is None or request.invite.revoked_at is not None:
+        if (
+            request is None
+            or request.invite is None
+            or not demo_invite_is_enabled(request.invite)
+            or request.invite.revoked_at is not None
+        ):
             raise LessonRequestNotFound()
         appointments = (
             session.query(AppointmentDB)

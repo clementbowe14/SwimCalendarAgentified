@@ -58,7 +58,14 @@ from app.api_schemas import (
     ClientInviteCalendarLinks,
 )
 from app.calendar_handoff import calendar_ics, calendar_links
-from app.models import AppointmentDB, InviteSlotOfferDB, LessonRequestDB, TimeSlotDTO
+from app.config import demo_data_access_enabled_from_env
+from app.models import (
+    AppointmentDB,
+    InviteSlotOfferDB,
+    InviteTokenDB,
+    LessonRequestDB,
+    TimeSlotDTO,
+)
 from app.notifications import coach_email_delivery_for_request, list_coach_email_deliveries
 from app.public_tokens import (
     InviteContext,
@@ -166,17 +173,17 @@ def get_coach_schedule(instructor_id: str, schedule_date: date) -> CoachSchedule
 def _business_name_for_instructor(instructor_id: str) -> str:
     session = db.SessionLocal()
     try:
+        query = session.query(InviteTokenDB).filter_by(instructor_id=instructor_id)
+        if not demo_data_access_enabled_from_env():
+            query = query.filter(InviteTokenDB.is_demo.is_(False))
         invite = (
-            session.query(db.InviteTokenDB)
-            .filter_by(instructor_id=instructor_id, business_name="Swim Command")
+            query.filter_by(business_name="Swim Command")
             .first()
         )
         if invite:
             return invite.business_name
         invite = (
-            session.query(db.InviteTokenDB)
-            .filter_by(instructor_id=instructor_id)
-            .order_by(db.InviteTokenDB.created_at.desc())
+            query.order_by(InviteTokenDB.created_at.desc())
             .first()
         )
         return invite.business_name if invite else "Swim Command"
@@ -386,15 +393,23 @@ def _load_coach_calendar_appointments(
         if anchor.request_id is None:
             query = query.filter(AppointmentDB.id == anchor.id)
         else:
+            parent_query = session.query(LessonRequestDB).join(
+                InviteTokenDB,
+                LessonRequestDB.invite_token == InviteTokenDB.token,
+            )
+            if not demo_data_access_enabled_from_env():
+                parent_query = parent_query.filter(InviteTokenDB.is_demo.is_(False))
             parent = (
-                session.query(LessonRequestDB)
+                parent_query
                 .filter(
                     LessonRequestDB.id == anchor.request_id,
                     LessonRequestDB.instructor_id == instructor_id,
                 )
                 .first()
             )
-            if parent is None or parent.status != "confirmed":
+            if parent is None:
+                raise ResourceNotFound("The appointment could not be found.")
+            if parent.status != "confirmed":
                 raise CalendarLinksUnavailable()
             query = query.filter(AppointmentDB.request_id == anchor.request_id)
 
@@ -435,7 +450,13 @@ def book_coach_lesson(instructor_id: str, request: CoachBookLessonRequest) -> Bo
         raise InvalidSchedulingRequest("The requested local time is invalid for the instructor timezone.") from exc
     requested_start_storage = timezones.to_utc_storage(requested_start)
     requested_end_storage = requested_start_storage + _duration_delta(request.duration_mins)
-    existing = db.get_appointment_by_idempotency_key(request.idempotency_key)
+    try:
+        existing = db.get_appointment_by_idempotency_key(
+            instructor_id,
+            request.idempotency_key,
+        )
+    except db.IdempotencyKeyConflictError as exc:
+        raise IdempotencyConflict() from exc
     if existing:
         if (
             existing["instructor_id"] != instructor_id
@@ -505,7 +526,11 @@ def confirm_coach_lesson_request(
         if _is_request_expired(lesson_request):
             raise LessonRequestExpired()
 
-        existing_appointments = _appointments_for_request(session, lesson_request.id)
+        existing_appointments = _appointments_for_request(
+            session,
+            instructor_id,
+            lesson_request.id,
+        )
         if lesson_request.status == "confirmed" or existing_appointments:
             appointment_ids = [appointment.id for appointment in existing_appointments]
             if not _confirmed_slot_matches(lesson_request, request.slot_id):
@@ -596,7 +621,11 @@ def request_alternatives_for_coach_lesson_request(
             raise LessonRequestNotFound()
         if _is_request_expired(lesson_request):
             raise LessonRequestExpired()
-        if lesson_request.status == "confirmed" or _appointments_for_request(session, lesson_request.id):
+        if lesson_request.status == "confirmed" or _appointments_for_request(
+            session,
+            instructor_id,
+            lesson_request.id,
+        ):
             raise InvalidSchedulingRequest("Confirmed lesson requests cannot be marked for new times.")
         promoted = _promote_alternative_offers(session, lesson_request, body)
         now = datetime.utcnow()
@@ -631,7 +660,11 @@ def decline_coach_lesson_request(
             raise LessonRequestNotFound()
         if _is_request_expired(lesson_request):
             raise LessonRequestExpired()
-        if lesson_request.status == "confirmed" or _appointments_for_request(session, lesson_request.id):
+        if lesson_request.status == "confirmed" or _appointments_for_request(
+            session,
+            instructor_id,
+            lesson_request.id,
+        ):
             raise InvalidSchedulingRequest("Confirmed lesson requests cannot be declined.")
         lesson_request.status = "declined"
         lesson_request.declined_at = datetime.utcnow()
@@ -648,16 +681,26 @@ def decline_coach_lesson_request(
 
 
 def _query_coach_lesson_request(session, instructor_id: str, request_token: str):
-    return session.query(LessonRequestDB).filter(
+    query = session.query(LessonRequestDB).join(
+        InviteTokenDB,
+        LessonRequestDB.invite_token == InviteTokenDB.token,
+    )
+    if not demo_data_access_enabled_from_env():
+        query = query.filter(InviteTokenDB.is_demo.is_(False))
+    return query.filter(
         LessonRequestDB.instructor_id == instructor_id,
         LessonRequestDB.request_token == request_token,
     )
 
 
-def _appointments_for_request(session, request_id: str) -> list[AppointmentDB]:
+def _appointments_for_request(
+    session,
+    instructor_id: str,
+    request_id: str,
+) -> list[AppointmentDB]:
     return (
         session.query(AppointmentDB)
-        .filter_by(request_id=request_id)
+        .filter_by(instructor_id=instructor_id, request_id=request_id)
         .order_by(AppointmentDB.start_time.asc())
         .all()
     )
@@ -816,7 +859,14 @@ def _insert_occurrence_appointments(
     appointments: list[AppointmentDB] = []
     for index, (start, end) in enumerate(occurrences):
         idempotency_key = f"lesson-request-confirm:{lesson_request.id}:{index}"
-        existing = session.query(AppointmentDB).filter_by(idempotency_key=idempotency_key).first()
+        existing = (
+            session.query(AppointmentDB)
+            .filter_by(
+                instructor_id=lesson_request.instructor_id,
+                idempotency_key=idempotency_key,
+            )
+            .first()
+        )
         if existing is not None:
             appointments.append(existing)
             continue

@@ -44,10 +44,14 @@ from app.api_services import (
     search_coach_availability,
     update_coach_scheduler_settings,
 )
-from app.dependencies import CoachContext, get_current_coach
+from app.dependencies import CoachContext, get_current_coach, require_csrf_protection
 
 
-router = APIRouter(prefix="/api/coach", tags=["coach"])
+router = APIRouter(
+    prefix="/api/coach",
+    tags=["coach"],
+    dependencies=[Depends(get_current_coach), Depends(require_csrf_protection)],
+)
 
 
 class CalendarTextResponse(PlainTextResponse):

@@ -8,8 +8,8 @@ raw client IDs, private schedule details, internal appointment IDs, or provider 
 ## Client Invite Public API
 
 The `frontend-client-invite` fetch adapter uses `VITE_CLIENT_INVITE_API_URL` as its base URL. For
-local development, set it to `http://127.0.0.1:8000/api/public` and use the seeded invite token
-`invite_sofia_0826`.
+local development, set it to `http://127.0.0.1:8000/api/public`. When the backend is deliberately
+started with `SWIM_ENABLE_DEMO_DATA=true`, the seeded invite token is `invite_sofia_0826`.
 
 | Adapter method | Route | Request body | 200 response |
 | --- | --- | --- | --- |
@@ -25,14 +25,19 @@ Public errors use the shared `{ "error": { "code", "message", "details" } }` env
 include private coach schedule identifiers or route provider payloads.
 
 Coach fixtures may include coach-only operational data and should only be consumed by authenticated
-instructor experiences. Instructor apps sign in with `POST /api/auth/coach/sign-in` or
-`POST /api/auth/coach/login`, persist the returned bearer token locally, and send it on `/api/coach/*`
-requests as `Authorization: Bearer <token>`.
+instructor experiences. Instructor apps sign in with `POST /api/auth/coach/sign-in` (or the deprecated
+`/login` alias). The response contains metadata only; the server issues the opaque credential in the
+host-only `swim_session` cookie. Browser requests use `credentials: "include"`, and unsafe auth/coach
+requests send `X-CSRF-Protection: 1`. Bearer headers and browser credential storage are unsupported.
+
+`GET /api/auth/coach/session` validates the cookie before any protected data is requested or rendered.
+`POST /api/auth/coach/sign-out` revokes the current database session and clears the cookie. Public
+invite requests remain unauthenticated and explicitly omit credentials.
 
 Instructor calendar handoffs use authenticated
 `GET /api/coach/appointments/{appointment_id}/calendar-links` and
 `GET /api/coach/appointments/{appointment_id}/calendar.ics` routes. The `.ics` download requires the
-same bearer session; the `apple` field is an alias of this provider-neutral download, not a direct
+same cookie session; the `apple` field is an alias of this provider-neutral download, not a direct
 calendar-provider write.
 
 Instructor email delivery state is available through authenticated
@@ -44,11 +49,11 @@ recipient addresses, provider identifiers, raw failures, attempts, leases, and r
 Regenerate contracts with:
 
 ```bash
-./venv/bin/python scripts/export_contracts.py
+SWIM_ENV=test ./venv/bin/python scripts/export_contracts.py
 ```
 
 Check for drift with:
 
 ```bash
-./venv/bin/python scripts/export_contracts.py --check
+SWIM_ENV=test ./venv/bin/python scripts/export_contracts.py --check
 ```

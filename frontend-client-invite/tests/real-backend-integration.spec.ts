@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, request as playwrightRequest, test } from "@playwright/test";
 import ICAL from "ical.js";
 import { readFile } from "node:fs/promises";
 import type { LessonConfirmation, LessonRequest } from "../src/api/types";
@@ -11,10 +11,22 @@ if (!apiBase) {
 test.describe("live backend calendar and notification handoff", () => {
   test("weekly booking, canonical coach confirmation, notification refresh and parsed calendar download", async ({ page, request, context }) => {
     const backend = new URL(apiBase).origin;
+    const backendUrl = new URL(backend);
     const token = process.env.VITE_CLIENT_INVITE_TOKEN || "invite_sofia_0826";
+    await context.addCookies([{
+      name: "swim_session",
+      value: "public-client-must-not-send-coach-cookie",
+      domain: backendUrl.hostname,
+      path: "/api",
+      httpOnly: true,
+      secure: backendUrl.protocol === "https:",
+      sameSite: "Strict",
+    }]);
     const inviteResponse = page.waitForResponse((response) => response.url().endsWith(`/client-invites/${token}`));
     await page.goto(`/?invite_token=${encodeURIComponent(token)}`);
-    expect((await inviteResponse).ok()).toBeTruthy();
+    const inviteNetworkResponse = await inviteResponse;
+    expect(inviteNetworkResponse.ok()).toBeTruthy();
+    expect((await inviteNetworkResponse.request().allHeaders()).cookie ?? "").not.toContain("swim_session");
     await expect(page.locator("html")).toHaveAttribute("data-data-mode", "http");
     await expect(page.getByText("Mock data", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Client name")).toHaveValue("Sofia Martinez");
@@ -37,23 +49,7 @@ test.describe("live backend calendar and notification handoff", () => {
     expect(persisted.id).toBe(created.id);
     expect(persisted.status).toBe("requested");
     expect(eventInstants(persisted.slot)).toEqual(selectedOccurrence);
-    const login = await request.post(`${backend}/api/auth/coach/login`, { data: { email: "coach@example.com", password: "swim-dev-pass" } });
-    expect(login.ok()).toBeTruthy();
-    const auth = await login.json();
-    const confirmationResponse = await request.post(
-      `${backend}/api/coach/lesson-requests/${created.id}/confirm`,
-      {
-        data: {},
-        headers: { Authorization: `Bearer ${auth.access_token}` },
-      },
-    );
-    const confirmationBody = await confirmationResponse.text();
-    expect(confirmationResponse.ok(), confirmationBody).toBeTruthy();
-    const coachConfirmation = JSON.parse(confirmationBody) as {
-      status: "confirmed";
-      appointment_ids: string[];
-      calendar_links: LessonConfirmation["calendar_links"] | null;
-    };
+    const coachConfirmation = await confirmWithIsolatedCoachSession(backend, created.id);
     expect(coachConfirmation.status).toBe("confirmed");
     expect(coachConfirmation.appointment_ids).toHaveLength(4);
     expect(coachConfirmation.calendar_links).not.toBeNull();
@@ -133,4 +129,50 @@ function eventInstants(value: { start_iso: string; end_iso: string }): { start: 
     start: new Date(value.start_iso).toISOString(),
     end: new Date(value.end_iso).toISOString(),
   };
+}
+
+async function confirmWithIsolatedCoachSession(
+  backend: string,
+  requestId: string,
+): Promise<{
+  status: "confirmed";
+  appointment_ids: string[];
+  calendar_links: LessonConfirmation["calendar_links"] | null;
+}> {
+  const coach = await playwrightRequest.newContext();
+  try {
+    const login = await coach.post(`${backend}/api/auth/coach/sign-in`, {
+      data: {
+        email: process.env.VITE_INSTRUCTOR_E2E_EMAIL ?? "coach@example.com",
+        password: process.env.VITE_INSTRUCTOR_E2E_PASSWORD ?? "swim-dev-pass",
+      },
+      headers: { "X-CSRF-Protection": "1" },
+    });
+    const loginBody = await login.text();
+    expect(login.ok(), loginBody).toBeTruthy();
+    const session = JSON.parse(loginBody) as Record<string, unknown>;
+    expect(session).toMatchObject({ authenticated: true });
+    expect(session).not.toHaveProperty("access_token");
+    expect(session).not.toHaveProperty("token_type");
+
+    const confirmationResponse = await coach.post(
+      `${backend}/api/coach/lesson-requests/${requestId}/confirm`,
+      {
+        data: {},
+        headers: { "X-CSRF-Protection": "1" },
+      },
+    );
+    const confirmationBody = await confirmationResponse.text();
+    expect(confirmationResponse.ok(), confirmationBody).toBeTruthy();
+    return JSON.parse(confirmationBody) as {
+      status: "confirmed";
+      appointment_ids: string[];
+      calendar_links: LessonConfirmation["calendar_links"] | null;
+    };
+  } finally {
+    await coach.post(`${backend}/api/auth/coach/sign-out`, {
+      headers: { "X-CSRF-Protection": "1" },
+    }).catch(() => undefined);
+    await coach.dispose();
+  }
 }

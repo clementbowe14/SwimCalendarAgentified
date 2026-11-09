@@ -115,10 +115,9 @@ export type InstructorAuthCoach = {
 };
 
 export type InstructorAuthSession = {
-  access_token: string;
-  token_type: "bearer";
+  authenticated: true;
   coach: InstructorAuthCoach;
-  expires_at?: string;
+  expires_at: string;
 };
 
 export type CoachLessonRequestActionResponse = {
@@ -232,11 +231,9 @@ export type NewClientDraft = {
 
 export type InstructorCommandApi = {
   readonly authMode: "mock" | "live";
-  getStoredSession(): InstructorAuthSession | null;
-  validateSession(): Promise<InstructorAuthCoach>;
+  validateSession(): Promise<InstructorAuthSession>;
   signIn(credentials: InstructorAuthCredentials): Promise<InstructorAuthSession>;
   signOut(): Promise<void>;
-  clearSession(): void;
   getSnapshot(instructor_id: Id, date: string): Promise<CommandCenterSnapshot>;
   findAvailableSlots(request: BookingRequestDTO): Promise<TimeSlotDTO[]>;
   bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse>;

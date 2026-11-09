@@ -22,7 +22,9 @@ import type {
   TimeSlotDTO,
 } from "./types.js";
 
-const AUTH_STORAGE_KEY = "swim-command:coach-session:v1";
+const LEGACY_AUTH_STORAGE_KEY = "swim-command:coach-session:v1";
+const CSRF_HEADER_NAME = "X-CSRF-Protection";
+const CSRF_HEADER_VALUE = "1";
 
 function clone<T>(value: T): T {
   return structuredClone(value);
@@ -42,33 +44,29 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
     response: CoachLessonRequestConfirmResponse;
   }>();
 
-  getStoredSession(): InstructorAuthSession | null {
-    return null;
-  }
-
-  async validateSession(): Promise<InstructorAuthSession["coach"]> {
+  async validateSession(): Promise<InstructorAuthSession> {
     return {
-      instructor_id: this.currentSnapshot.instructor.id,
-      display_name: this.currentSnapshot.instructor.name,
+      authenticated: true,
+      coach: {
+        instructor_id: this.currentSnapshot.instructor.id,
+        display_name: this.currentSnapshot.instructor.name,
+      },
+      expires_at: "2099-01-01T00:00:00Z",
     };
   }
 
   async signIn(_credentials: InstructorAuthCredentials): Promise<InstructorAuthSession> {
     return {
-      access_token: "mock-token",
-      token_type: "bearer",
+      authenticated: true,
       coach: {
         instructor_id: this.currentSnapshot.instructor.id,
         display_name: this.currentSnapshot.instructor.name,
       },
+      expires_at: "2099-01-01T00:00:00Z",
     };
   }
 
   async signOut(): Promise<void> {
-    return;
-  }
-
-  clearSession(): void {
     return;
   }
 
@@ -336,47 +334,30 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
   readonly authMode = "live" as const;
 
   private readonly baseUrl: string;
-  private readonly authStore: InstructorAuthStore;
 
-  constructor(baseUrl = "/api", authStore: InstructorAuthStore = createBrowserInstructorAuthStore()) {
+  constructor(baseUrl = "/api") {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
-    this.authStore = authStore;
   }
 
-  getStoredSession(): InstructorAuthSession | null {
-    return this.authStore.get();
-  }
-
-  async validateSession(): Promise<InstructorAuthSession["coach"]> {
-    const response = await fetch(`${this.baseUrl}/auth/coach/session`, authenticatedInit("GET", this.authStore.get()));
-    const session = await parseResponse<CoachSessionResponse>(response, this.authStore);
+  async validateSession(): Promise<InstructorAuthSession> {
+    const response = await fetch(`${this.baseUrl}/auth/coach/session`, credentialedGetInit());
+    const session = await parseResponse<InstructorAuthSession>(response);
     if (!session.authenticated) {
-      this.authStore.clear();
       throw new InstructorCommandApiError(401, "AUTHENTICATION_REQUIRED", "Coach authentication is required.");
     }
-    return session.coach;
+    return metadataOnlySession(session);
   }
 
   async signIn(credentials: InstructorAuthCredentials): Promise<InstructorAuthSession> {
-    const response = await fetch(`${this.baseUrl}/auth/coach/sign-in`, requestInit("POST", credentials));
-    const session = await parseResponse<InstructorAuthSession>(response, this.authStore);
-    this.authStore.set(session);
-    return session;
+    const response = await fetch(`${this.baseUrl}/auth/coach/sign-in`, unsafeJsonInit("POST", credentials));
+    return metadataOnlySession(await parseResponse<InstructorAuthSession>(response));
   }
 
   async signOut(): Promise<void> {
-    const session = this.authStore.get();
-    this.authStore.clear();
-    if (!session) return;
-
-    const response = await fetch(`${this.baseUrl}/auth/coach/sign-out`, requestInit("POST", {}, session));
-    if (!response.ok && response.status !== 404) {
+    const response = await fetch(`${this.baseUrl}/auth/coach/sign-out`, unsafeNoBodyInit("POST"));
+    if (!response.ok) {
       throw await toApiError(response);
     }
-  }
-
-  clearSession(): void {
-    this.authStore.clear();
   }
 
   async getSnapshot(_instructor_id: Id, date: string): Promise<CommandCenterSnapshot> {
@@ -432,15 +413,14 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     const target = trustedInstructorCalendarUrl(calendar_url, this.baseUrl, browserDocumentUrl(this.baseUrl));
     const response = await fetch(target, {
       method: "GET",
-      headers: { ...requestHeaders(this.authStore.get()), accept: "text/calendar" },
+      credentials: "include",
+      headers: { accept: "text/calendar" },
       cache: "no-store",
       redirect: "error",
       referrerPolicy: "no-referrer",
     });
     if (!response.ok) {
-      const error = await toApiError(response);
-      if (error.isAuthFailure) this.authStore.clear();
-      throw error;
+      throw await toApiError(response);
     }
     const contentType = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
     if (contentType !== "text/calendar") {
@@ -464,23 +444,23 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
   }
 
   private async get<T>(path: string): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, authenticatedInit("GET", this.authStore.get()));
-    return parseResponse<T>(response, this.authStore);
+    const response = await fetch(`${this.baseUrl}${path}`, credentialedGetInit());
+    return parseResponse<T>(response);
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, requestInit("POST", body, this.authStore.get()));
-    return parseResponse<T>(response, this.authStore);
+    const response = await fetch(`${this.baseUrl}${path}`, unsafeJsonInit("POST", body));
+    return parseResponse<T>(response);
   }
 
   private async postWithoutBody<T>(path: string): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, noBodyRequestInit("POST", this.authStore.get()));
-    return parseResponse<T>(response, this.authStore);
+    const response = await fetch(`${this.baseUrl}${path}`, unsafeNoBodyInit("POST"));
+    return parseResponse<T>(response);
   }
 
   private async put<T>(path: string, body: unknown): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, requestInit("PUT", body, this.authStore.get()));
-    return parseResponse<T>(response, this.authStore);
+    const response = await fetch(`${this.baseUrl}${path}`, unsafeJsonInit("PUT", body));
+    return parseResponse<T>(response);
   }
 
 }
@@ -492,12 +472,6 @@ export const createInstructorCommandApi = (
   return config.mode === "mock"
     ? new MockInstructorCommandApi()
     : new HttpInstructorCommandApi(config.apiBaseUrl);
-};
-
-export type InstructorAuthStore = {
-  get(): InstructorAuthSession | null;
-  set(session: InstructorAuthSession): void;
-  clear(): void;
 };
 
 type ApiErrorResponse = {
@@ -520,7 +494,7 @@ export class InstructorCommandApiError extends Error {
   }
 
   get isAuthFailure(): boolean {
-    return this.status === 401 || this.status === 403;
+    return this.status === 401;
   }
 }
 
@@ -545,51 +519,51 @@ type CoachAvailabilityResponse = {
   }>;
 };
 
-type CoachSessionResponse = {
-  authenticated: boolean;
-  coach: InstructorAuthSession["coach"];
-};
-
-function requestInit(method: "POST" | "PUT", body: unknown, session?: InstructorAuthSession | null): RequestInit {
+function unsafeJsonInit(method: "POST" | "PUT", body: unknown): RequestInit {
   return {
     method,
-    headers: requestHeaders(session),
+    credentials: "include",
+    headers: {
+      "content-type": "application/json",
+      [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE,
+    },
     body: JSON.stringify(body),
   };
 }
 
-function authenticatedInit(method: "GET", session: InstructorAuthSession | null): RequestInit {
+function credentialedGetInit(): RequestInit {
   return {
-    method,
-    headers: requestHeaders(session),
+    method: "GET",
+    credentials: "include",
+    headers: { accept: "application/json" },
   };
 }
 
-function noBodyRequestInit(method: "POST", session: InstructorAuthSession | null): RequestInit {
+function unsafeNoBodyInit(method: "POST"): RequestInit {
   return {
     method,
-    headers: requestHeaders(session),
+    credentials: "include",
+    headers: { [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
   };
 }
 
-function requestHeaders(session?: InstructorAuthSession | null): HeadersInit {
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  if (session?.access_token) {
-    headers.authorization = `Bearer ${session.access_token}`;
-  }
-  return headers;
-}
-
-async function parseResponse<T>(response: Response, authStore?: InstructorAuthStore): Promise<T> {
+async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    const error = await toApiError(response);
-    if (error.isAuthFailure) {
-      authStore?.clear();
-    }
-    throw error;
+    throw await toApiError(response);
   }
 
   return response.json() as Promise<T>;
+}
+
+function metadataOnlySession(session: InstructorAuthSession): InstructorAuthSession {
+  return {
+    authenticated: true,
+    expires_at: session.expires_at,
+    coach: {
+      instructor_id: session.coach.instructor_id,
+      display_name: session.coach.display_name,
+    },
+  };
 }
 
 async function toApiError(response: Response): Promise<InstructorCommandApiError> {
@@ -621,48 +595,17 @@ function mapAvailabilitySlot(
   };
 }
 
-export function createMemoryInstructorAuthStore(initialSession: InstructorAuthSession | null = null): InstructorAuthStore {
-  let session = initialSession ? clone(initialSession) : null;
-  return {
-    get: () => (session ? clone(session) : null),
-    set: (nextSession) => {
-      session = clone(nextSession);
-    },
-    clear: () => {
-      session = null;
-    },
-  };
+export function clearLegacyInstructorAuthState(storage: Pick<Storage, "removeItem"> | null = browserStorage()): void {
+  storage?.removeItem(LEGACY_AUTH_STORAGE_KEY);
 }
 
-function createBrowserInstructorAuthStore(): InstructorAuthStore {
-  if (typeof window === "undefined" || !window.localStorage) {
-    return createMemoryInstructorAuthStore();
-  }
-
-  return {
-    get: () => readStoredSession(window.localStorage.getItem(AUTH_STORAGE_KEY)),
-    set: (session) => {
-      // MVP persistence keeps local development and CI demos stable across reloads;
-      // the backend remains responsible for token lifetime and revocation.
-      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
-    },
-    clear: () => {
-      window.localStorage.removeItem(AUTH_STORAGE_KEY);
-    },
-  };
-}
-
-function readStoredSession(raw: string | null): InstructorAuthSession | null {
-  if (!raw) return null;
+function browserStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
   try {
-    const parsed = JSON.parse(raw) as Partial<InstructorAuthSession>;
-    if (parsed.token_type === "bearer" && typeof parsed.access_token === "string" && parsed.coach) {
-      return parsed as InstructorAuthSession;
-    }
+    return window.localStorage;
   } catch {
     return null;
   }
-  return null;
 }
 
 function nextMockUpdatedAt(deliveries: readonly CoachEmailDelivery[]): string {

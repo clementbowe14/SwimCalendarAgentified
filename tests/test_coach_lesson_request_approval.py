@@ -13,9 +13,16 @@ from app.api_errors import ApiException
 from app.api_schemas import CoachLessonRequestConfirmRequest, ClientInviteAlternativeSelectionRequest
 from app.api_services import confirm_coach_lesson_request
 from app.client_invites import select_client_lesson_request_alternative
-from app.dependencies import CoachContext, get_current_coach
+from app.auth import (
+    CSRF_HEADER_NAME,
+    SESSION_COOKIE_NAME,
+    authenticate_coach,
+    provision_provider_account,
+)
+from app.dependencies import get_current_coach
 from app.models import (
     AppointmentDB,
+    InstructorDB,
     InviteSlotOfferDB,
     LessonRequestDB,
     NotificationEventDB,
@@ -767,18 +774,44 @@ def test_coach_lesson_request_action_routes_require_coach_dependency(migrated_po
 
     assert {response.status_code for response in responses} == {401}
 
-    app.dependency_overrides[get_current_coach] = lambda: CoachContext(
-        instructor_id="inst_not_owner",
-        display_name="Another coach",
+    app.dependency_overrides.clear()
+    with db.SessionLocal() as session:
+        session.add(
+            InstructorDB(
+                id="inst_not_owner",
+                name="Another coach",
+                main_address="9 Other Provider Way",
+                lat=30.2,
+                lng=-97.7,
+                work_start_time="08:00",
+                work_end_time="17:00",
+                timezone="America/Chicago",
+            )
+        )
+        session.commit()
+    provision_provider_account(
+        "inst_not_owner",
+        "not-owner@example.com",
+        "not-owner-password",
     )
+    other_session = authenticate_coach(
+        "not-owner@example.com",
+        "not-owner-password",
+    )
+    tenant_headers = {
+        "Cookie": f"{SESSION_COOKIE_NAME}={other_session.raw_token}",
+        CSRF_HEADER_NAME: "1",
+    }
     with TestClient(app, raise_server_exceptions=False) as tenant_client:
         tenant_response = tenant_client.post(
             f"/api/coach/lesson-requests/{SEEDED_REQUEST_TOKEN}/confirm",
             json={},
+            headers=tenant_headers,
         )
         missing_response = tenant_client.post(
             "/api/coach/lesson-requests/req_does_not_exist/confirm",
             json={},
+            headers=tenant_headers,
         )
     assert tenant_response.status_code == 404
     assert tenant_response.json()["error"]["code"] == "LESSON_REQUEST_NOT_FOUND"

@@ -16,6 +16,7 @@ from sqlalchemy import and_, or_
 
 from app import db
 from app.api_errors import ApiException, IdempotencyConflict, InviteExpired, InviteNotFound
+from app.config import demo_data_access_enabled_from_env
 from app.models import (
     AppointmentDB,
     ClientDB,
@@ -123,7 +124,11 @@ def enqueue_invite_for_coach(instructor_id, invite_token, idempotency_key):
     with db.SessionLocal() as session:
         session.query(InstructorDB).filter_by(id=instructor_id).with_for_update().first()
         invite = session.query(InviteTokenDB).filter_by(token=invite_token, instructor_id=instructor_id).first()
-        if invite is None or invite.revoked_at is not None:
+        if (
+            invite is None
+            or (invite.is_demo and not demo_data_access_enabled_from_env())
+            or invite.revoked_at is not None
+        ):
             raise InviteNotFound()
         if invite.expires_at <= datetime.utcnow():
             raise InviteExpired()
@@ -160,8 +165,11 @@ class _DeliverySourceGraph:
 def list_coach_email_deliveries(instructor_id: str) -> list["CoachEmailDeliveryResponse"]:
     with db.SessionLocal() as session:
         events = (
-            session.query(NotificationEventDB)
-            .filter_by(instructor_id=instructor_id, channel="email")
+            _visible_notification_events(session)
+            .filter(
+                NotificationEventDB.instructor_id == instructor_id,
+                NotificationEventDB.channel == "email",
+            )
             .order_by(NotificationEventDB.updated_at.desc(), NotificationEventDB.id.desc())
             .all()
         )
@@ -174,12 +182,12 @@ def coach_email_delivery_for_request(
     request_id: str,
 ) -> "CoachEmailDeliveryResponse | None":
     event = (
-        session.query(NotificationEventDB)
-        .filter_by(
-            instructor_id=instructor_id,
-            request_id=request_id,
-            kind="confirmation",
-            channel="email",
+        _visible_notification_events(session)
+        .filter(
+            NotificationEventDB.instructor_id == instructor_id,
+            NotificationEventDB.request_id == request_id,
+            NotificationEventDB.kind == "confirmation",
+            NotificationEventDB.channel == "email",
         )
         .order_by(NotificationEventDB.created_at.desc(), NotificationEventDB.id.desc())
         .first()
@@ -279,9 +287,13 @@ def correct_coach_email_delivery_contact(
 
 def _lock_email_event(session, instructor_id: str, delivery_id: str) -> NotificationEventDB:
     event = (
-        session.query(NotificationEventDB)
-        .filter_by(id=delivery_id, instructor_id=instructor_id, channel="email")
-        .with_for_update()
+        _visible_notification_events(session)
+        .filter(
+            NotificationEventDB.id == delivery_id,
+            NotificationEventDB.instructor_id == instructor_id,
+            NotificationEventDB.channel == "email",
+        )
+        .with_for_update(of=NotificationEventDB)
         .first()
     )
     if event is None:
@@ -541,11 +553,14 @@ def claim_due(session_factory, provider, now=None):
         return None
     now = now or utcnow()
     with session_factory() as session:
-        event = session.query(NotificationEventDB).filter(or_(
+        event = _visible_notification_events(session).filter(or_(
             and_(NotificationEventDB.status == "queued", or_(
                 NotificationEventDB.next_attempt_at.is_(None), NotificationEventDB.next_attempt_at <= now)),
             and_(NotificationEventDB.status == "processing", NotificationEventDB.lease_expires_at <= now),
-        )).order_by(NotificationEventDB.created_at, NotificationEventDB.id).with_for_update(skip_locked=True).first()
+        )).order_by(NotificationEventDB.created_at, NotificationEventDB.id).with_for_update(
+            of=NotificationEventDB,
+            skip_locked=True,
+        ).first()
         if event is None:
             return None
         if event.attempt_count >= 5 or (event.status == "processing" and not provider.supports_idempotent_send):
@@ -574,6 +589,19 @@ def claim_due(session_factory, provider, now=None):
         claim = Claim(event.id, event.attempt_token, NotificationMessage(event.kind, event.channel, event.recipient, event.template_version, event.template_context))
         session.commit()
         return claim
+
+
+def _visible_notification_events(session):
+    query = session.query(NotificationEventDB).join(
+        InviteTokenDB,
+        and_(
+            NotificationEventDB.invite_token == InviteTokenDB.token,
+            NotificationEventDB.instructor_id == InviteTokenDB.instructor_id,
+        ),
+    )
+    if not demo_data_access_enabled_from_env():
+        query = query.filter(InviteTokenDB.is_demo.is_(False))
+    return query
 
 
 def complete_claim(session_factory, provider, claim, result, now=None):

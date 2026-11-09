@@ -84,8 +84,8 @@ test("the factory passes a trimmed API URL to the HTTP adapter", async () => {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     requestedUrl = input instanceof Request ? input.url : String(input);
     return new Response(JSON.stringify({
-      access_token: "test-token",
-      token_type: "bearer",
+      authenticated: true,
+      expires_at: "2026-08-31T20:00:00Z",
       coach: { instructor_id: "inst_001", display_name: "Coach Sarah" },
     }), {
       status: 200,

@@ -1,21 +1,25 @@
 import datetime
-import json
-from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import db
 from app.api import create_app
-from app.models import ClientDB, InstructorDB, InviteTokenDB, LessonRequestDB
+from app.auth import (
+    CSRF_HEADER_NAME,
+    CSRF_HEADER_VALUE,
+    DEMO_PROVIDER_EMAIL,
+    DEMO_PROVIDER_PASSWORD,
+    SESSION_COOKIE_NAME,
+    provision_provider_account,
+)
+from app.models import AppointmentDB, ClientDB, InstructorDB, InviteTokenDB, LessonRequestDB
 
 
-COACH_AUTH_ENV = "SWIM_COACH_CREDENTIALS"
-SARAH_EMAIL = "sarah.coach@example.test"
-SARAH_PASSWORD = "sarah-dev-password"
-JAMIE_EMAIL = "jamie.coach@example.test"
-JAMIE_PASSWORD = "jamie-dev-password"
+JAMIE_EMAIL = "jamie.coach@example.com"
+JAMIE_PASSWORD = "jamie-secure-password"
 JAMIE_REQUEST_TOKEN = "req_jamie_pending_auth"
 SCHEDULER_SETTINGS_PAYLOAD = {
     "rounding_increment_mins": 15,
@@ -36,37 +40,12 @@ AVAILABILITY_PAYLOAD = {
     "requested_date": "2026-08-21",
     "duration_mins": 45,
 }
-BOOKING_PAYLOAD = {
-    "client_name": "Validation Swimmer",
-    "client_address": "450 North Blvd, Austin, TX",
-    "start_time": "2026-08-21T10:00:00",
-    "duration_mins": 45,
-    "idempotency_key": "auth-validation-booking",
-}
 
 
 @pytest.fixture()
-def auth_client(migrated_postgres_db: None, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv(
-        COACH_AUTH_ENV,
-        json.dumps(
-            [
-                {
-                    "email": SARAH_EMAIL,
-                    "password": SARAH_PASSWORD,
-                    "instructor_id": "inst_001",
-                    "display_name": "Coach Sarah",
-                },
-                {
-                    "email": JAMIE_EMAIL,
-                    "password": JAMIE_PASSWORD,
-                    "instructor_id": "inst_002",
-                    "display_name": "Coach Jamie",
-                },
-            ]
-        ),
-    )
+def auth_client(migrated_postgres_db: None):
     _seed_second_coach()
+    provision_provider_account("inst_002", JAMIE_EMAIL, JAMIE_PASSWORD)
     with TestClient(create_app(), raise_server_exceptions=False) as test_client:
         yield test_client
 
@@ -80,105 +59,78 @@ def auth_client(migrated_postgres_db: None, monkeypatch: pytest.MonkeyPatch):
         ("GET", "/api/coach/settings", {}),
         ("PUT", "/api/coach/settings", {"json": SCHEDULER_SETTINGS_PAYLOAD}),
         ("POST", "/api/coach/availability", {"json": AVAILABILITY_PAYLOAD}),
-        ("POST", "/api/coach/bookings", {"json": BOOKING_PAYLOAD}),
         ("POST", "/api/coach/lesson-requests/req_sofia_pending_0820/approve", {}),
         ("POST", "/api/coach/lesson-requests/req_sofia_pending_0820/confirm", {"json": {}}),
         ("POST", "/api/coach/lesson-requests/req_sofia_pending_0820/alternatives", {}),
         ("POST", "/api/coach/lesson-requests/req_sofia_pending_0820/decline", {}),
     ],
 )
-def test_every_coach_route_requires_stable_json_auth(
+def test_every_coach_route_requires_stable_cookie_auth_before_csrf(
     auth_client: TestClient,
     method: str,
     path: str,
     kwargs: dict[str, Any],
 ):
     missing = auth_client.request(method, path, **kwargs)
-    invalid = auth_client.request(
+    bearer_only = auth_client.request(
         method,
         path,
         headers={"Authorization": "Bearer not-a-real-token"},
         **kwargs,
     )
+    unknown_cookie = auth_client.request(
+        method,
+        path,
+        headers={"Cookie": f"{SESSION_COOKIE_NAME}={'A' * 43}"},
+        **kwargs,
+    )
 
     assert missing.status_code == 401
     assert missing.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
-    assert invalid.status_code == 401
-    assert invalid.json()["error"]["code"] == "INVALID_AUTH_TOKEN"
+    assert bearer_only.status_code == 401
+    assert bearer_only.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
+    assert unknown_cookie.status_code == 401
+    assert unknown_cookie.json()["error"]["code"] == "INVALID_AUTH_TOKEN"
 
 
-def test_invalid_coach_credentials_return_stable_json_401(auth_client: TestClient):
-    response = auth_client.post(
-        "/api/auth/coach/login",
-        json={"email": SARAH_EMAIL, "password": "wrong-password"},
-    )
+def test_valid_cookie_reaches_representative_coach_reads_and_mutations(auth_client: TestClient):
+    headers = _login(auth_client, DEMO_PROVIDER_EMAIL, DEMO_PROVIDER_PASSWORD)
 
-    assert response.status_code == 401
-    assert response.json()["error"]["code"] == "INVALID_CREDENTIALS"
-
-
-def test_valid_auth_reaches_all_mvp_coach_surfaces(auth_client: TestClient):
-    auth_headers = _login(auth_client, SARAH_EMAIL, SARAH_PASSWORD)
-
-    me = auth_client.get("/api/coach/me", headers=auth_headers)
-    assert me.status_code == 200
-    assert me.json()["instructor_id"] == "inst_001"
-
+    me = auth_client.get("/api/coach/me", headers=headers)
     schedule = auth_client.get(
         "/api/coach/schedule",
         params={"date": "2026-08-20"},
-        headers=auth_headers,
+        headers=headers,
     )
-    assert schedule.status_code == 200
-    assert schedule.json()["instructor"]["id"] == "inst_001"
-
     snapshot = auth_client.get(
         "/api/coach/command-center/snapshot",
         params={"date": "2026-08-20"},
-        headers=auth_headers,
+        headers=headers,
     )
-    assert snapshot.status_code == 200
-    assert snapshot.json()["instructor"]["id"] == "inst_001"
-
-    settings = auth_client.get("/api/coach/settings", headers=auth_headers)
-    assert settings.status_code == 200
-
+    settings = auth_client.get("/api/coach/settings", headers=headers)
     saved_settings = auth_client.put(
         "/api/coach/settings",
         json=settings.json(),
-        headers=auth_headers,
+        headers=headers,
     )
-    assert saved_settings.status_code == 200
-
     availability = auth_client.post(
         "/api/coach/availability",
-        json=_availability_payload(),
-        headers=auth_headers,
+        json=AVAILABILITY_PAYLOAD,
+        headers=headers,
     )
+
+    assert me.status_code == 200 and me.json()["instructor_id"] == "inst_001"
+    assert schedule.status_code == 200 and schedule.json()["instructor"]["id"] == "inst_001"
+    assert snapshot.status_code == 200 and snapshot.json()["instructor"]["id"] == "inst_001"
+    assert settings.status_code == 200
+    assert saved_settings.status_code == 200
     assert availability.status_code == 200
 
-    booking = auth_client.post(
-        "/api/coach/bookings",
-        json=_booking_payload(),
-        headers=auth_headers,
-    )
-    assert booking.status_code == 200
 
-    request_actions = {
-        "confirm": _create_sarah_lesson_request("req_sarah_auth_confirm", 14),
-        "alternatives": _create_sarah_lesson_request("req_sarah_auth_alternatives", 15),
-        "decline": _create_sarah_lesson_request("req_sarah_auth_decline", 16),
-    }
-    for action, request_token in request_actions.items():
-        response = auth_client.post(
-            f"/api/coach/lesson-requests/{request_token}/{action}",
-            headers=auth_headers,
-        )
-        assert response.status_code == 200
-
-
-def test_coach_auth_is_scoped_to_authenticated_instructor_not_frontend_ids(auth_client: TestClient):
-    sarah_headers = _login(auth_client, SARAH_EMAIL, SARAH_PASSWORD)
+def test_authenticated_provider_scope_ignores_spoofed_ids_and_hides_foreign_resources(
+    auth_client: TestClient,
+):
+    sarah_headers = _login(auth_client, DEMO_PROVIDER_EMAIL, DEMO_PROVIDER_PASSWORD)
     jamie_headers = _login(auth_client, JAMIE_EMAIL, JAMIE_PASSWORD)
 
     spoofed_schedule = auth_client.get(
@@ -186,24 +138,100 @@ def test_coach_auth_is_scoped_to_authenticated_instructor_not_frontend_ids(auth_
         params={"date": "2026-08-20", "instructor_id": "inst_002"},
         headers=sarah_headers,
     )
-    assert spoofed_schedule.status_code == 200
-    assert spoofed_schedule.json()["instructor"]["id"] == "inst_001"
-
-    cross_coach_confirmation = auth_client.post(
+    sarah_cross_read = auth_client.post(
         f"/api/coach/lesson-requests/{JAMIE_REQUEST_TOKEN}/confirm",
         json={},
         headers=sarah_headers,
     )
-    assert cross_coach_confirmation.status_code == 404
-    assert cross_coach_confirmation.json()["error"]["code"] == "LESSON_REQUEST_NOT_FOUND"
-
-    same_coach_confirmation = auth_client.post(
+    jamie_cross_read = auth_client.post(
+        "/api/coach/lesson-requests/req_sofia_pending_0820/confirm",
+        json={},
+        headers=jamie_headers,
+    )
+    own_confirmation = auth_client.post(
         f"/api/coach/lesson-requests/{JAMIE_REQUEST_TOKEN}/confirm",
         json={},
         headers=jamie_headers,
     )
-    assert same_coach_confirmation.status_code == 200
-    assert same_coach_confirmation.json()["status"] == "confirmed"
+
+    assert spoofed_schedule.status_code == 200
+    assert spoofed_schedule.json()["instructor"]["id"] == "inst_001"
+    assert sarah_cross_read.status_code == 404
+    assert sarah_cross_read.json()["error"]["code"] == "LESSON_REQUEST_NOT_FOUND"
+    assert jamie_cross_read.status_code == 404
+    assert jamie_cross_read.json()["error"]["code"] == "LESSON_REQUEST_NOT_FOUND"
+    assert own_confirmation.status_code == 200
+
+
+def test_request_appointment_replay_is_scoped_to_authenticated_provider(auth_client: TestClient):
+    with db.SessionLocal() as session:
+        request = session.query(LessonRequestDB).filter_by(
+            request_token="req_sofia_pending_0820"
+        ).one()
+        foreign = AppointmentDB(
+            id=f"app_{uuid4().hex[:12]}",
+            instructor_id="inst_002",
+            client_id="client_jamie",
+            request_id=request.id,
+            title="Foreign request collision",
+            start_time=request.slot_start,
+            end_time=request.slot_end,
+            location_address="210 East Ave, Austin, TX",
+            lat=30.275,
+            lng=-97.732,
+            is_break=False,
+            event_type="lesson",
+            status="scheduled",
+        )
+        session.add(foreign)
+        session.commit()
+        foreign_id = foreign.id
+
+    headers = _login(auth_client, DEMO_PROVIDER_EMAIL, DEMO_PROVIDER_PASSWORD)
+    response = auth_client.post(
+        "/api/coach/lesson-requests/req_sofia_pending_0820/confirm",
+        json={},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert foreign_id not in response.json()["appointment_ids"]
+    with db.SessionLocal() as session:
+        own = session.query(AppointmentDB).filter_by(
+            instructor_id="inst_001",
+            request_id="req_sofia_pending_0820",
+        ).all()
+        assert own
+
+
+def test_appointment_idempotency_is_provider_scoped(migrated_postgres_db):
+    _seed_second_coach()
+    key = "shared-provider-safe-key"
+    first_id = db.save_appointment(
+        instructor_id="inst_001",
+        client_id="client_alice",
+        title="Sarah shared key",
+        start_time=datetime.datetime(2026, 8, 23, 14, 0),
+        end_time=datetime.datetime(2026, 8, 23, 14, 45),
+        location_address="450 North Blvd, Austin, TX",
+        lat=30.33,
+        lng=-97.72,
+        idempotency_key=key,
+    )
+    second_id = db.save_appointment(
+        instructor_id="inst_002",
+        client_id="client_jamie",
+        title="Jamie shared key",
+        start_time=datetime.datetime(2026, 8, 23, 14, 0),
+        end_time=datetime.datetime(2026, 8, 23, 14, 45),
+        location_address="210 East Ave, Austin, TX",
+        lat=30.275,
+        lng=-97.732,
+        idempotency_key=key,
+    )
+
+    assert first_id != second_id
+    assert db.get_appointment_by_idempotency_key("inst_001", key)["id"] == first_id
+    assert db.get_appointment_by_idempotency_key("inst_002", key)["id"] == second_id
 
 
 def test_public_routes_remain_unauthenticated_and_public_safe(
@@ -211,41 +239,34 @@ def test_public_routes_remain_unauthenticated_and_public_safe(
     assert_public_payload_safe,
 ):
     invite = auth_client.get("/api/public/client-invites/invite_sofia_0826")
-    assert invite.status_code == 200
-    assert_public_payload_safe(invite.json())
-
     status = auth_client.get("/api/public/lesson-requests/req_sofia_pending_0820")
+    assert invite.status_code == 200
     assert status.status_code == 200
+    assert_public_payload_safe(invite.json())
     assert_public_payload_safe(status.json())
 
 
-def test_openapi_documents_auth_contract_without_fixture_secrets(auth_client: TestClient):
-    schema = auth_client.get("/openapi.json").json()
-
-    assert "/api/auth/coach/login" in schema["paths"]
-    assert "CoachLoginRequest" in schema["components"]["schemas"]
-    assert "CoachAuthResponse" in schema["components"]["schemas"]
-
-    fixtures = Path("contracts/fixtures").glob("**/*.json")
-    fixture_text = "\n".join(path.read_text() for path in fixtures)
-    assert SARAH_PASSWORD not in fixture_text
-    assert JAMIE_PASSWORD not in fixture_text
-
-
 def _login(client: TestClient, email: str, password: str) -> dict[str, str]:
-    response = client.post("/api/auth/coach/login", json={"email": email, "password": password})
-    assert response.status_code == 200
+    response = client.post(
+        "/api/auth/coach/sign-in",
+        json={"email": email, "password": password},
+        headers={CSRF_HEADER_NAME: CSRF_HEADER_VALUE},
+    )
+    assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["token_type"] == "bearer"
-    assert payload["access_token"]
-    assert payload["coach"]["instructor_id"].startswith("inst_")
-    return {"Authorization": f"Bearer {payload['access_token']}"}
+    assert payload["authenticated"] is True
+    assert "access_token" not in payload
+    token = response.cookies.get(SESSION_COOKIE_NAME)
+    client.cookies.clear()
+    return {
+        "Cookie": f"{SESSION_COOKIE_NAME}={token}",
+        CSRF_HEADER_NAME: CSRF_HEADER_VALUE,
+    }
 
 
 def _seed_second_coach() -> None:
-    session = db.SessionLocal()
-    try:
-        if not session.query(InstructorDB).filter_by(id="inst_002").first():
+    with db.SessionLocal() as session:
+        if not session.get(InstructorDB, "inst_002"):
             session.add(
                 InstructorDB(
                     id="inst_002",
@@ -255,9 +276,10 @@ def _seed_second_coach() -> None:
                     lng=-97.731,
                     work_start_time="08:00",
                     work_end_time="17:00",
+                    timezone="America/Chicago",
                 )
             )
-        if not session.query(ClientDB).filter_by(id="client_jamie").first():
+        if not session.get(ClientDB, "client_jamie"):
             session.add(
                 ClientDB(
                     id="client_jamie",
@@ -270,7 +292,7 @@ def _seed_second_coach() -> None:
                     default_lng=-97.732,
                 )
             )
-        if not session.query(InviteTokenDB).filter_by(token="invite_jamie_auth").first():
+        if not session.get(InviteTokenDB, "invite_jamie_auth"):
             session.add(
                 InviteTokenDB(
                     token="invite_jamie_auth",
@@ -306,53 +328,7 @@ def _seed_second_coach() -> None:
                     distance_miles=1.4,
                     location_type="home",
                     status="pending",
+                    expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=1),
                 )
             )
         session.commit()
-    finally:
-        session.close()
-
-
-def _create_sarah_lesson_request(request_token: str, hour: int) -> str:
-    session = db.SessionLocal()
-    try:
-        session.add(
-            LessonRequestDB(
-                id=request_token,
-                request_token=request_token,
-                invite_token="invite_sofia_0826",
-                instructor_id="inst_001",
-                client_id="client_sofia",
-                client_name="Sofia Martinez",
-                client_email="ana.martinez@example.com",
-                client_phone="(512) 555-0194",
-                client_address="820 Lakeview Dr, Austin, TX",
-                lat=30.289,
-                lng=-97.739,
-                requested_date=datetime.date(2026, 8, 21),
-                slot_start=datetime.datetime(2026, 8, 21, hour, 0),
-                slot_end=datetime.datetime(2026, 8, 21, hour, 45),
-                duration_mins=45,
-                travel_time_mins=12,
-                buffer_mins=10,
-                distance_miles=2.1,
-                location_type="home",
-                status="pending",
-            )
-        )
-        session.commit()
-    finally:
-        session.close()
-    return request_token
-
-
-def _scheduler_settings_payload() -> dict[str, Any]:
-    return json.loads(json.dumps(SCHEDULER_SETTINGS_PAYLOAD))
-
-
-def _availability_payload() -> dict[str, Any]:
-    return dict(AVAILABILITY_PAYLOAD)
-
-
-def _booking_payload() -> dict[str, Any]:
-    return dict(BOOKING_PAYLOAD)

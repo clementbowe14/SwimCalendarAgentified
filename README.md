@@ -61,8 +61,22 @@ therefore loses their customized values.
 ### Start The API
 
 ```bash
+SWIM_ENV=local ./venv/bin/uvicorn app.api:app --host 127.0.0.1 --port 8000
+```
+
+`SWIM_ENV` is required and must be one of `local`, `development`, `test`, `staging`, or
+`production`. A normal startup does not create demo records or a known login. To run the
+deliberate local demo used by the live suites:
+
+```bash
+SWIM_ENV=local \
+SWIM_ENABLE_DEMO_DATA=true \
+SWIM_ENABLE_DEMO_AUTH=true \
 ./venv/bin/uvicorn app.api:app --host 127.0.0.1 --port 8000
 ```
+
+Demo data/auth are permitted only in local, development, and test modes. Enabling either in staging
+or production fails startup.
 
 The API runs at:
 
@@ -92,42 +106,61 @@ http://127.0.0.1:8000/docs
 
 ### Coach Authentication
 
-Coach command-center routes under `/api/coach/*` require bearer authentication. Local development
-ships with a safe demo credential only:
+Coach command-center routes under `/api/coach/*` require a database-backed provider account and a
+revocable `swim_session` cookie. Passwords are Argon2id hashes; the opaque session credential is set
+only as an `HttpOnly` cookie and is never returned in JSON or stored by frontend JavaScript.
+
+Provision pilot accounts interactively after applying migrations:
+
+```bash
+SWIM_ENV=local ./venv/bin/python -m scripts.manage_provider_auth provision \
+  --instructor-id inst_001 --email coach@example.com
+```
+
+The command prompts twice without echoing the password. See
+[`docs/pilot-auth-runbook.md`](docs/pilot-auth-runbook.md) for production rollout, reset,
+revocation, disablement, and rollback procedures.
+
+When the explicit local demo flags are enabled, the seeded test-only credential is:
 
 ```text
 email: coach@example.com
 password: swim-dev-pass
 ```
 
-Sign in before calling protected coach routes:
+Sign in with the CSRF header and save the cookie jar:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/auth/coach/sign-in \
+  -H 'X-CSRF-Protection: 1' \
   -H 'content-type: application/json' \
+  -c /tmp/swim-session.cookies \
   -d '{"email":"coach@example.com","password":"swim-dev-pass"}'
 ```
 
-Use the returned token on coach requests:
+The response contains only `authenticated`, `expires_at`, and the provider display object. Use the
+cookie on protected requests:
 
 ```bash
 curl http://127.0.0.1:8000/api/coach/me \
-  -H 'authorization: Bearer <access_token>'
+  -b /tmp/swim-session.cookies
 ```
 
-For shared or deployed environments, configure a non-demo secret and credentials:
+Unsafe auth and coach operations also require the CSRF header. Sign-out revokes the current server
+session before clearing the cookie:
 
 ```bash
-SWIM_COACH_AUTH_SECRET='replace-with-random-secret'
-SWIM_COACH_CREDENTIALS='[{"email":"coach@example.com","password_sha256":"<sha256>","instructor_id":"inst_001"}]'
+curl -X POST http://127.0.0.1:8000/api/auth/coach/sign-out \
+  -H 'X-CSRF-Protection: 1' \
+  -b /tmp/swim-session.cookies \
+  -c /tmp/swim-session.cookies
 ```
 
-`SWIM_COACH_CREDENTIALS` is a JSON array. Each entry needs `email`, `instructor_id`, and either
-`password` for local-only development or `password_sha256` when plaintext passwords should not be
-stored in process configuration. The SHA-256 option is an MVP configuration convenience, not
-production-grade password storage. `SWIM_ENV=production` and `SWIM_ENV=staging` require explicit
-credentials and `SWIM_COACH_AUTH_SECRET`; the demo login is local-development only. Public routes,
-`/health`, and `/openapi.json` remain unauthenticated.
+`POST /login` and `POST /logout` remain deprecated compatibility aliases. Bearer headers,
+`SWIM_COACH_CREDENTIALS`, and `SWIM_COACH_AUTH_SECRET` are no longer accepted. Staging and production
+cookies are always `Secure`; local HTTP is supported only in explicit local/development/test modes.
+The instructor UI and API must be deployed same-site. Public routes, `/health`, and `/openapi.json`
+remain unauthenticated.
 
 ### Local Frontend CORS
 
@@ -144,10 +177,13 @@ By default, the API allows local frontend development origins on common ports:
 Override the list with a comma-separated environment variable:
 
 ```bash
-SWIM_API_CORS_ORIGINS=http://127.0.0.1:3001,http://127.0.0.1:3002 ./venv/bin/uvicorn app.api:app --host 127.0.0.1 --port 8000
+SWIM_ENV=local SWIM_API_CORS_ORIGINS=http://127.0.0.1:3001,http://127.0.0.1:3002 \
+  ./venv/bin/uvicorn app.api:app --host 127.0.0.1 --port 8000
 ```
 
-Set `SWIM_DATABASE_URL` to point the API at a non-default Postgres database.
+Set `SWIM_DATABASE_URL` to point the API at a non-default Postgres database. Deployed origins must be
+an exact allowlist; wildcard credentialed CORS is rejected. Cookie-authenticated instructor traffic
+supports same-origin or same-site topology, not unrelated sites.
 
 ### Routing Provider
 
@@ -160,7 +196,8 @@ SWIM_ROUTING_PROVIDER=haversine
 To use Mapbox for geocoding and route estimates, set:
 
 ```bash
-SWIM_ROUTING_PROVIDER=mapbox SWIM_MAPBOX_ACCESS_TOKEN=... ./venv/bin/uvicorn app.api:app --host 127.0.0.1 --port 8000
+SWIM_ENV=local SWIM_ROUTING_PROVIDER=mapbox SWIM_MAPBOX_ACCESS_TOKEN=... \
+  ./venv/bin/uvicorn app.api:app --host 127.0.0.1 --port 8000
 ```
 
 Optional routing settings:
@@ -193,7 +230,8 @@ Availability endpoints return stable, sanitized routing errors:
 
 ### MVP Public Invite Token
 
-The MVP public API includes seeded development invite tokens:
+With `SWIM_ENABLE_DEMO_DATA=true` in local/development/test, the public API includes seeded invite
+tokens:
 
 ```text
 demo-invite-token
@@ -205,6 +243,11 @@ Example public invite request:
 ```bash
 curl http://127.0.0.1:8000/api/public/invites/demo-invite-token
 ```
+
+Without the explicit demo-data flag, these tokens are not created or served. Requesting a known demo
+token never triggers request-time seeding and returns the ordinary non-enumerating not-found response.
+Demo provenance persists if a local database is reused; staging and production refuse to start while
+demo accounts or invite tokens remain in the database.
 
 The `frontend-client-invite` app uses HTTP by default and requires its API URL:
 
@@ -297,7 +340,7 @@ intentionally outside this implementation.
 Run the full test suite with:
 
 ```bash
-./venv/bin/python -m pytest -q
+SWIM_ENV=test ./venv/bin/python -m pytest -q
 ```
 
 Database-backed tests require Postgres. By default they use:
@@ -311,13 +354,14 @@ Override the test database with `SWIM_TEST_DATABASE_URL`.
 Useful backend test slices:
 
 ```bash
-./venv/bin/python -m pytest -q -m integration
-./venv/bin/python -m pytest -q -m "not e2e"
+SWIM_ENV=test ./venv/bin/python -m pytest -q -m integration
+SWIM_ENV=test ./venv/bin/python -m pytest -q -m "not e2e"
 ```
 
 The e2e smoke tests are opt-in and run against an already-started API:
 
 ```bash
+SWIM_ENV=test SWIM_ENABLE_DEMO_DATA=true SWIM_ENABLE_DEMO_AUTH=true \
 SWIM_E2E_BASE_URL=http://127.0.0.1:8000 ./venv/bin/python -m pytest -q -m e2e
 ```
 

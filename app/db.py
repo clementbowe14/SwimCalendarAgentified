@@ -3,10 +3,15 @@ import json
 import os
 import uuid
 from typing import Optional, List
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from app import timezones
+from app.config import (
+    ApplicationSettings,
+    application_settings_from_env,
+    demo_data_access_enabled_from_env,
+)
 from app.models import (
     AppointmentDB,
     Base,
@@ -18,6 +23,7 @@ from app.models import (
     LocationInfo,
     SchedulerSettingsDB,
     InviteSlotOfferDB,
+    ProviderAccountDB,
 )
 
 DATABASE_URL = os.getenv(
@@ -28,18 +34,27 @@ ACTIVE_APPOINTMENT_STATUSES = ("scheduled", "hold")
 DEMO_INVITE_TOKEN = "demo-invite-token"
 SOFIA_INVITE_TOKEN = "invite_sofia_0826"
 
-engine = create_engine(DATABASE_URL, echo=False)
+engine = create_engine(DATABASE_URL, echo=False, hide_parameters=True)
 SessionLocal = sessionmaker(bind=engine)
 
 def configure_database(database_url: str = DATABASE_URL):
     """Rebinds the database session factory; useful for isolated API tests."""
     global DATABASE_URL, engine, SessionLocal
     DATABASE_URL = database_url
-    engine = create_engine(DATABASE_URL, echo=False)
+    engine = create_engine(DATABASE_URL, echo=False, hide_parameters=True)
     SessionLocal = sessionmaker(bind=engine)
 
-def init_db():
+def init_db(*, settings: Optional[ApplicationSettings] = None):
+    active_settings = settings or application_settings_from_env()
+    if active_settings.environment in {"staging", "production"}:
+        _reject_deployed_demo_artifacts()
+    if not active_settings.demo_data_enabled:
+        return
     seed_data()
+    if active_settings.demo_auth_enabled:
+        from app.auth import seed_demo_provider_account
+
+        seed_demo_provider_account()
 
 def seed_data():
     session = SessionLocal()
@@ -164,7 +179,8 @@ def seed_data():
             )
         )
 
-    if not session.query(InviteTokenDB).filter_by(token=DEMO_INVITE_TOKEN).first():
+    demo_invite = session.query(InviteTokenDB).filter_by(token=DEMO_INVITE_TOKEN).first()
+    if not demo_invite:
         session.add(
             InviteTokenDB(
                 token=DEMO_INVITE_TOKEN,
@@ -173,11 +189,15 @@ def seed_data():
                 location_label="Instructor facility or client pool",
                 preferred_duration_mins=60,
                 allowed_durations_mins="30,45,60",
+                is_demo=True,
                 expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=30),
             )
         )
+    else:
+        demo_invite.is_demo = True
 
-    if not session.query(InviteTokenDB).filter_by(token=SOFIA_INVITE_TOKEN).first():
+    sofia_invite = session.query(InviteTokenDB).filter_by(token=SOFIA_INVITE_TOKEN).first()
+    if not sofia_invite:
         session.add(
             InviteTokenDB(
                 token=SOFIA_INVITE_TOKEN,
@@ -187,9 +207,12 @@ def seed_data():
                 location_label="Riverside facility or home pool",
                 preferred_duration_mins=45,
                 allowed_durations_mins="30,45,60",
+                is_demo=True,
                 expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=30),
             )
         )
+    else:
+        sofia_invite.is_demo = True
 
     if not session.query(InviteIntakeDB).filter_by(invite_token=SOFIA_INVITE_TOKEN).first():
         session.add(
@@ -250,6 +273,29 @@ def seed_data():
     session.commit()
     session.close()
 
+
+def _reject_deployed_demo_artifacts() -> None:
+    session = SessionLocal()
+    try:
+        demo_account_exists = (
+            session.query(ProviderAccountDB.id)
+            .filter(ProviderAccountDB.is_demo.is_(True))
+            .first()
+            is not None
+        )
+        demo_invite_exists = (
+            session.query(InviteTokenDB.token)
+            .filter(InviteTokenDB.is_demo.is_(True))
+            .first()
+            is not None
+        )
+    finally:
+        session.close()
+    if demo_account_exists or demo_invite_exists:
+        raise RuntimeError(
+            "Demo authentication or invite artifacts are forbidden in staging and production."
+        )
+
 def get_instructor_info(instructor_id: str = "inst_001") -> Optional[InstructorDB]:
     session = SessionLocal()
     inst = session.query(InstructorDB).filter_by(id=instructor_id).first()
@@ -282,7 +328,25 @@ def _get_appointment_rows_for_local_date(
     try:
         target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
         start_of_day, end_of_day = timezones.local_day_window_utc_storage(target_date, timezone_name)
-        apps = session.query(AppointmentDB).filter(
+        query = session.query(AppointmentDB)
+        if not demo_data_access_enabled_from_env():
+            query = (
+                query.outerjoin(
+                    LessonRequestDB,
+                    AppointmentDB.request_id == LessonRequestDB.id,
+                )
+                .outerjoin(
+                    InviteTokenDB,
+                    LessonRequestDB.invite_token == InviteTokenDB.token,
+                )
+                .filter(
+                    or_(
+                        AppointmentDB.request_id.is_(None),
+                        InviteTokenDB.is_demo.is_(False),
+                    )
+                )
+            )
+        apps = query.filter(
             AppointmentDB.instructor_id == instructor_id,
             AppointmentDB.start_time < end_of_day,
             AppointmentDB.end_time > start_of_day,
@@ -321,8 +385,14 @@ def get_clients_for_instructor(instructor_id: str) -> List[dict]:
 def get_pending_lesson_requests_for_instructor(instructor_id: str) -> List[dict]:
     session = SessionLocal()
     now = datetime.datetime.utcnow()
+    query = session.query(LessonRequestDB).join(
+        InviteTokenDB,
+        LessonRequestDB.invite_token == InviteTokenDB.token,
+    )
+    if not demo_data_access_enabled_from_env():
+        query = query.filter(InviteTokenDB.is_demo.is_(False))
     requests = (
-        session.query(LessonRequestDB)
+        query
         .filter(
             LessonRequestDB.instructor_id == instructor_id,
             LessonRequestDB.status.in_(("pending", "confirmed", "alternatives_sent", "declined")),
@@ -447,14 +517,58 @@ class ScheduleConflictError(Exception):
 class IdempotencyKeyConflictError(Exception):
     pass
 
-def get_appointment_by_idempotency_key(idempotency_key: Optional[str]) -> Optional[dict]:
+def get_appointment_by_idempotency_key(
+    instructor_id: str,
+    idempotency_key: Optional[str],
+) -> Optional[dict]:
     if not idempotency_key:
         return None
     session = SessionLocal()
-    appointment = session.query(AppointmentDB).filter_by(idempotency_key=idempotency_key).first()
-    result = _appointment_to_dict(appointment) if appointment else None
-    session.close()
-    return result
+    try:
+        appointment = _idempotent_appointment_or_conflict(
+            session,
+            instructor_id,
+            idempotency_key,
+        )
+        return _appointment_to_dict(appointment) if appointment else None
+    finally:
+        session.close()
+
+
+def _idempotent_appointment_or_conflict(
+    session,
+    instructor_id: str,
+    idempotency_key: str,
+) -> Optional[AppointmentDB]:
+    appointment = (
+        session.query(AppointmentDB)
+        .filter_by(instructor_id=instructor_id, idempotency_key=idempotency_key)
+        .first()
+    )
+    if appointment is None or demo_data_access_enabled_from_env():
+        return appointment
+    if appointment.request_id is None:
+        return appointment
+
+    visible_request = (
+        session.query(LessonRequestDB.id)
+        .join(
+            InviteTokenDB,
+            LessonRequestDB.invite_token == InviteTokenDB.token,
+        )
+        .filter(
+            LessonRequestDB.id == appointment.request_id,
+            InviteTokenDB.is_demo.is_(False),
+        )
+        .first()
+    )
+    if visible_request is None:
+        # Treat a key owned by hidden demo provenance as unavailable without
+        # returning any appointment fields to the caller.
+        raise IdempotencyKeyConflictError(
+            "The idempotency key is not available for this booking."
+        )
+    return appointment
 
 def _appointment_to_dict(
     appointment: Optional[AppointmentDB],
@@ -535,7 +649,11 @@ def save_appointment(
     session = SessionLocal()
     try:
         if idempotency_key:
-            existing = session.query(AppointmentDB).filter_by(idempotency_key=idempotency_key).first()
+            existing = _idempotent_appointment_or_conflict(
+                session,
+                instructor_id,
+                idempotency_key,
+            )
             if existing:
                 if (
                     existing.instructor_id != instructor_id
@@ -581,8 +699,20 @@ def save_appointment(
         if "exclude_appointments_active_overlap" in str(exc):
             raise ScheduleConflictError("An active schedule item already occupies that time.") from exc
         if idempotency_key:
-            existing = session.query(AppointmentDB).filter_by(idempotency_key=idempotency_key).first()
+            existing = _idempotent_appointment_or_conflict(
+                session,
+                instructor_id,
+                idempotency_key,
+            )
             if existing:
+                if (
+                    existing.start_time != start_time
+                    or existing.end_time != end_time
+                    or existing.client_id != client_id
+                ):
+                    raise IdempotencyKeyConflictError(
+                        "Idempotency key was already used for a different booking."
+                    ) from exc
                 return existing.id
         raise
     finally:

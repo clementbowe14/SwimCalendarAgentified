@@ -60,6 +60,15 @@ class AuthorizationForbidden(ApiException):
         )
 
 
+class CsrfValidationFailed(ApiException):
+    def __init__(self):
+        super().__init__(
+            "CSRF_VALIDATION_FAILED",
+            "The request origin or CSRF protection header is invalid.",
+            status_code=403,
+        )
+
+
 class InviteNotFound(ApiException):
     def __init__(self):
         super().__init__("INVITE_NOT_FOUND", "The invite could not be found.", status_code=404)
@@ -204,23 +213,45 @@ def error_payload(code: str, message: str, details: Optional[dict[str, Any]] = N
     return {"error": error}
 
 
-async def api_exception_handler(_: Request, exc: ApiException) -> JSONResponse:
-    return JSONResponse(
+async def api_exception_handler(request: Request, exc: ApiException) -> JSONResponse:
+    response = JSONResponse(
         status_code=exc.status_code,
         content=error_payload(exc.code, exc.message, exc.details),
     )
+    if request.url.path.startswith(("/api/auth/coach", "/api/coach")):
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+    if isinstance(exc, InvalidAuthToken):
+        from app.auth import clear_session_cookie
+
+        clear_session_cookie(response)
+    return response
 
 
-async def validation_exception_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
-    details = {"fields": [_serializable_validation_error(error) for error in exc.errors()]}
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    redact_inputs = request.url.path.startswith("/api/auth/coach")
+    details = {
+        "fields": [
+            _serializable_validation_error(error, redact_input=redact_inputs)
+            for error in exc.errors()
+        ]
+    }
     return JSONResponse(
         status_code=422,
         content=error_payload("VALIDATION_ERROR", "Request validation failed.", details),
     )
 
 
-def _serializable_validation_error(error: dict[str, Any]) -> dict[str, Any]:
+def _serializable_validation_error(
+    error: dict[str, Any],
+    *,
+    redact_input: bool = False,
+) -> dict[str, Any]:
     serialized = dict(error)
+    if redact_input or "password" in {
+        str(item).casefold() for item in serialized.get("loc", ())
+    }:
+        serialized.pop("input", None)
     if "ctx" in serialized:
         serialized["ctx"] = {key: str(value) for key, value in serialized["ctx"].items()}
     return serialized

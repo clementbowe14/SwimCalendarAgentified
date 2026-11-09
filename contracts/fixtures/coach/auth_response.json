@@ -1,9 +1,8 @@
 {
-  "access_token": "contract-coach-access-token",
+  "authenticated": true,
   "coach": {
     "display_name": "Coach Sarah",
     "instructor_id": "inst_001"
   },
-  "expires_at": "2026-08-31T18:00:00Z",
-  "token_type": "bearer"
+  "expires_at": "2026-08-31T18:00:00Z"
 }
