@@ -3003,6 +3003,7 @@
     },
     "/api/coach/lesson-requests/{request_token}/approve": {
       "post": {
+        "deprecated": true,
         "operationId": "approve_lesson_request_api_coach_lesson_requests__request_token__approve_post",
         "parameters": [
           {

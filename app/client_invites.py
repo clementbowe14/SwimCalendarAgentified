@@ -172,9 +172,22 @@ def select_client_lesson_request_alternative(
 ) -> ClientInviteLessonRequestResponse:
     session = db.SessionLocal()
     try:
-        lesson_request = session.query(LessonRequestDB).filter_by(request_token=request_token).first()
+        lesson_request = (
+            session.query(LessonRequestDB)
+            .filter_by(request_token=request_token)
+            .with_for_update()
+            .first()
+        )
         if lesson_request is None or lesson_request.invite is None or lesson_request.invite.revoked_at is not None:
             raise LessonRequestNotFound()
+        has_appointment = (
+            session.query(AppointmentDB.id)
+            .filter_by(request_id=lesson_request.id)
+            .first()
+            is not None
+        )
+        if lesson_request.status not in {"pending", "alternatives_sent"} or has_appointment:
+            raise InvalidSchedulingRequest("Confirmed lesson requests cannot select another time.")
         if _is_expired(lesson_request):
             raise LessonRequestExpired()
         offer = (
@@ -182,6 +195,8 @@ def select_client_lesson_request_alternative(
             .filter(
                 InviteSlotOfferDB.id == request.slot_id,
                 InviteSlotOfferDB.lesson_request_id == lesson_request.id,
+                InviteSlotOfferDB.invite_token == lesson_request.invite_token,
+                InviteSlotOfferDB.instructor_id == lesson_request.instructor_id,
                 InviteSlotOfferDB.offer_kind == "alternative",
                 InviteSlotOfferDB.expires_at > datetime.datetime.utcnow(),
             )

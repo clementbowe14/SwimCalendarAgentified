@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import ICAL from "ical.js";
 import { readFile } from "node:fs/promises";
-import type { LessonRequest } from "../src/api/types";
+import type { LessonConfirmation, LessonRequest } from "../src/api/types";
 
 const apiBase = process.env.VITE_CLIENT_INVITE_API_URL;
 if (!apiBase) {
@@ -9,7 +9,7 @@ if (!apiBase) {
 }
 
 test.describe("live backend calendar and notification handoff", () => {
-  test("weekly booking, coach approval, notification refresh and parsed calendar download", async ({ page, request, context }) => {
+  test("weekly booking, canonical coach confirmation, notification refresh and parsed calendar download", async ({ page, request, context }) => {
     const backend = new URL(apiBase).origin;
     const token = process.env.VITE_CLIENT_INVITE_TOKEN || "invite_sofia_0826";
     const inviteResponse = page.waitForResponse((response) => response.url().endsWith(`/client-invites/${token}`));
@@ -28,6 +28,7 @@ test.describe("live backend calendar and notification handoff", () => {
     expect(createdResponse.ok()).toBeTruthy();
     const created = await createdResponse.json() as LessonRequest;
     expect(created.notifications).toEqual([]);
+    const selectedOccurrence = eventInstants(created.slot);
     const persistedResponse = await request.get(
       `${apiBase}/lesson-requests/${encodeURIComponent(created.id)}`,
     );
@@ -35,15 +36,39 @@ test.describe("live backend calendar and notification handoff", () => {
     const persisted = await persistedResponse.json() as LessonRequest;
     expect(persisted.id).toBe(created.id);
     expect(persisted.status).toBe("requested");
+    expect(eventInstants(persisted.slot)).toEqual(selectedOccurrence);
     const login = await request.post(`${backend}/api/auth/coach/login`, { data: { email: "coach@example.com", password: "swim-dev-pass" } });
     expect(login.ok()).toBeTruthy();
     const auth = await login.json();
-    const approval = await request.post(`${backend}/api/coach/lesson-requests/${created.id}/approve`, { headers: { Authorization: `Bearer ${auth.access_token}` } });
-    expect(approval.ok(), await approval.text()).toBeTruthy();
+    const confirmationResponse = await request.post(
+      `${backend}/api/coach/lesson-requests/${created.id}/confirm`,
+      {
+        data: {},
+        headers: { Authorization: `Bearer ${auth.access_token}` },
+      },
+    );
+    const confirmationBody = await confirmationResponse.text();
+    expect(confirmationResponse.ok(), confirmationBody).toBeTruthy();
+    const coachConfirmation = JSON.parse(confirmationBody) as {
+      status: "confirmed";
+      appointment_ids: string[];
+      calendar_links: LessonConfirmation["calendar_links"] | null;
+    };
+    expect(coachConfirmation.status).toBe("confirmed");
+    expect(coachConfirmation.appointment_ids).toHaveLength(4);
+    expect(coachConfirmation.calendar_links).not.toBeNull();
     const refreshedPromise = page.waitForResponse((r) => r.request().method() === "GET" && r.url().endsWith(`/lesson-requests/${created.id}`));
     await page.getByRole("button", { name: "Check confirmation" }).click();
     const confirmed = await (await refreshedPromise).json() as LessonRequest;
     expect(confirmed.status).toBe("confirmed");
+    expect(eventInstants(confirmed.slot)).toEqual(selectedOccurrence);
+    expect(confirmed.confirmation).not.toBeNull();
+    expect(confirmed.confirmation!.calendar_links.google_events.map(eventInstants)).toEqual(
+      coachConfirmation.calendar_links!.google_events.map(eventInstants),
+    );
+    expect(eventInstants(confirmed.confirmation!.calendar_links.google_events[0])).toEqual(
+      selectedOccurrence,
+    );
     await expect(page.getByText("Text: skipped")).toBeVisible();
     await expect(page.getByText("Email: queued")).toBeVisible();
     await page.getByRole("button", { name: "Refresh status" }).click();
@@ -102,3 +127,10 @@ test.describe("live backend calendar and notification handoff", () => {
     await expect(page.getByRole("alert")).toContainText(/INVITE_|TOKEN_|REQUEST_FAILED/);
   });
 });
+
+function eventInstants(value: { start_iso: string; end_iso: string }): { start: string; end: string } {
+  return {
+    start: new Date(value.start_iso).toISOString(),
+    end: new Date(value.end_iso).toISOString(),
+  };
+}

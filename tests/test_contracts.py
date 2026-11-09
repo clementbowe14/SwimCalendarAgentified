@@ -69,6 +69,18 @@ def test_openapi_contract_includes_public_and_coach_routes():
         "/api/coach/appointments/{appointment_id}/calendar.ics"
     ]["get"]["responses"]["200"]["content"]
     assert "/api/coach/lesson-requests/{request_token}/approve" in paths
+    assert "/api/coach/lesson-requests/{request_token}/confirm" in paths
+    approve_operation = openapi["paths"][
+        "/api/coach/lesson-requests/{request_token}/approve"
+    ]["post"]
+    confirm_operation = openapi["paths"][
+        "/api/coach/lesson-requests/{request_token}/confirm"
+    ]["post"]
+    assert approve_operation["deprecated"] is True
+    assert "requestBody" not in approve_operation
+    assert confirm_operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/CoachLessonRequestConfirmResponse"
+    }
     assert "/api/coach/lesson-requests/{request_token}/alternatives" in paths
     assert "/api/coach/lesson-requests/{request_token}/decline" in paths
     assert "/api/coach/settings" in paths

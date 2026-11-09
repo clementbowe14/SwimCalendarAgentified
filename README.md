@@ -226,6 +226,8 @@ or client IDs.
 - `GET /api/coach/schedule?date=2026-08-20`
 - `POST /api/coach/availability`
 - `POST /api/coach/bookings`
+- `POST /api/coach/lesson-requests/{request_token}/confirm` (canonical confirmation; accepts an optional `slot_id`)
+- `POST /api/coach/lesson-requests/{request_token}/approve` (deprecated, bodyless compatibility alias only)
 - `GET /api/public/invites/{token}`
 - `POST /api/public/invites/{token}/availability`
 - `POST /api/public/invites/{token}/requests`

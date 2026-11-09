@@ -94,8 +94,31 @@ test.describe("MVP coach auth flow", () => {
 
     const dialog = page.getByRole("dialog", { name: "Ready for your calendar" });
     await expect(dialog.getByRole("list", { name: "Google Calendar occurrences" }).getByRole("link")).toHaveCount(2);
-    expect(api.protectedCalls().some((call) => call.path.endsWith("/lesson-requests/req_live_1/confirm"))).toBe(true);
+    const confirmCall = api.protectedCalls().find((call) =>
+      call.path.endsWith("/lesson-requests/req_live_1/confirm"),
+    );
+    expect(confirmCall?.body).toEqual({ slot_id: "offer_alt_req_live_1" });
     expect(api.protectedCalls().some((call) => call.path.endsWith("/approve"))).toBe(false);
+  });
+
+  test("keeps a conflicting confirmation actionable without an optimistic handoff", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    await signInThroughUi(page);
+    await page.getByRole("button", { name: "Requests", exact: true }).click();
+    api.failNextConfirmationWithConflict();
+
+    await page.getByRole("button", { name: "Confirm" }).click();
+
+    await expect(page.getByRole("alert")).toContainText(/already confirmed for a different time/i);
+    await expect(page.getByRole("alert")).toContainText("LESSON_REQUEST_CONFIRM_CONFLICT");
+    await expect(page.getByRole("button", { name: "Confirm" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Ready for your calendar" })).toHaveCount(0);
+    await expect(page.locator('[data-email-delivery-card="delivery-confirm-live"]')).toHaveCount(0);
+    const confirmCall = api.protectedCalls().find((call) =>
+      call.path.endsWith("/lesson-requests/req_live_1/confirm"),
+    );
+    expect(confirmCall?.body).toEqual({ slot_id: "offer_alt_req_live_1" });
+    expect(api.protectedCalls().some((call) => call.path.endsWith("/calendar-links"))).toBe(false);
   });
 
   test("keeps newer and omitted delivery cards when refresh data is stale or unavailable", async ({ page }) => {
@@ -222,6 +245,7 @@ type ProtectedCall = {
   path: string;
   authorization: string | null;
   beforeAuth: boolean;
+  body: Record<string, unknown> | null;
 };
 
 type MockCoachApiState = {
@@ -230,6 +254,7 @@ type MockCoachApiState = {
   nextEmailActionStatus: number | null;
   nextEmailRefreshResponse: Array<Record<string, unknown>> | null;
   nextSnapshotStatus: number | null;
+  nextConfirmationConflict: boolean;
 };
 
 async function mockAuthenticatedCoachApi(page: Page): Promise<{
@@ -239,6 +264,7 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
   failNextEmailActionWith(status: number): void;
   respondToNextEmailRefreshWith(deliveries: Array<Record<string, unknown>>): void;
   failNextSnapshotWith(status: number): void;
+  failNextConfirmationWithConflict(): void;
   logoutCalls(): number;
   protectedCalls(): ProtectedCall[];
   protectedCallsBeforeAuth(): ProtectedCall[];
@@ -254,6 +280,7 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
     nextEmailActionStatus: null,
     nextEmailRefreshResponse: null,
     nextSnapshotStatus: null,
+    nextConfirmationConflict: false,
   };
 
   await page.route(/\/api\/(?:auth|coach)\//, async (route) => {
@@ -290,7 +317,12 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
 
     if (url.pathname.startsWith("/api/coach/")) {
       const authorization = request.headers().authorization ?? null;
-      protectedCalls.push({ path: url.pathname, authorization, beforeAuth: !token });
+      protectedCalls.push({
+        path: url.pathname,
+        authorization,
+        beforeAuth: !token,
+        body: request.postData() === null ? null : postBody(request.postData()),
+      });
 
       if (!token || authorization?.toLowerCase() !== `bearer ${AUTH_TOKEN}`) {
         await route.fulfill({ status: 401, json: apiError("AUTH_REQUIRED", "Sign in is required.") });
@@ -322,6 +354,18 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
         const status = state.nextSnapshotStatus;
         state.nextSnapshotStatus = null;
         await route.fulfill({ status, json: apiError("SNAPSHOT_UNAVAILABLE", "Command center refresh is unavailable.") });
+        return;
+      }
+
+      if (url.pathname.endsWith("/lesson-requests/req_live_1/confirm") && state.nextConfirmationConflict) {
+        state.nextConfirmationConflict = false;
+        await route.fulfill({
+          status: 409,
+          json: apiError(
+            "LESSON_REQUEST_CONFIRM_CONFLICT",
+            "This lesson request was already confirmed for a different time.",
+          ),
+        });
         return;
       }
 
@@ -389,6 +433,9 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
     },
     failNextSnapshotWith(status: number): void {
       state.nextSnapshotStatus = status;
+    },
+    failNextConfirmationWithConflict(): void {
+      state.nextConfirmationConflict = true;
     },
     logoutCalls(): number {
       return logoutCallCount;
@@ -611,7 +658,7 @@ function commandCenterSnapshot(emailDeliveries: Array<Record<string, unknown>>):
         client_id: "client_sofia",
         client_name: "Sofia Martinez",
         requested_slot: {
-          id: "slot_req_live_1",
+          id: "offer_alt_req_live_1",
           start_time: "2026-08-27T16:00:00",
           end_time: "2026-08-27T16:45:00",
           travel_time_mins: 12,
@@ -629,7 +676,36 @@ function commandCenterSnapshot(emailDeliveries: Array<Record<string, unknown>>):
         risk: "clear",
         submitted_at: "2026-08-26T18:00:00",
         note: "Client selected this time from an invite.",
-        alternative_slots: [],
+        alternative_slots: [
+          {
+            id: "offer_alt_req_live_1",
+            start_time: "2026-08-27T16:00:00",
+            end_time: "2026-08-27T16:45:00",
+            travel_time_mins: 12,
+            buffer_mins: 10,
+            distance_miles: 2.1,
+            target_location: {
+              address: "820 Lakeview Dr, Austin, TX",
+              lat: 30.289,
+              lng: -97.739,
+              is_instructor_facility: false,
+            },
+          },
+          {
+            id: "offer_alt_req_live_2",
+            start_time: "2026-08-27T17:00:00",
+            end_time: "2026-08-27T17:45:00",
+            travel_time_mins: 12,
+            buffer_mins: 10,
+            distance_miles: 2.1,
+            target_location: {
+              address: "820 Lakeview Dr, Austin, TX",
+              lat: 30.289,
+              lng: -97.739,
+              is_instructor_facility: false,
+            },
+          },
+        ],
       },
     ],
     email_deliveries: emailDeliveries,

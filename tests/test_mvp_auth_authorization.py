@@ -82,6 +82,7 @@ def auth_client(migrated_postgres_db: None, monkeypatch: pytest.MonkeyPatch):
         ("POST", "/api/coach/availability", {"json": AVAILABILITY_PAYLOAD}),
         ("POST", "/api/coach/bookings", {"json": BOOKING_PAYLOAD}),
         ("POST", "/api/coach/lesson-requests/req_sofia_pending_0820/approve", {}),
+        ("POST", "/api/coach/lesson-requests/req_sofia_pending_0820/confirm", {"json": {}}),
         ("POST", "/api/coach/lesson-requests/req_sofia_pending_0820/alternatives", {}),
         ("POST", "/api/coach/lesson-requests/req_sofia_pending_0820/decline", {}),
     ],
@@ -164,7 +165,7 @@ def test_valid_auth_reaches_all_mvp_coach_surfaces(auth_client: TestClient):
     assert booking.status_code == 200
 
     request_actions = {
-        "approve": _create_sarah_lesson_request("req_sarah_auth_approve", 14),
+        "confirm": _create_sarah_lesson_request("req_sarah_auth_confirm", 14),
         "alternatives": _create_sarah_lesson_request("req_sarah_auth_alternatives", 15),
         "decline": _create_sarah_lesson_request("req_sarah_auth_decline", 16),
     }
@@ -188,19 +189,21 @@ def test_coach_auth_is_scoped_to_authenticated_instructor_not_frontend_ids(auth_
     assert spoofed_schedule.status_code == 200
     assert spoofed_schedule.json()["instructor"]["id"] == "inst_001"
 
-    cross_coach_approval = auth_client.post(
-        f"/api/coach/lesson-requests/{JAMIE_REQUEST_TOKEN}/approve",
+    cross_coach_confirmation = auth_client.post(
+        f"/api/coach/lesson-requests/{JAMIE_REQUEST_TOKEN}/confirm",
+        json={},
         headers=sarah_headers,
     )
-    assert cross_coach_approval.status_code == 404
-    assert cross_coach_approval.json()["error"]["code"] == "LESSON_REQUEST_NOT_FOUND"
+    assert cross_coach_confirmation.status_code == 404
+    assert cross_coach_confirmation.json()["error"]["code"] == "LESSON_REQUEST_NOT_FOUND"
 
-    same_coach_approval = auth_client.post(
-        f"/api/coach/lesson-requests/{JAMIE_REQUEST_TOKEN}/approve",
+    same_coach_confirmation = auth_client.post(
+        f"/api/coach/lesson-requests/{JAMIE_REQUEST_TOKEN}/confirm",
+        json={},
         headers=jamie_headers,
     )
-    assert same_coach_approval.status_code == 200
-    assert same_coach_approval.json()["status"] == "approved"
+    assert same_coach_confirmation.status_code == 200
+    assert same_coach_confirmation.json()["status"] == "confirmed"
 
 
 def test_public_routes_remain_unauthenticated_and_public_safe(

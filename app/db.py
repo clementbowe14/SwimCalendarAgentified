@@ -354,6 +354,7 @@ def get_pending_lesson_requests_for_instructor(instructor_id: str) -> List[dict]
             "status": request.status,
             "recurrence": request.recurrence,
             "recurrence_count": request.recurrence_count,
+            "original_slot_offer_id": request.original_slot_offer_id,
             "expires_at": request.expires_at,
             "computed_expired": request.status not in {"confirmed", "declined", "cancelled"} and request.expires_at <= now,
             "validation_failure_code": request.validation_failure_code,

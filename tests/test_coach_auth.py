@@ -81,6 +81,11 @@ COACH_ENDPOINTS = [
     ),
     (
         "POST",
+        "/api/coach/lesson-requests/req_sofia_pending_0820/confirm",
+        {},
+    ),
+    (
+        "POST",
         "/api/coach/lesson-requests/req_sofia_pending_0820/alternatives",
         None,
     ),
@@ -216,8 +221,9 @@ def test_coach_auth_scopes_resources_to_authenticated_instructor(api_client, mon
         params={"date": "2026-08-20"},
         headers=headers,
     )
-    approval = api_client.post(
-        "/api/coach/lesson-requests/req_sofia_pending_0820/approve",
+    confirmation = api_client.post(
+        "/api/coach/lesson-requests/req_sofia_pending_0820/confirm",
+        json={},
         headers=headers,
     )
 
@@ -230,8 +236,8 @@ def test_coach_auth_scopes_resources_to_authenticated_instructor(api_client, mon
     assert snapshot.json()["instructor"]["id"] == "inst_002"
     assert snapshot.json()["clients"] == []
     assert snapshot.json()["requests"] == []
-    assert approval.status_code == 404
-    assert approval.json()["error"]["code"] == "LESSON_REQUEST_NOT_FOUND"
+    assert confirmation.status_code == 404
+    assert confirmation.json()["error"]["code"] == "LESSON_REQUEST_NOT_FOUND"
 
 
 def test_public_routes_remain_available_without_auth(api_client, assert_public_payload_safe):

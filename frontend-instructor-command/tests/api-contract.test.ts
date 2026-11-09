@@ -210,6 +210,30 @@ test("HTTP instructor adapter uses canonical confirmation and preserves returned
   );
 });
 
+test("HTTP instructor adapter posts the exact selected-alternative confirmation body", async () => {
+  const calls: FetchCall[] = [];
+  const api = new HttpInstructorCommandApi("http://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
+
+  await withMockFetch(calls, async () =>
+    jsonResponse({
+      id: "request/one",
+      status: "confirmed",
+      appointment_id: "app_request_1",
+      appointment_ids: ["app_request_1"],
+      message: "Lesson request is confirmed.",
+      calendar_links: calendarLinksContract("app_request_1"),
+      email_delivery: emailDeliveryContract({ id: "delivery-confirm-1", status: "queued" }),
+    }),
+    async () => {
+      await api.confirmRequest("request/one", "alternative/selected");
+
+      assert.equal(calls[0].url, "http://api.test/api/coach/lesson-requests/request%2Fone/confirm");
+      assert.equal(calls[0].init?.method, "POST");
+      assert.deepEqual(JSON.parse(String(calls[0].init?.body)), { slot_id: "alternative/selected" });
+    },
+  );
+});
+
 test("HTTP instructor adapter refreshes, resends without a body, and corrects email delivery contact", async () => {
   const calls: FetchCall[] = [];
   const api = new HttpInstructorCommandApi("http://api.test/api", createMemoryInstructorAuthStore(authSessionContract()));
