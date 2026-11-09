@@ -19,6 +19,8 @@ async function setup(page: Page, weekly = false) {
     return route.fulfill({ json: inviteEnvelope });
   });
   await page.goto("/?invite_token=bearer-secret");
+  await expect(page.locator("html")).toHaveAttribute("data-data-mode", "http");
+  await expect(page.getByText("Mock data", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Continue to availability" }).click();
   await page.getByRole("button", { name: "Show available times" }).click();
   await page.getByRole("button", { name: "Request this lesson" }).click();

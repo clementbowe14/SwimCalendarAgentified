@@ -146,24 +146,72 @@ jobs:
         working-directory: frontend-client-invite
         run: npm run test:unit
 
+      - name: Reject unsafe instructor production builds
+        working-directory: frontend-instructor-command
+        run: |
+          set +e
+          env -u VITE_USE_MOCK_API -u VITE_INSTRUCTOR_API_URL npm run build > "$RUNNER_TEMP/instructor-unconfigured-build.log" 2>&1
+          instructor_unconfigured_status=$?
+          env -u VITE_INSTRUCTOR_API_URL VITE_USE_MOCK_API=true npm run build > "$RUNNER_TEMP/instructor-mock-build.log" 2>&1
+          instructor_mock_status=$?
+          set -e
+          cat "$RUNNER_TEMP/instructor-unconfigured-build.log"
+          cat "$RUNNER_TEMP/instructor-mock-build.log"
+          if [ "$instructor_unconfigured_status" -eq 0 ] || [ "$instructor_mock_status" -eq 0 ]; then
+            echo "Instructor production build accepted unsafe data-mode configuration."
+            exit 1
+          fi
+          grep -q "VITE_INSTRUCTOR_API_URL" "$RUNNER_TEMP/instructor-unconfigured-build.log"
+
+      - name: Reject unsafe client invite production builds
+        working-directory: frontend-client-invite
+        run: |
+          set +e
+          env -u VITE_USE_MOCK_API -u VITE_CLIENT_INVITE_API_URL npm run build > "$RUNNER_TEMP/client-unconfigured-build.log" 2>&1
+          client_unconfigured_status=$?
+          env -u VITE_CLIENT_INVITE_API_URL VITE_USE_MOCK_API=true npm run build > "$RUNNER_TEMP/client-mock-build.log" 2>&1
+          client_mock_status=$?
+          set -e
+          cat "$RUNNER_TEMP/client-unconfigured-build.log"
+          cat "$RUNNER_TEMP/client-mock-build.log"
+          if [ "$client_unconfigured_status" -eq 0 ] || [ "$client_mock_status" -eq 0 ]; then
+            echo "Client invite production build accepted unsafe data-mode configuration."
+            exit 1
+          fi
+          grep -q "VITE_CLIENT_INVITE_API_URL" "$RUNNER_TEMP/client-unconfigured-build.log"
+
       - name: Build instructor frontend
         working-directory: frontend-instructor-command
+        env:
+          VITE_USE_MOCK_API: "false"
+          VITE_INSTRUCTOR_API_URL: /api
         run: npm run build
 
       - name: Build client invite frontend
         working-directory: frontend-client-invite
+        env:
+          VITE_USE_MOCK_API: "false"
+          VITE_CLIENT_INVITE_API_URL: /api/public
         run: npm run build
 
       - name: Run instructor Playwright smoke tests
         working-directory: frontend-instructor-command
+        env:
+          VITE_USE_MOCK_API: "true"
+          VITE_INSTRUCTOR_API_URL: ""
         run: npm run test:e2e
 
       - name: Run instructor auth Playwright smoke tests
         working-directory: frontend-instructor-command
+        env:
+          VITE_USE_MOCK_API: "false"
         run: npm run test:e2e:auth
 
       - name: Run client invite Playwright smoke tests
         working-directory: frontend-client-invite
+        env:
+          VITE_USE_MOCK_API: "true"
+          VITE_CLIENT_INVITE_API_URL: ""
         run: npm run test:e2e
 
       - name: Start FastAPI
@@ -187,11 +235,13 @@ jobs:
       - name: Run instructor live-backend Playwright smoke tests
         working-directory: frontend-instructor-command
         env:
+          VITE_USE_MOCK_API: "false"
           VITE_INSTRUCTOR_API_URL: http://127.0.0.1:8000/api
         run: npm run test:e2e:live
 
       - name: Run client invite live-backend Playwright smoke tests
         working-directory: frontend-client-invite
         env:
+          VITE_USE_MOCK_API: "false"
           VITE_CLIENT_INVITE_API_URL: http://127.0.0.1:8000/api/public
         run: npm run test:e2e:live

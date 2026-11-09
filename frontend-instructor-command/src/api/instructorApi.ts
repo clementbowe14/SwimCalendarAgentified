@@ -1,5 +1,9 @@
 import { candidateSlots, snapshot } from "./mockData.js";
 import { trustedInstructorCalendarUrl } from "./calendar.js";
+import {
+  resolveInstructorDataMode,
+  type InstructorDataModeEnvironment,
+} from "../config/dataMode.js";
 import type {
   BookLessonPayload,
   BookLessonResponse,
@@ -433,12 +437,14 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
 
 }
 
-export const createInstructorCommandApi = (): InstructorCommandApi => {
-  const baseUrl = import.meta.env?.VITE_INSTRUCTOR_API_URL;
-  return baseUrl ? new HttpInstructorCommandApi(baseUrl) : new MockInstructorCommandApi();
+export const createInstructorCommandApi = (
+  environment: InstructorDataModeEnvironment = import.meta.env ?? {},
+): InstructorCommandApi => {
+  const config = resolveInstructorDataMode(environment);
+  return config.mode === "mock"
+    ? new MockInstructorCommandApi()
+    : new HttpInstructorCommandApi(config.apiBaseUrl);
 };
-
-export const instructorCommandApi: InstructorCommandApi = createInstructorCommandApi();
 
 export type InstructorAuthStore = {
   get(): InstructorAuthSession | null;

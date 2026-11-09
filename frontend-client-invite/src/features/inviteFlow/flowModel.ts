@@ -20,6 +20,21 @@ export type InviteFlowState = {
 export const weekdayOptions: DayKey[] = ["Mon", "Tue", "Wed", "Thu", "Fri"];
 export const weekendOptions: DayKey[] = ["Sat", "Sun"];
 
+export const initialAvailabilityWindows: AvailabilityWindow[] = [
+  {
+    id: "weekday_after_school",
+    days: ["Tue", "Thu"],
+    start_time: "16:00",
+    end_time: "18:00",
+  },
+  {
+    id: "weekend_late_morning",
+    days: ["Sat"],
+    start_time: "10:00",
+    end_time: "12:00",
+  },
+];
+
 export const timeWindowPresets = [
   { id: "early", label: "6 AM-8 AM", start_time: "06:00", end_time: "08:00" },
   { id: "morning", label: "8 AM-10 AM", start_time: "08:00", end_time: "10:00" },

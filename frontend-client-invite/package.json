@@ -9,8 +9,10 @@
     "preview": "vite preview --host 127.0.0.1 --port 3001",
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "tsc -p tsconfig.test.json && node --test .test-build/tests/*.test.js",
-    "test:e2e": "playwright test",
-    "test:e2e:live": "playwright test tests/real-backend-integration.spec.ts"
+    "test:e2e": "npm run test:e2e:mock && npm run test:e2e:intercepted",
+    "test:e2e:mock": "CLIENT_INVITE_E2E_MODE=mock VITE_USE_MOCK_API=true VITE_CLIENT_INVITE_API_URL= VITE_CLIENT_INVITE_TOKEN= playwright test",
+    "test:e2e:intercepted": "CLIENT_INVITE_E2E_MODE=intercepted VITE_USE_MOCK_API=false VITE_CLIENT_INVITE_API_URL=http://127.0.0.1:3109/api/public VITE_CLIENT_INVITE_TOKEN= playwright test",
+    "test:e2e:live": "CLIENT_INVITE_E2E_MODE=live VITE_USE_MOCK_API=false playwright test"
   },
   "dependencies": {
     "@fontsource/roboto": "5.2.10",

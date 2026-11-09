@@ -22,9 +22,9 @@ export function InviteLandingScreen({ intake, instructorName, onChange, onContin
       location_type: type,
       location: {
         ...intake.location,
-        address: type === "facility" ? "Riverside facility" : "820 Lakeview Dr, Austin, TX",
-        lat: type === "facility" ? 30.2672 : intake.location.lat,
-        lng: type === "facility" ? -97.7431 : intake.location.lng,
+        address: type === intake.location_type ? intake.location.address : "",
+        lat: type === intake.location_type ? intake.location.lat : null,
+        lng: type === intake.location_type ? intake.location.lng : null,
         is_instructor_facility: type === "facility",
       },
     });
@@ -90,11 +90,11 @@ export function InviteLandingScreen({ intake, instructorName, onChange, onContin
         <div className="summary-strip icon-strip">
           <EnvelopeClosedIcon />
           <span>
-            Confirm your details once, then choose from lesson times that fit both your preferences and Riley's schedule.
+            Confirm your details once, then choose from lesson times that fit both your preferences and {instructorName}'s schedule.
           </span>
         </div>
         <label>
-          <span>Anything Riley should know?</span>
+          <span>Anything {instructorName} should know?</span>
           <input value={intake.notes} onChange={(event) => updateField("notes", event.target.value)} />
         </label>
       </SectionCard>

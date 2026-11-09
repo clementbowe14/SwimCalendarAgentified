@@ -1,6 +1,5 @@
 import type {
   AvailabilitySearchResponse,
-  AvailabilityWindow,
   ClientInviteEnvelope,
   LessonRequest,
   SchedulerSlot,
@@ -27,21 +26,6 @@ export const inviteEnvelope: ClientInviteEnvelope = {
     },
   },
 };
-
-export const defaultWindows: AvailabilityWindow[] = [
-  {
-    id: "weekday_after_school",
-    days: ["Tue", "Thu"],
-    start_time: "16:00",
-    end_time: "18:00",
-  },
-  {
-    id: "weekend_late_morning",
-    days: ["Sat"],
-    start_time: "10:00",
-    end_time: "12:00",
-  },
-];
 
 export const schedulerSlots: SchedulerSlot[] = [
   {

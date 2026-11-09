@@ -55,6 +55,78 @@ button:disabled {
   padding: 18px 16px 34px;
 }
 
+.mock-data-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 5px 10px;
+  border: 1px solid rgba(246, 160, 0, 0.38);
+  border-radius: 999px;
+  color: #714500;
+  background: #fff6d9;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+}
+
+.bootstrap-page {
+  display: grid;
+  align-items: center;
+}
+
+.bootstrap-card {
+  display: grid;
+  gap: 14px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 20px 46px rgba(5, 52, 96, 0.12);
+}
+
+.bootstrap-card h1,
+.bootstrap-card p {
+  margin: 0;
+}
+
+.bootstrap-card h1 {
+  font-size: clamp(30px, 9vw, 40px);
+  line-height: 1;
+}
+
+.bootstrap-card > p:not(.eyebrow) {
+  color: #435368;
+  line-height: 1.5;
+}
+
+.bootstrap-skeleton {
+  display: grid;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.bootstrap-skeleton span {
+  height: 14px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #e8f2f8 20%, #f8fcff 45%, #e8f2f8 70%);
+  background-size: 220% 100%;
+  animation: bootstrap-shimmer 1.4s linear infinite;
+}
+
+.bootstrap-skeleton span:nth-child(2) {
+  width: 82%;
+}
+
+.bootstrap-skeleton span:nth-child(3) {
+  width: 64%;
+}
+
+@keyframes bootstrap-shimmer {
+  to {
+    background-position: -220% 0;
+  }
+}
+
 .client-hero {
   position: relative;
   padding: 18px 2px 12px;
