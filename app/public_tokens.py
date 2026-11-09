@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from app import db, timezones
 from app.api_errors import InviteExpired, InviteNotFound, LessonRequestNotFound
+from app.config import demo_data_access_enabled_from_env
 from app.models import InviteTokenDB, LessonRequestDB
 from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -53,11 +54,9 @@ def resolve_invite(token: str) -> InviteContext:
     try:
         invite = session.query(InviteTokenDB).filter_by(token=token).first()
         if not invite:
-            if token == DEMO_INVITE_TOKEN:
-                db.seed_data()
-                invite = session.query(InviteTokenDB).filter_by(token=token).first()
-            if not invite:
-                raise InviteNotFound()
+            raise InviteNotFound()
+        if not demo_invite_is_enabled(invite):
+            raise InviteNotFound()
         if invite.revoked_at is not None:
             raise InviteNotFound()
         if invite.expires_at <= datetime.utcnow():
@@ -173,7 +172,12 @@ def resolve_lesson_request(request_token: str) -> LessonRequestRecord:
     session = db.SessionLocal()
     try:
         request = session.query(LessonRequestDB).filter_by(request_token=request_token).first()
-        if not request or request.invite is None or request.invite.revoked_at is not None:
+        if (
+            not request
+            or request.invite is None
+            or not demo_invite_is_enabled(request.invite)
+            or request.invite.revoked_at is not None
+        ):
             raise LessonRequestNotFound()
         return _lesson_request_record(request)
     finally:
@@ -200,6 +204,10 @@ def clear_lesson_requests() -> None:
         session.rollback()
     finally:
         session.close()
+
+
+def demo_invite_is_enabled(invite: InviteTokenDB) -> bool:
+    return not invite.is_demo or demo_data_access_enabled_from_env()
 
 
 def _lesson_request_record(request: LessonRequestDB) -> LessonRequestRecord:

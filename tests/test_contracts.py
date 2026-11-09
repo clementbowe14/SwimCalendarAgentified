@@ -59,8 +59,10 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/public/client-invites/{token}/slots" in paths
     assert "/api/public/lesson-requests/{request_token}/calendar-links" in paths
     assert "/api/auth/coach/sign-in" in paths
+    assert "/api/auth/coach/login" in paths
     assert "/api/auth/coach/session" in paths
     assert "/api/auth/coach/sign-out" in paths
+    assert "/api/auth/coach/logout" in paths
     assert "/api/coach/availability" in paths
     assert "/api/coach/command-center/snapshot" in paths
     assert "/api/coach/appointments/{appointment_id}/calendar-links" in paths
@@ -90,6 +92,82 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/coach/email-deliveries/{delivery_id}/contact" in paths
     assert "/api/public/command-center/snapshot" not in paths
     assert "/api/public/settings" not in paths
+
+    sign_in = openapi["paths"]["/api/auth/coach/sign-in"]["post"]
+    login_alias = openapi["paths"]["/api/auth/coach/login"]["post"]
+    sign_out = openapi["paths"]["/api/auth/coach/sign-out"]["post"]
+    logout_alias = openapi["paths"]["/api/auth/coach/logout"]["post"]
+    assert sign_in["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/CoachAuthResponse"
+    }
+    assert login_alias["deprecated"] is True
+    assert logout_alias["deprecated"] is True
+    assert "requestBody" not in sign_out
+    assert "requestBody" not in logout_alias
+
+
+def test_openapi_uses_cookie_security_only_for_provider_routes():
+    openapi = _load_json(CONTRACT_ROOT / "openapi.json")
+    schemes = openapi["components"]["securitySchemes"]
+    cookie_schemes = {
+        name
+        for name, scheme in schemes.items()
+        if scheme.get("type") == "apiKey"
+        and scheme.get("in") == "cookie"
+        and scheme.get("name") == "swim_session"
+    }
+
+    assert len(cookie_schemes) == 1
+    assert all(scheme.get("type") != "http" for scheme in schemes.values())
+    cookie_scheme = next(iter(cookie_schemes))
+
+    for path, operations in openapi["paths"].items():
+        for method, operation in operations.items():
+            if method not in {"get", "post", "put", "patch", "delete"}:
+                continue
+            if path.startswith("/api/coach/") or path == "/api/auth/coach/session":
+                assert {cookie_scheme: []} in operation.get("security", []), (method, path)
+            if path.startswith("/api/public/") or path in {"/health", "/openapi.json"}:
+                assert not operation.get("security"), (method, path)
+
+
+def test_openapi_documents_csrf_header_on_every_unsafe_provider_operation_only():
+    openapi = _load_json(CONTRACT_ROOT / "openapi.json")
+    unsafe_methods = {"post", "put", "patch", "delete"}
+    provider_prefixes = ("/api/auth/coach", "/api/coach")
+
+    for path, operations in openapi["paths"].items():
+        for method, operation in operations.items():
+            if method not in {"get", *unsafe_methods}:
+                continue
+            csrf_parameters = [
+                parameter
+                for parameter in operation.get("parameters", [])
+                if parameter.get("in") == "header"
+                and parameter.get("name", "").casefold() == "x-csrf-protection"
+            ]
+            expected = path.startswith(provider_prefixes) and method in unsafe_methods
+            if not expected:
+                assert csrf_parameters == [], (method, path)
+                continue
+
+            assert len(csrf_parameters) == 1, (method, path)
+            csrf_parameter = csrf_parameters[0]
+            assert csrf_parameter["required"] is True
+            assert csrf_parameter["schema"]["const"] == "1"
+            assert csrf_parameter["schema"]["enum"] == ["1"]
+
+
+def test_auth_contract_is_metadata_only_and_contains_no_bearer_schema():
+    fixture = _load_json(CONTRACT_ROOT / "fixtures/coach/auth_response.json")
+    assert set(fixture) == {"authenticated", "expires_at", "coach"}
+    assert fixture["authenticated"] is True
+
+    openapi = _load_json(CONTRACT_ROOT / "openapi.json")
+    serialized = json.dumps(openapi)
+    assert "access_token" not in serialized
+    assert "token_type" not in serialized
+    assert "HTTPBearer" not in serialized
 
 
 def test_fixtures_validate_against_response_schemas():

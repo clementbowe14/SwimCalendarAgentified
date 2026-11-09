@@ -7,6 +7,9 @@ on:
       - master
 
 env:
+  SWIM_ENV: test
+  SWIM_ENABLE_DEMO_DATA: "true"
+  SWIM_ENABLE_DEMO_AUTH: "true"
   SWIM_DATABASE_URL: postgresql+psycopg://swim:swim@127.0.0.1:5432/swim_scheduler
   SWIM_TEST_DATABASE_URL: postgresql+psycopg://swim:swim@127.0.0.1:5432/swim_scheduler_test
   SWIM_REQUIRE_POSTGRES_TESTS: "true"

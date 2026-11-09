@@ -1,5 +1,6 @@
 import {
   expect,
+  request as playwrightRequest,
   test,
   type APIRequestContext,
   type APIResponse,
@@ -33,14 +34,49 @@ type SelectedAlternativeSetup = {
   selectedSlot: LiveSlot;
 };
 
+type SessionCookie = {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires: number;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: "Strict" | "Lax" | "None";
+};
+
 test.describe("instructor command real-backend integration", () => {
   test("signs in, loads protected coach data, and signs out", async ({ page }) => {
-    await signIn(page);
+    const { cookie } = await signIn(page);
 
     await expect(page.locator("html")).toHaveAttribute("data-data-mode", "http");
     await expect(page.getByText("Mock data", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Sign out" })).toHaveCount(0);
+
+    const apiOrder: string[] = [];
+    let sessionValidated = false;
+    let coachRequestStartedBeforeValidation = false;
+    const recordResponse = (response: { url(): string }) => {
+      if (new URL(response.url()).pathname === "/api/auth/coach/session") sessionValidated = true;
+    };
+    const recordRequest = (request: { url(): string }) => {
+      const pathname = new URL(request.url()).pathname;
+      if (!pathname.startsWith("/api/")) return;
+      apiOrder.push(pathname);
+      if (pathname.startsWith("/api/coach/") && !sessionValidated) {
+        coachRequestStartedBeforeValidation = true;
+      }
+    };
+    page.on("response", recordResponse);
+    page.on("request", recordRequest);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
+    page.off("response", recordResponse);
+    page.off("request", recordRequest);
+
+    expect(apiOrder[0]).toBe("/api/auth/coach/session");
+    expect(coachRequestStartedBeforeValidation).toBeFalsy();
 
     await page.getByRole("button", { name: "Settings" }).click();
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
@@ -48,9 +84,28 @@ test.describe("instructor command real-backend integration", () => {
     await expect(signOut).toBeVisible();
     await expect(signOut).toHaveCSS("color", "rgb(255, 255, 255)");
     await expect(signOut).toHaveCSS("background-image", /rgb\(217, 71, 50\)/);
+    const signOutResponsePromise = page.waitForResponse((response) =>
+      response.request().method() === "POST" && response.url().endsWith("/auth/coach/sign-out"),
+    );
     await signOut.click();
+    const signOutResponse = await signOutResponsePromise;
+    expect(signOutResponse.ok()).toBeTruthy();
     await expect(page.getByRole("heading", { name: /locked|sign in/i })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Today schedule" })).toHaveCount(0);
+    expect((await page.context().cookies()).filter(({ name }) => name === "swim_session")).toHaveLength(0);
+
+    const replay = await playwrightRequest.newContext({
+      extraHTTPHeaders: { Cookie: `${cookie.name}=${cookie.value}` },
+    });
+    try {
+      for (const path of ["/auth/coach/session", "/coach/me"]) {
+        const response = await replay.get(`${liveApiBase}${path}`);
+        expect(response.status()).toBe(401);
+        expect(await response.json()).toMatchObject({ error: { code: "INVALID_AUTH_TOKEN" } });
+      }
+    } finally {
+      await replay.dispose();
+    }
   });
 
   test("loads coach schedule data and searches availability through /api/coach", async ({ page }) => {
@@ -64,8 +119,8 @@ test.describe("instructor command real-backend integration", () => {
     await expect(page.locator("main")).toContainText(/safe options|No safe starts/i);
   });
 
-  test("books a safe slot and independently reads back its exact appointment ID", async ({ page, request }) => {
-    const accessToken = await signIn(page);
+  test("books a safe slot and independently reads back its exact appointment ID", async ({ page }) => {
+    await signIn(page);
     await page.getByRole("button", { name: "Find" }).click();
 
     const bookingResponsePromise = page.waitForResponse((response) =>
@@ -85,9 +140,8 @@ test.describe("instructor command real-backend integration", () => {
       /^https:\/\/calendar\.google\.com\/calendar\/render/,
     );
 
-    const scheduleResponse = await request.get(
+    const scheduleResponse = await page.context().request.get(
       `${liveApiBase}/coach/schedule?date=${encodeURIComponent(bookingRequest.start_time.slice(0, 10))}`,
-      { headers: { authorization: `Bearer ${accessToken}` } },
     );
     const scheduleBody = await scheduleResponse.text();
     expect(scheduleResponse.ok(), scheduleBody).toBeTruthy();
@@ -105,8 +159,9 @@ test.describe("instructor command real-backend integration", () => {
     page,
     request,
   }, testInfo) => {
-    const accessToken = await signIn(page);
-    const setup = await createAndSelectAlternative(request, accessToken, testInfo);
+    await signIn(page);
+    const coachRequest = page.context().request;
+    const setup = await createAndSelectAlternative(request, coachRequest, testInfo);
 
     // Reload so the authenticated command-center snapshot includes the request created above.
     await page.reload();
@@ -148,9 +203,8 @@ test.describe("instructor command real-backend integration", () => {
     const schedule = await getJson<{
       appointments: Array<{ id: string; start_time: string; end_time: string }>;
     }>(
-      request,
+      coachRequest,
       `${liveApiBase}/coach/schedule?date=${encodeURIComponent(occurrenceDate)}`,
-      accessToken,
       "coach schedule read-back",
     );
     const appointment = schedule.appointments.find(({ id }) => id === confirmation.appointment_id);
@@ -159,9 +213,8 @@ test.describe("instructor command real-backend integration", () => {
     expect(canonicalInstant(appointment!.end_time)).toBe(selectedEnd);
 
     const coachCalendar = await getJson<CalendarLinks>(
-      request,
+      coachRequest,
       `${liveApiBase}/coach/appointments/${encodeURIComponent(confirmation.appointment_id!)}/calendar-links`,
-      accessToken,
       "coach calendar read-back",
     );
     expect(coachCalendar.google_events.map(eventInstants)).toEqual([
@@ -183,16 +236,16 @@ test.describe("instructor command real-backend integration", () => {
 });
 
 async function createAndSelectAlternative(
-  request: APIRequestContext,
-  accessToken: string,
+  publicRequest: APIRequestContext,
+  coachRequest: APIRequestContext,
   testInfo: TestInfo,
 ): Promise<SelectedAlternativeSetup> {
   const inviteToken = process.env.VITE_INSTRUCTOR_E2E_INVITE_TOKEN ?? "invite_sofia_0826";
   const { requestedDate, day } = isolatedDateForProject(testInfo.project.name);
   const runKey = `${testInfo.project.name}-${Date.now().toString(36)}`.replace(/[^a-z0-9-]/gi, "-");
   const clientName = `Live alternative ${runKey}`;
-  const search = await postJson<{ slots: LiveSlot[] }>(
-    request,
+  const search = await postPublicJson<{ slots: LiveSlot[] }>(
+    publicRequest,
     `${publicApiBase}/client-invites/${encodeURIComponent(inviteToken)}/slots`,
     {
       client_name: clientName,
@@ -212,48 +265,44 @@ async function createAndSelectAlternative(
         end_time: "17:00",
       }],
     },
-    undefined,
     "availability search",
   );
   expect(search.slots.length, "live setup needs an original slot and an alternative candidate").toBeGreaterThanOrEqual(2);
 
-  const created = await postJson<LiveLessonRequest>(
-    request,
+  const created = await postPublicJson<LiveLessonRequest>(
+    publicRequest,
     `${publicApiBase}/client-invites/${encodeURIComponent(inviteToken)}/lesson-requests`,
     {
       slot_id: search.slots[0].id,
       idempotency_key: `live-request-${runKey}`,
     },
-    undefined,
     "lesson request creation",
   );
   expect(created.status).toBe("requested");
 
-  await postJson(
-    request,
+  await postCoachJson(
+    coachRequest,
     `${liveApiBase}/coach/lesson-requests/${encodeURIComponent(created.id)}/alternatives`,
     {
       slot_ids: [search.slots[1].id],
       message: "Choose this verified live-test alternative.",
     },
-    accessToken,
     "alternative promotion",
   );
 
-  const offered = await getPublicLessonRequest(request, created.id);
+  const offered = await getPublicLessonRequest(publicRequest, created.id);
   expect(offered.status).toBe("needs_new_times");
   expect(offered.alternative_slots).toHaveLength(1);
   const selectedSlot = offered.alternative_slots[0];
   expect(selectedSlot.id).not.toBe(search.slots[1].id);
 
-  const selected = await postJson<LiveLessonRequest>(
-    request,
+  const selected = await postPublicJson<LiveLessonRequest>(
+    publicRequest,
     `${publicApiBase}/lesson-requests/${encodeURIComponent(created.id)}/select-alternative`,
     {
       slot_id: selectedSlot.id,
       idempotency_key: `live-select-${runKey}`,
     },
-    undefined,
     "alternative selection",
   );
   expect(selected.status).toBe("requested");
@@ -275,7 +324,6 @@ async function getPublicLessonRequest(
   return getJson<LiveLessonRequest>(
     request,
     `${publicApiBase}/lesson-requests/${encodeURIComponent(requestToken)}`,
-    undefined,
     "public lesson-request read-back",
   );
 }
@@ -283,25 +331,31 @@ async function getPublicLessonRequest(
 async function getJson<T>(
   request: APIRequestContext,
   url: string,
-  accessToken: string | undefined,
   label: string,
 ): Promise<T> {
-  const response = await request.get(url, {
-    headers: accessToken ? { authorization: `Bearer ${accessToken}` } : undefined,
-  });
+  const response = await request.get(url);
   return jsonResponse<T>(response, label);
 }
 
-async function postJson<T = unknown>(
+async function postPublicJson<T = unknown>(
   request: APIRequestContext,
   url: string,
   data: unknown,
-  accessToken: string | undefined,
+  label: string,
+): Promise<T> {
+  const response = await request.post(url, { data });
+  return jsonResponse<T>(response, label);
+}
+
+async function postCoachJson<T = unknown>(
+  request: APIRequestContext,
+  url: string,
+  data: unknown,
   label: string,
 ): Promise<T> {
   const response = await request.post(url, {
     data,
-    headers: accessToken ? { authorization: `Bearer ${accessToken}` } : undefined,
+    headers: { "X-CSRF-Protection": "1" },
   });
   return jsonResponse<T>(response, label);
 }
@@ -339,7 +393,7 @@ function isolatedDateForProject(projectName: string): { requestedDate: string; d
   return { requestedDate: base.toISOString().slice(0, 10), day };
 }
 
-async function signIn(page: Page): Promise<string> {
+async function signIn(page: Page): Promise<{ cookie: SessionCookie }> {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: /locked|sign in/i })).toBeVisible();
   const signInResponsePromise = page.waitForResponse((response) =>
@@ -351,8 +405,40 @@ async function signIn(page: Page): Promise<string> {
   const signInResponse = await signInResponsePromise;
   const signInBody = await signInResponse.text();
   expect(signInResponse.ok(), signInBody).toBeTruthy();
-  const session = JSON.parse(signInBody) as { access_token: string };
-  return session.access_token;
+  const session = JSON.parse(signInBody) as Record<string, unknown>;
+  expect(session).toMatchObject({ authenticated: true, coach: { instructor_id: "inst_001" } });
+  expect(session).not.toHaveProperty("access_token");
+  expect(session).not.toHaveProperty("token_type");
+
+  const setCookie = (await signInResponse.allHeaders())["set-cookie"] ?? "";
+  expect(setCookie).toContain("swim_session=");
+  expect(setCookie).toMatch(/HttpOnly/i);
+  expect(setCookie).toMatch(/SameSite=Strict/i);
+  expect(setCookie).toMatch(/Path=\/api/i);
+  expect(setCookie).toMatch(/Max-Age=/i);
+  expect(setCookie).toMatch(/Expires=/i);
+
+  const cookies = await page.context().cookies(`${new URL(liveApiBase).origin}/api`);
+  const cookie = cookies.find(({ name }) => name === "swim_session") as SessionCookie | undefined;
+  expect(cookie).toBeDefined();
+  expect(cookie!.httpOnly).toBeTruthy();
+  expect(cookie!.sameSite).toBe("Strict");
+  expect(cookie!.path).toBe("/api");
+  expect(cookie!.secure).toBe(new URL(liveApiBase).protocol === "https:");
+  expect(cookie!.domain.startsWith(".")).toBeFalsy();
+  expect(cookie!.expires).toBeGreaterThan(Date.now() / 1000);
+
+  const browserSecrets = await page.evaluate(() => ({
+    cookie: document.cookie,
+    legacySession: window.localStorage.getItem("swim-command:coach-session:v1"),
+    localValues: Object.values(window.localStorage),
+    sessionValues: Object.values(window.sessionStorage),
+  }));
+  expect(browserSecrets.cookie).not.toContain("swim_session");
+  expect(browserSecrets.legacySession).toBeNull();
+  expect([...browserSecrets.localValues, ...browserSecrets.sessionValues]).not.toContain(cookie!.value);
+
+  return { cookie: cookie! };
 }
 
 function readLiveApiBase(): string {

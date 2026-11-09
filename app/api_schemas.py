@@ -22,14 +22,14 @@ class CoachLoginRequest(BaseModel):
 
 
 class CoachAuthResponse(BaseModel):
-    access_token: str
-    token_type: Literal["bearer"] = "bearer"
+    authenticated: Literal[True] = True
     expires_at: datetime
     coach: CoachContext
 
 
 class CoachSessionResponse(BaseModel):
     authenticated: Literal[True] = True
+    expires_at: datetime
     coach: CoachContext
 
 

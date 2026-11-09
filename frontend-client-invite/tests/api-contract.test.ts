@@ -47,6 +47,8 @@ test("client invite slot search request is scoped by token path rather than raw 
 
   const body = JSON.parse(String(calls[0].init?.body)) as ClientAvailabilitySearchRequest;
   assert.equal(calls[0].url, "http://api.test/api/public/client-invites/invite_sofia_0826/slots");
+  assert.equal(calls[0].init?.credentials, "omit");
+  assert.equal(new Headers(calls[0].init?.headers).get("authorization"), null);
   assert.equal("instructor_id" in body, false);
   assert.equal("client_id" in body, false);
   assert.deepEqual(body, request);
@@ -98,6 +100,8 @@ test("client invite intake and request creation use the public invite routes", a
 
   assert.equal(calls[0].url, "http://api.test/api/public/client-invites/invite_sofia_0826/intake");
   assert.equal(calls[1].url, "http://api.test/api/public/client-invites/invite_sofia_0826/lesson-requests");
+  assert.equal(calls[0].init?.credentials, "omit");
+  assert.equal(calls[1].init?.credentials, "omit");
   assert.deepEqual(JSON.parse(String(calls[1].init?.body)), {
     slot_id: "slot_contract_0829_1230",
     idempotency_key: "invite-request:invite_sofia_0826:slot_contract_0829_1230",

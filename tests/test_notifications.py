@@ -407,6 +407,10 @@ def test_recipient_and_actionable_invite_context_are_immutable_on_replay(migrate
 def test_production_invite_origin_must_be_trusted(migrated_postgres_db, monkeypatch, origin):
     from app.api_errors import ApiException
     instructor = prepare()
+    with db.SessionLocal() as session:
+        invite = session.query(InviteTokenDB).filter_by(token=INVITE).one()
+        invite.is_demo = False
+        session.commit()
     monkeypatch.setenv("SWIM_ENV", "production")
     monkeypatch.setenv("SWIM_CLIENT_INVITE_ORIGIN", origin)
     with pytest.raises(ApiException, match="origin"):

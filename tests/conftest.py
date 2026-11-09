@@ -1,11 +1,17 @@
+import os
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+os.environ.setdefault("SWIM_ENV", "test")
+os.environ.setdefault("SWIM_ENABLE_DEMO_DATA", "true")
+os.environ.setdefault("SWIM_ENABLE_DEMO_AUTH", "true")
+
 from app import db
 from app.api import create_app
+from app.auth import CSRF_HEADER_NAME, CSRF_HEADER_VALUE, SESSION_COOKIE_NAME
 from tests.db_test_utils import reset_postgres_database
 
 
@@ -48,10 +54,16 @@ def login_coach(
     response = client.post(
         "/api/auth/coach/login",
         json={"email": email, "password": password},
+        headers={CSRF_HEADER_NAME: CSRF_HEADER_VALUE},
     )
     assert response.status_code == 200, response.text
-    token = response.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+    session_token = response.cookies.get(SESSION_COOKIE_NAME)
+    assert session_token
+    client.cookies.clear()
+    return {
+        "Cookie": f"{SESSION_COOKIE_NAME}={session_token}",
+        CSRF_HEADER_NAME: CSRF_HEADER_VALUE,
+    }
 
 
 @pytest.fixture()

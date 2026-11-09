@@ -1,6 +1,7 @@
 import { expect, type Page, type Route, test } from "@playwright/test";
 
-const AUTH_TOKEN = "playwright-coach-token";
+const SESSION_COOKIE_NAME = "swim_session";
+const SESSION_COOKIE_VALUE = "playwright-opaque-session";
 const COACH_EMAIL = "coach@example.com";
 const COACH_PASSWORD = "correct-horse-battery-staple";
 const LOCKED_OR_EXPIRED_HEADING = /sign in|locked|session expired/i;
@@ -8,7 +9,26 @@ const LOCKED_OR_EXPIRED_HEADING = /sign in|locked|session expired/i;
 test.describe("MVP coach auth flow", () => {
   test.describe.configure({ timeout: 15_000 });
 
-  test("shows compact locked state, signs in, keeps command-center styling, and signs out", async ({ page }) => {
+  test("gates protected requests and rendering behind delayed session validation", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page, { initialSession: true, delaySessionValidation: true });
+
+    await page.goto("/");
+
+    await expect(page.getByRole("heading", { name: "Checking your session…" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Today schedule" })).toHaveCount(0);
+    await expect(page.locator("[data-command-surface]")).toHaveCount(0);
+    expect(api.protectedCallsBeforeValidation()).toHaveLength(0);
+
+    api.releaseSessionValidation();
+    await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
+    expect(api.requestOrder()[0]).toBe("session");
+    expect(api.protectedCallsBeforeValidation()).toHaveLength(0);
+  });
+
+  test("signs in with an HttpOnly cookie, keeps command-center styling, and signs out", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("swim-command:coach-session:v1", JSON.stringify({ access_token: "legacy-secret" }));
+    });
     const api = await mockAuthenticatedCoachApi(page);
 
     await page.goto("/");
@@ -19,7 +39,7 @@ test.describe("MVP coach auth flow", () => {
     await expect(page.getByLabel(/email/i)).toBeVisible();
     await expect(page.getByLabel(/password/i)).toBeVisible();
     await expect(page.getByRole("heading", { name: "Today schedule" })).toHaveCount(0);
-    expect(api.protectedCallsBeforeAuth()).toHaveLength(0);
+    expect(api.protectedCallsBeforeValidation()).toHaveLength(0);
 
     await page.getByLabel(/email/i).fill(COACH_EMAIL);
     await page.getByLabel(/password/i).fill(COACH_PASSWORD);
@@ -41,9 +61,14 @@ test.describe("MVP coach auth flow", () => {
     });
     expect(brandRadius).toBe("8px");
 
-    expect(
-      api.protectedCalls().every((call) => call.authorization?.toLowerCase() === `bearer ${AUTH_TOKEN}`),
-    ).toBe(true);
+    const cookie = (await page.context().cookies()).find((item) => item.name === SESSION_COOKIE_NAME);
+    expect(cookie?.httpOnly).toBe(true);
+    expect(cookie?.sameSite).toBe("Strict");
+    expect(await page.evaluate(() => document.cookie)).not.toContain(SESSION_COOKIE_NAME);
+    expect(await page.evaluate(() => localStorage.getItem("swim-command:coach-session:v1"))).toBeNull();
+    expect(await page.evaluate(() => sessionStorage.length)).toBe(0);
+    expect(api.protectedCalls().every((call) => call.authorization === null && call.hasSessionCookie)).toBe(true);
+    expect(api.protectedCalls().filter((call) => call.method !== "GET").every((call) => call.csrf === "1")).toBe(true);
 
     await page.getByRole("button", { name: "Settings" }).click();
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
@@ -53,6 +78,7 @@ test.describe("MVP coach auth flow", () => {
     await expect(page.getByRole("heading", { name: LOCKED_OR_EXPIRED_HEADING })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Today schedule" })).toHaveCount(0);
     expect(api.logoutCalls()).toBe(1);
+    expect(api.signOutBodies()).toEqual([null]);
   });
 
   test("keeps invalid credentials in the locked state with an accessible error", async ({ page }) => {
@@ -67,6 +93,34 @@ test.describe("MVP coach auth flow", () => {
     await expect(page.getByRole("alert")).toContainText(/invalid|sign in/i);
     await expect(page.getByRole("heading", { name: /sign in|locked/i })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Today schedule" })).toHaveCount(0);
+  });
+
+  test("reload validates the cookie before restoring protected command data", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    await signInThroughUi(page);
+    const priorSessionChecks = api.sessionCalls();
+    const priorProtectedCalls = api.protectedCalls().length;
+
+    await page.reload();
+
+    await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
+    expect(api.sessionCalls()).toBe(priorSessionChecks + 1);
+    const reloadOrder = api.requestOrder().slice(-3);
+    expect(reloadOrder[0]).toBe("session");
+    expect(api.protectedCalls().slice(priorProtectedCalls).every((call) => !call.beforeValidation)).toBe(true);
+  });
+
+  test("shows a retryable unavailable state when session validation cannot complete", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page, { initialSession: true });
+    api.failNextSessionCheckWith(503);
+
+    await page.goto("/");
+
+    await expect(page.getByRole("heading", { name: "Session check unavailable" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Today schedule" })).toHaveCount(0);
+    expect(api.protectedCalls()).toHaveLength(0);
+    await page.getByRole("button", { name: "Retry session check" }).click();
+    await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
   });
 
   test("uses the exact direct-booking ID for an authenticated calendar fallback", async ({ page }) => {
@@ -219,32 +273,104 @@ test.describe("MVP coach auth flow", () => {
     expect(api.protectedCalls().filter((call) => call.path.endsWith("/coach/bookings"))).toHaveLength(1);
   });
 
-  for (const status of [401, 403] as const) {
-    test(`clears auth and shows session-expired sign-in UI after a protected ${status}`, async ({ page }) => {
-      const api = await mockAuthenticatedCoachApi(page);
+  test("clears protected UI after a revoked session returns 401", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    await signInThroughUi(page);
 
-      await page.goto("/");
-      await expect(page.getByRole("heading", { name: LOCKED_OR_EXPIRED_HEADING })).toBeVisible();
-      await page.getByLabel(/email/i).fill(COACH_EMAIL);
-      await page.getByLabel(/password/i).fill(COACH_PASSWORD);
-      await page.getByRole("button", { name: /sign in/i }).click();
-      await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
+    api.revokeSession();
+    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find safe starts" }).click();
 
-      api.expireProtectedRequestsWith(status);
-      await page.getByRole("button", { name: "Find" }).click();
-      await page.getByRole("button", { name: "Find safe starts" }).click();
+    await expect(page.getByRole("heading", { name: "Session expired" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Availability finder" })).toHaveCount(0);
+  });
 
-      await expect(page.getByRole("alert")).toContainText(/session|sign in|expired/i);
-      await expect(page.getByRole("heading", { name: LOCKED_OR_EXPIRED_HEADING })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "Availability finder" })).toHaveCount(0);
-    });
-  }
+  test("keeps a valid session and protected UI on provider 403", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    await signInThroughUi(page);
+    api.failProtectedRequestsWith(403);
+
+    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find safe starts" }).click();
+
+    await expect(page.getByRole("alert")).toContainText(/permission|forbidden/i);
+    await expect(page.getByRole("heading", { name: "Availability finder" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Session expired" })).toHaveCount(0);
+  });
+
+  test("rejects an unsafe command without optimistic booking or session expiry", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    await signInThroughUi(page);
+    await page.getByRole("button", { name: "Find" }).click();
+    api.failNextBookingWithCsrf();
+
+    await page.getByRole("button", { name: "Book lesson" }).first().click();
+
+    await expect(page.getByRole("alert")).toContainText(/origin|csrf/i);
+    await expect(page.getByRole("dialog", { name: /calendar/i })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Availability finder" })).toBeVisible();
+    const bookingCall = api.protectedCalls().find((call) => call.path.endsWith("/coach/bookings"));
+    expect(bookingCall?.csrf).toBe("1");
+  });
+
+  test("successful sign-out revokes the session and rejects a replayed captured cookie", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    await signInThroughUi(page);
+    const captured = (await page.context().cookies()).find((item) => item.name === SESSION_COOKIE_NAME);
+    expect(captured).toBeDefined();
+
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: /sign out/i }).click();
+    await expect(page.getByRole("heading", { name: LOCKED_OR_EXPIRED_HEADING })).toBeVisible();
+
+    await page.context().addCookies([captured!]);
+    await page.reload();
+
+    await expect(page.getByRole("heading", { name: LOCKED_OR_EXPIRED_HEADING })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Today schedule" })).toHaveCount(0);
+    expect(api.invalidSessionReplays()).toBeGreaterThan(0);
+  });
+
+  test("failed sign-out hides protected data and offers a revocation retry", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    await signInThroughUi(page);
+    api.failNextSignOutWith(503);
+
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: /sign out/i }).click();
+
+    await expect(page.getByRole("heading", { name: "Sign-out could not be confirmed" })).toBeVisible();
+    await expect(page.locator("[data-command-surface]")).toHaveCount(0);
+    await page.getByRole("button", { name: "Retry sign out" }).click();
+    await expect(page.getByRole("heading", { name: LOCKED_OR_EXPIRED_HEADING })).toBeVisible();
+    expect(api.logoutCalls()).toBe(2);
+  });
+
+  test("a delayed protected response cannot repopulate state after sign-out", async ({ page }) => {
+    const api = await mockAuthenticatedCoachApi(page);
+    await signInThroughUi(page);
+    await page.getByRole("button", { name: "Find" }).click();
+    api.delayNextAvailability();
+
+    await page.getByRole("button", { name: "Find safe starts" }).click({ noWaitAfter: true });
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: /sign out/i }).click();
+    await expect(page.getByRole("heading", { name: LOCKED_OR_EXPIRED_HEADING })).toBeVisible();
+
+    api.releaseAvailability();
+    await page.waitForTimeout(50);
+    await expect(page.locator("[data-command-surface]")).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Today schedule" })).toHaveCount(0);
+  });
 });
 
 type ProtectedCall = {
   path: string;
+  method: string;
   authorization: string | null;
-  beforeAuth: boolean;
+  csrf: string | null;
+  hasSessionCookie: boolean;
+  beforeValidation: boolean;
   body: Record<string, unknown> | null;
 };
 
@@ -255,24 +381,56 @@ type MockCoachApiState = {
   nextEmailRefreshResponse: Array<Record<string, unknown>> | null;
   nextSnapshotStatus: number | null;
   nextConfirmationConflict: boolean;
+  nextBookingCsrfFailure: boolean;
 };
 
-async function mockAuthenticatedCoachApi(page: Page): Promise<{
-  expireProtectedRequestsWith(status: 401 | 403): void;
+type MockCoachApiOptions = {
+  initialSession?: boolean;
+  delaySessionValidation?: boolean;
+};
+
+async function mockAuthenticatedCoachApi(page: Page, options: MockCoachApiOptions = {}): Promise<{
+  failProtectedRequestsWith(status: 401 | 403): void;
+  revokeSession(): void;
   failNextCalendarReadWith(status: 401 | 409): void;
   failNextEmailRefreshWith(status: number): void;
   failNextEmailActionWith(status: number): void;
   respondToNextEmailRefreshWith(deliveries: Array<Record<string, unknown>>): void;
   failNextSnapshotWith(status: number): void;
   failNextConfirmationWithConflict(): void;
+  failNextSessionCheckWith(status: number): void;
+  failNextSignOutWith(status: number): void;
+  failNextBookingWithCsrf(): void;
+  delayNextAvailability(): void;
+  releaseAvailability(): void;
+  releaseSessionValidation(): void;
   logoutCalls(): number;
+  sessionCalls(): number;
+  invalidSessionReplays(): number;
+  signOutBodies(): Array<Record<string, unknown> | null>;
+  requestOrder(): string[];
   protectedCalls(): ProtectedCall[];
-  protectedCallsBeforeAuth(): ProtectedCall[];
+  protectedCallsBeforeValidation(): ProtectedCall[];
 }> {
-  let token: string | null = null;
+  let sessionActive = options.initialSession ?? false;
+  let sessionRevoked = false;
+  let sessionValidated = false;
   let expiredStatus: 401 | 403 | null = null;
   let nextCalendarReadStatus: 401 | 409 | null = null;
+  let nextSessionStatus: number | null = null;
+  let nextSignOutStatus: number | null = null;
   let logoutCallCount = 0;
+  let sessionCallCount = 0;
+  let invalidSessionReplayCount = 0;
+  let delayAvailability = false;
+  let releaseAvailabilityGate: (() => void) | null = null;
+  let availabilityGate: Promise<void> | null = null;
+  let releaseSessionGate: (() => void) | null = null;
+  let sessionGate = options.delaySessionValidation
+    ? new Promise<void>((resolve) => { releaseSessionGate = resolve; })
+    : null;
+  const signOutBodies: Array<Record<string, unknown> | null> = [];
+  const requestOrder: string[] = [];
   const protectedCalls: ProtectedCall[] = [];
   const state: MockCoachApiState = {
     emailDeliveries: emailDeliveryResponses(),
@@ -281,27 +439,61 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
     nextEmailRefreshResponse: null,
     nextSnapshotStatus: null,
     nextConfirmationConflict: false,
+    nextBookingCsrfFailure: false,
   };
+
+  if (sessionActive) {
+    await page.context().addCookies([{
+      name: SESSION_COOKIE_NAME,
+      value: SESSION_COOKIE_VALUE,
+      url: "http://127.0.0.1:5173/api",
+      httpOnly: true,
+      sameSite: "Strict",
+    }]);
+  }
 
   await page.route(/\/api\/(?:auth|coach)\//, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
 
     if (url.pathname.endsWith("/auth/coach/session")) {
-      if (token) {
-        await route.fulfill({ json: { authenticated: true, coach: authSessionResponse() } });
+      sessionCallCount += 1;
+      requestOrder.push("session");
+      if (sessionGate) await sessionGate;
+      if (nextSessionStatus) {
+        const status = nextSessionStatus;
+        nextSessionStatus = null;
+        await route.fulfill({ status, json: apiError("SESSION_UNAVAILABLE", "Session validation is unavailable.") });
         return;
       }
-      await route.fulfill({ status: 401, json: apiError("AUTH_REQUIRED", "Sign in is required.") });
+      const hasCookie = requestHasSessionCookie(request.headers().cookie);
+      if (sessionActive && !sessionRevoked && hasCookie) {
+        sessionValidated = true;
+        await route.fulfill({ json: authLoginResponse() });
+        return;
+      }
+      if (hasCookie && sessionRevoked) invalidSessionReplayCount += 1;
+      sessionValidated = false;
+      await route.fulfill({
+        status: 401,
+        headers: { "set-cookie": expiredSessionCookie() },
+        json: apiError(hasCookie ? "INVALID_AUTH_TOKEN" : "AUTHENTICATION_REQUIRED", "Sign in is required."),
+      });
       return;
     }
 
     if (url.pathname.endsWith("/auth/coach/sign-in")) {
+      if (request.headers()["x-csrf-protection"] !== "1") {
+        await route.fulfill({ status: 403, json: apiError("CSRF_VALIDATION_FAILED", "CSRF protection is required.") });
+        return;
+      }
       const body = postBody(request.postData());
       if (body.email === COACH_EMAIL && body.password === COACH_PASSWORD) {
-        token = AUTH_TOKEN;
+        sessionActive = true;
+        sessionRevoked = false;
+        sessionValidated = true;
         expiredStatus = null;
-        await route.fulfill({ json: authLoginResponse() });
+        await route.fulfill({ headers: { "set-cookie": activeSessionCookie() }, json: authLoginResponse() });
         return;
       }
       await route.fulfill({ status: 401, json: apiError("INVALID_CREDENTIALS", "Invalid sign in credentials.") });
@@ -310,31 +502,76 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
 
     if (url.pathname.endsWith("/auth/coach/sign-out")) {
       logoutCallCount += 1;
-      token = null;
-      await route.fulfill({ json: { success: true } });
+      signOutBodies.push(request.postData() === null ? null : postBody(request.postData()));
+      if (request.headers()["x-csrf-protection"] !== "1") {
+        await route.fulfill({ status: 403, json: apiError("CSRF_VALIDATION_FAILED", "CSRF protection is required.") });
+        return;
+      }
+      if (nextSignOutStatus) {
+        const status = nextSignOutStatus;
+        nextSignOutStatus = null;
+        await route.fulfill({ status, json: apiError("SIGN_OUT_UNAVAILABLE", "Sign-out is unavailable.") });
+        return;
+      }
+      sessionActive = false;
+      sessionRevoked = true;
+      sessionValidated = false;
+      await route.fulfill({
+        headers: { "set-cookie": expiredSessionCookie() },
+        json: { success: true, message: "Signed out." },
+      });
       return;
     }
 
     if (url.pathname.startsWith("/api/coach/")) {
       const authorization = request.headers().authorization ?? null;
+      const csrf = request.headers()["x-csrf-protection"] ?? null;
+      const hasSessionCookie = requestHasSessionCookie(request.headers().cookie);
       protectedCalls.push({
         path: url.pathname,
+        method: request.method(),
         authorization,
-        beforeAuth: !token,
+        csrf,
+        hasSessionCookie,
+        beforeValidation: !sessionValidated,
         body: request.postData() === null ? null : postBody(request.postData()),
       });
+      requestOrder.push(`protected:${url.pathname}`);
 
-      if (!token || authorization?.toLowerCase() !== `bearer ${AUTH_TOKEN}`) {
-        await route.fulfill({ status: 401, json: apiError("AUTH_REQUIRED", "Sign in is required.") });
+      if (!sessionActive || sessionRevoked || !hasSessionCookie) {
+        await route.fulfill({ status: 401, json: apiError("INVALID_AUTH_TOKEN", "Sign in is required.") });
+        return;
+      }
+
+      if (request.method() !== "GET" && csrf !== "1") {
+        await route.fulfill({ status: 403, json: apiError("CSRF_VALIDATION_FAILED", "CSRF protection is required.") });
         return;
       }
 
       if (expiredStatus) {
         await route.fulfill({
           status: expiredStatus,
-          json: apiError(expiredStatus === 401 ? "AUTH_REQUIRED" : "FORBIDDEN", "Your session expired. Sign in again."),
+          json: apiError(
+            expiredStatus === 401 ? "INVALID_AUTH_TOKEN" : "FORBIDDEN",
+            expiredStatus === 401 ? "Your session expired. Sign in again." : "You do not have permission for this action.",
+          ),
         });
         return;
+      }
+
+      if (url.pathname.endsWith("/coach/bookings") && state.nextBookingCsrfFailure) {
+        state.nextBookingCsrfFailure = false;
+        await route.fulfill({
+          status: 403,
+          json: apiError("CSRF_VALIDATION_FAILED", "The request origin is not trusted."),
+        });
+        return;
+      }
+
+      if (url.pathname.endsWith("/coach/availability") && delayAvailability && availabilityGate) {
+        await availabilityGate;
+        delayAvailability = false;
+        availabilityGate = null;
       }
 
       if (url.pathname.endsWith("/calendar-links") && nextCalendarReadStatus) {
@@ -416,8 +653,12 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
   });
 
   return {
-    expireProtectedRequestsWith(status: 401 | 403): void {
+    failProtectedRequestsWith(status: 401 | 403): void {
       expiredStatus = status;
+    },
+    revokeSession(): void {
+      sessionRevoked = true;
+      sessionActive = false;
     },
     failNextCalendarReadWith(status: 401 | 409): void {
       nextCalendarReadStatus = status;
@@ -437,14 +678,48 @@ async function mockAuthenticatedCoachApi(page: Page): Promise<{
     failNextConfirmationWithConflict(): void {
       state.nextConfirmationConflict = true;
     },
+    failNextSessionCheckWith(status: number): void {
+      nextSessionStatus = status;
+    },
+    failNextSignOutWith(status: number): void {
+      nextSignOutStatus = status;
+    },
+    failNextBookingWithCsrf(): void {
+      state.nextBookingCsrfFailure = true;
+    },
+    delayNextAvailability(): void {
+      delayAvailability = true;
+      availabilityGate = new Promise<void>((resolve) => { releaseAvailabilityGate = resolve; });
+    },
+    releaseAvailability(): void {
+      releaseAvailabilityGate?.();
+      releaseAvailabilityGate = null;
+    },
+    releaseSessionValidation(): void {
+      releaseSessionGate?.();
+      releaseSessionGate = null;
+      sessionGate = null;
+    },
     logoutCalls(): number {
       return logoutCallCount;
+    },
+    sessionCalls(): number {
+      return sessionCallCount;
+    },
+    invalidSessionReplays(): number {
+      return invalidSessionReplayCount;
+    },
+    signOutBodies(): Array<Record<string, unknown> | null> {
+      return [...signOutBodies];
+    },
+    requestOrder(): string[] {
+      return [...requestOrder];
     },
     protectedCalls(): ProtectedCall[] {
       return [...protectedCalls];
     },
-    protectedCallsBeforeAuth(): ProtectedCall[] {
-      return protectedCalls.filter((call) => call.beforeAuth);
+    protectedCallsBeforeValidation(): ProtectedCall[] {
+      return protectedCalls.filter((call) => call.beforeValidation);
     },
   };
 }
@@ -536,11 +811,22 @@ function postBody(rawBody: string | null): Record<string, unknown> {
 
 function authLoginResponse(): Record<string, unknown> {
   return {
-    access_token: AUTH_TOKEN,
-    token_type: "bearer",
+    authenticated: true,
     expires_at: "2026-09-01T00:00:00Z",
     coach: authSessionResponse(),
   };
+}
+
+function activeSessionCookie(): string {
+  return `${SESSION_COOKIE_NAME}=${SESSION_COOKIE_VALUE}; Path=/api; HttpOnly; SameSite=Strict; Max-Age=28800`;
+}
+
+function expiredSessionCookie(): string {
+  return `${SESSION_COOKIE_NAME}=; Path=/api; HttpOnly; SameSite=Strict; Max-Age=0`;
+}
+
+function requestHasSessionCookie(cookieHeader: string | undefined): boolean {
+  return cookieHeader?.split(";").some((part) => part.trim() === `${SESSION_COOKIE_NAME}=${SESSION_COOKIE_VALUE}`) ?? false;
 }
 
 function authSessionResponse(): Record<string, unknown> {

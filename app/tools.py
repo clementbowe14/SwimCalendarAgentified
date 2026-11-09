@@ -148,7 +148,7 @@ def book_swim_lesson(
     start_time_storage = timezones.to_utc_storage(start_time)
     end_time_storage = start_time_storage + datetime.timedelta(minutes=duration_mins)
 
-    existing = db.get_appointment_by_idempotency_key(idempotency_key)
+    existing = db.get_appointment_by_idempotency_key(instructor_id, idempotency_key)
     if existing is not None:
         if (
             existing["instructor_id"] != instructor_id

@@ -1,5 +1,9 @@
 import "./styles.css";
-import { createInstructorCommandApi, InstructorCommandApiError } from "./api/instructorApi.js";
+import {
+  clearLegacyInstructorAuthState,
+  createInstructorCommandApi,
+  InstructorCommandApiError,
+} from "./api/instructorApi.js";
 import type {
   CalendarLinks,
   CoachEmailDelivery,
@@ -42,7 +46,15 @@ exposeDevelopmentDataMode(instructorRuntimeConfig.mode);
 type AppState = {
   activeScreen: ScreenId;
   selectedClientId: string;
-  authStatus: "checking" | "locked" | "expired" | "signed_in";
+  authStatus:
+    | "checking"
+    | "unavailable"
+    | "locked"
+    | "expired"
+    | "signing_in"
+    | "signed_in"
+    | "signing_out"
+    | "sign_out_failed";
   authSession: InstructorAuthSession | null;
   snapshot: CommandCenterSnapshot | null;
   emailDeliveries: CoachEmailDelivery[];
@@ -63,7 +75,7 @@ const state: AppState = {
   activeScreen: "today",
   selectedClientId: "client_maya",
   authStatus: instructorCommandApi.authMode === "live" ? "checking" : "signed_in",
-  authSession: instructorCommandApi.getStoredSession(),
+  authSession: null,
   snapshot: null,
   emailDeliveries: [],
   deliveryCards: {},
@@ -84,6 +96,7 @@ const commandDate = import.meta.env?.VITE_INSTRUCTOR_COMMAND_DATE || "2026-08-27
 const instructorApiBaseUrl = instructorRuntimeConfig.mode === "http"
   ? instructorRuntimeConfig.apiBaseUrl
   : "";
+let authGeneration = 0;
 
 void boot();
 
@@ -104,49 +117,65 @@ function exposeDevelopmentDataMode(mode: "mock" | "http"): void {
 
 async function boot(): Promise<void> {
   if (instructorCommandApi.authMode === "live") {
-    const storedSession = instructorCommandApi.getStoredSession();
-    if (!storedSession) {
-      state.authStatus = "locked";
-      render();
-      return;
-    }
-
-    try {
-      state.authSession = {
-        ...storedSession,
-        coach: await instructorCommandApi.validateSession(),
-      };
-    } catch (error) {
-      if (!handleAuthFailure(error)) {
-        state.authStatus = "locked";
-        state.error = formatApiError(error);
-      }
-      render();
-      return;
-    }
+    clearLegacyInstructorAuthState();
+    await validateLiveSession();
+    return;
   }
 
   state.authStatus = "signed_in";
-  await loadCommandCenter();
+  await loadCommandCenter(authGeneration);
 }
 
-async function loadCommandCenter(): Promise<void> {
+async function validateLiveSession(): Promise<void> {
+  const generation = nextAuthGeneration();
+  clearProtectedState();
+  state.authStatus = "checking";
+  state.error = "";
+  state.toast = "";
+  render();
+
   try {
-    applySnapshot(await instructorCommandApi.getSnapshot(instructorId, commandDate));
+    const session = await instructorCommandApi.validateSession();
+    if (!isCurrentGeneration(generation)) return;
+    state.authSession = session;
+    state.authStatus = "signed_in";
+    await loadCommandCenter(generation);
+  } catch (error) {
+    if (!isCurrentGeneration(generation)) return;
+    clearProtectedState();
+    if (isAuthenticationFailure(error)) {
+      state.authStatus = "locked";
+      state.error = "";
+    } else {
+      state.authStatus = "unavailable";
+      state.error = "We could not verify your session. Check your connection and try again.";
+    }
+    render();
+  }
+}
+
+async function loadCommandCenter(generation: number): Promise<void> {
+  try {
+    const snapshot = await instructorCommandApi.getSnapshot(instructorId, commandDate);
+    if (!isCurrentSignedInGeneration(generation)) return;
+    applySnapshot(snapshot);
     if (!state.snapshot) return;
     if (!state.snapshot.clients.some((client) => client.id === state.selectedClientId)) {
       state.selectedClientId = state.snapshot.clients[0]?.id ?? "client_new";
     }
     const selectedClient = findFeaturedClient(state.snapshot, state.selectedClientId);
-    state.recommendedSlots = await instructorCommandApi.findAvailableSlots(
+    const slots = await instructorCommandApi.findAvailableSlots(
       buildFindSlotsRequest(state.snapshot.instructor.id, selectedClient, state.snapshot.date),
     );
+    if (!isCurrentSignedInGeneration(generation)) return;
+    state.recommendedSlots = slots;
   } catch (error) {
-    if (!handleAuthFailure(error)) {
+    if (!isCurrentGeneration(generation)) return;
+    if (!handleAuthFailure(error, undefined, generation)) {
       state.error = formatApiError(error);
     }
   }
-  render();
+  if (isCurrentGeneration(generation)) render();
 }
 
 function render(): void {
@@ -181,6 +210,34 @@ function render(): void {
 }
 
 function renderLockedScreen(): string {
+  if (state.authStatus === "checking" || state.authStatus === "signing_in" || state.authStatus === "signing_out") {
+    const isSignIn = state.authStatus === "signing_in";
+    const isSignOut = state.authStatus === "signing_out";
+    const heading = isSignIn ? "Signing you in…" : isSignOut ? "Signing out…" : "Checking your session…";
+    const body = isSignIn
+      ? "Securely opening your instructor command center."
+      : isSignOut
+        ? "Revoking this browser session."
+        : "Verifying this browser before any protected schedule data loads.";
+    return renderAuthStatusScreen(heading, body);
+  }
+
+  if (state.authStatus === "unavailable") {
+    return renderAuthStatusScreen(
+      "Session check unavailable",
+      "Your protected schedule remains hidden until the session can be verified.",
+      `<button class="primary-action" data-retry-session type="button">Retry session check</button>`,
+    );
+  }
+
+  if (state.authStatus === "sign_out_failed") {
+    return renderAuthStatusScreen(
+      "Sign-out could not be confirmed",
+      "Your schedule is hidden, but the server may still recognize this browser. Retry to revoke the session.",
+      `<button class="danger-action" data-retry-sign-out type="button">Retry sign out</button>`,
+    );
+  }
+
   const isExpired = state.authStatus === "expired";
   const heading = isExpired ? "Session expired" : "Swim Command locked";
   const body = isExpired
@@ -214,6 +271,26 @@ function renderLockedScreen(): string {
           </label>
           <button class="primary-action" type="submit">Sign in</button>
         </form>
+      </section>
+    </main>
+  `;
+}
+
+function renderAuthStatusScreen(heading: string, body: string, action = ""): string {
+  return `
+    <main class="auth-shell">
+      <section class="auth-panel auth-status-panel" aria-labelledby="auth-title" aria-live="polite">
+        <div class="brand-lockup">
+          <span class="brand-mark">SC</span>
+          <div><strong>Swim Command</strong><span>Instructor access</span></div>
+        </div>
+        <div class="auth-copy">
+          <p class="eyebrow">Protected workspace</p>
+          <h1 id="auth-title">${escapeHtml(heading)}</h1>
+          <p>${escapeHtml(body)}</p>
+        </div>
+        ${renderError()}
+        ${action}
       </section>
     </main>
   `;
@@ -254,15 +331,16 @@ function wireEvents(): void {
 
   app.querySelector<HTMLSelectElement>("[data-client-picker]")?.addEventListener("change", async (event) => {
     const target = event.currentTarget as HTMLSelectElement;
-    await runAction(async () => {
+    await runAction(async (generation) => {
       state.selectedClientId = target.value;
-      await refreshSlots();
+      await refreshSlots(generation);
     });
   });
 
   app.querySelector<HTMLButtonElement>("[data-refresh-slots]")?.addEventListener("click", async () => {
-    await runAction(async () => {
-      await refreshSlots();
+    await runAction(async (generation) => {
+      await refreshSlots(generation);
+      if (!isCurrentSignedInGeneration(generation)) return;
       state.toast = "Safe starts refreshed from the adapter.";
     });
   });
@@ -275,11 +353,12 @@ function wireEvents(): void {
 
   app.querySelectorAll<HTMLButtonElement>("[data-confirm-request]").forEach((button) => {
     button.addEventListener("click", async () => {
-      await runAction(async () => {
+      await runAction(async (generation) => {
         const confirmation = await instructorCommandApi.confirmRequest(
           button.dataset.confirmRequest ?? "",
           button.dataset.confirmSlotId,
         );
+        if (!isCurrentSignedInGeneration(generation)) return;
         if (confirmation.email_delivery) patchEmailDeliveries([confirmation.email_delivery]);
         const appointmentId = confirmation.appointment_id ?? confirmation.appointment_ids[0] ?? null;
         await completePersistedAction(
@@ -287,6 +366,7 @@ function wireEvents(): void {
           confirmation.calendar_links ?? null,
           button.dataset.calendarFocus ?? "",
           "requests",
+          generation,
         );
       });
     });
@@ -294,9 +374,12 @@ function wireEvents(): void {
 
   app.querySelectorAll<HTMLButtonElement>("[data-alternatives-request]").forEach((button) => {
     button.addEventListener("click", async () => {
-      await runAction(async () => {
+      await runAction(async (generation) => {
         await instructorCommandApi.requestAlternatives(button.dataset.alternativesRequest ?? "", []);
-        applySnapshot(await instructorCommandApi.getSnapshot(instructorId, commandDate));
+        if (!isCurrentSignedInGeneration(generation)) return;
+        const snapshot = await instructorCommandApi.getSnapshot(instructorId, commandDate);
+        if (!isCurrentSignedInGeneration(generation)) return;
+        applySnapshot(snapshot);
         state.toast = "Alternatives requested.";
       });
     });
@@ -310,14 +393,18 @@ function wireEvents(): void {
     const payload = schedulerRulesFromForm(event.currentTarget as HTMLFormElement, state.snapshot.rules);
     state.settingsPending = true;
     state.settingsError = "";
+    const generation = authGeneration;
     render();
     try {
       const saved = await instructorCommandApi.saveRules(payload);
+      if (!isCurrentSignedInGeneration(generation)) return;
       if (state.snapshot) state.snapshot = { ...state.snapshot, rules: saved };
       state.toast = "Scheduling rules saved.";
     } catch (error) {
-      if (!handleAuthFailure(error)) state.settingsError = formatApiError(error);
+      if (!isCurrentGeneration(generation)) return;
+      if (!handleAuthFailure(error, undefined, generation)) state.settingsError = formatApiError(error);
     } finally {
+      if (!isCurrentGeneration(generation)) return;
       state.settingsPending = false;
       render();
       app.querySelector<HTMLElement>("[data-settings-error]")?.focus();
@@ -356,6 +443,7 @@ function wireEmailDeliveryEvents(): void {
 
 async function refreshEmailDeliveries(): Promise<void> {
   if (state.deliveryRefreshPending) return;
+  const generation = authGeneration;
   state.deliveryRefreshPending = true;
   state.deliveryRefreshResult = "";
   state.deliveryRefreshError = "";
@@ -363,13 +451,17 @@ async function refreshEmailDeliveries(): Promise<void> {
   render();
 
   try {
-    patchEmailDeliveries(await instructorCommandApi.getEmailDeliveries());
+    const deliveries = await instructorCommandApi.getEmailDeliveries();
+    if (!isCurrentSignedInGeneration(generation)) return;
+    patchEmailDeliveries(deliveries);
     state.deliveryRefreshResult = "Delivery status refreshed.";
   } catch (error) {
-    if (!handleAuthFailure(error)) {
+    if (!isCurrentGeneration(generation)) return;
+    if (!handleAuthFailure(error, undefined, generation)) {
       state.deliveryRefreshError = "Delivery status could not be refreshed. Your last-known statuses are still shown.";
     }
   } finally {
+    if (!isCurrentGeneration(generation)) return;
     state.deliveryRefreshPending = false;
     if (state.authStatus === "signed_in") state.deliveryFocus = { primary: "refresh" };
     render();
@@ -378,6 +470,7 @@ async function refreshEmailDeliveries(): Promise<void> {
 
 async function resendEmailDelivery(deliveryId: string): Promise<void> {
   if (!deliveryId) return;
+  const generation = authGeneration;
   const card = deliveryCardState(deliveryId);
   if (card.pending) return;
   card.pending = "resend";
@@ -389,6 +482,7 @@ async function resendEmailDelivery(deliveryId: string): Promise<void> {
 
   try {
     const delivery = await instructorCommandApi.resendEmailDelivery(deliveryId);
+    if (!isCurrentSignedInGeneration(generation)) return;
     patchEmailDeliveries([delivery]);
     card.pending = null;
     card.result = delivery.status === "queued"
@@ -396,17 +490,19 @@ async function resendEmailDelivery(deliveryId: string): Promise<void> {
       : "Delivery status updated. No new email was queued.";
     state.deliveryFocus = { primary: `resend:${deliveryId}`, fallback: `card:${deliveryId}` };
   } catch (error) {
+    if (!isCurrentGeneration(generation)) return;
     card.pending = null;
-    if (!handleAuthFailure(error)) {
+    if (!handleAuthFailure(error, undefined, generation)) {
       card.error = safeDeliveryActionError(error);
       state.deliveryFocus = { primary: `resend:${deliveryId}`, fallback: `card:${deliveryId}` };
     }
   }
-  render();
+  if (isCurrentGeneration(generation)) render();
 }
 
 async function updateEmailDeliveryContact(deliveryId: string, email: string): Promise<void> {
   if (!deliveryId) return;
+  const generation = authGeneration;
   const card = deliveryCardState(deliveryId);
   if (card.pending) return;
   card.draft = email;
@@ -427,14 +523,16 @@ async function updateEmailDeliveryContact(deliveryId: string, email: string): Pr
 
   try {
     const delivery = await instructorCommandApi.updateEmailDeliveryContact(deliveryId, email);
+    if (!isCurrentSignedInGeneration(generation)) return;
     patchEmailDeliveries([delivery]);
     card.pending = null;
     card.draft = "";
     card.result = "Email updated and queued";
     state.deliveryFocus = { primary: `contact:${deliveryId}`, fallback: `card:${deliveryId}` };
   } catch (error) {
+    if (!isCurrentGeneration(generation)) return;
     card.pending = null;
-    if (handleAuthFailure(error)) {
+    if (handleAuthFailure(error, undefined, generation)) {
       render();
       return;
     }
@@ -446,7 +544,7 @@ async function updateEmailDeliveryContact(deliveryId: string, email: string): Pr
       state.deliveryFocus = { primary: `contact:${deliveryId}`, fallback: `card:${deliveryId}` };
     }
   }
-  render();
+  if (isCurrentGeneration(generation)) render();
 }
 
 function safeDeliveryActionError(error: unknown): string {
@@ -516,6 +614,12 @@ function schedulerRulesFromForm(form: HTMLFormElement, current: SchedulerRules):
 }
 
 function wireAuthEvents(): void {
+  app.querySelector<HTMLButtonElement>("[data-retry-session]")?.addEventListener("click", async () => {
+    await validateLiveSession();
+  });
+  app.querySelector<HTMLButtonElement>("[data-retry-sign-out]")?.addEventListener("click", async () => {
+    await signOut();
+  });
   app.querySelector<HTMLFormElement>("[data-sign-in-form]")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (event.currentTarget instanceof HTMLFormElement) {
@@ -536,54 +640,58 @@ async function signIn(form: HTMLFormElement): Promise<void> {
     return;
   }
 
-  state.authStatus = "checking";
+  const generation = nextAuthGeneration();
+  clearProtectedState();
+  state.authStatus = "signing_in";
   render();
 
   try {
-    state.authSession = await instructorCommandApi.signIn({ email, password });
-    state.snapshot = null;
-    state.recommendedSlots = [];
-    state.calendarHandoff = null;
-    clearEmailDeliveryState();
+    const session = await instructorCommandApi.signIn({ email, password });
+    if (!isCurrentGeneration(generation)) return;
+    state.authSession = session;
     state.authStatus = "signed_in";
     state.toast = "Signed in.";
-    await loadCommandCenter();
+    await loadCommandCenter(generation);
   } catch (error) {
+    if (!isCurrentGeneration(generation)) return;
+    clearProtectedState();
     state.authStatus = "locked";
-    state.authSession = null;
     state.error = formatApiError(error);
     render();
   }
 }
 
 async function signOut(): Promise<void> {
+  const generation = nextAuthGeneration();
+  clearProtectedState();
   state.error = "";
+  state.toast = "";
+  state.authStatus = "signing_out";
+  render();
   try {
     await instructorCommandApi.signOut();
-  } catch (error) {
-    state.error = formatApiError(error);
-  } finally {
-    state.authSession = null;
-    state.snapshot = null;
-    state.recommendedSlots = [];
-    state.calendarHandoff = null;
-    clearEmailDeliveryState();
+    if (!isCurrentGeneration(generation)) return;
     state.authStatus = "locked";
-    state.toast = "";
-    render();
+  } catch (error) {
+    if (!isCurrentGeneration(generation)) return;
+    state.authStatus = "sign_out_failed";
+    state.error = `Sign-out could not be confirmed. ${formatApiError(error)}`;
   }
+  render();
 }
 
-async function refreshSlots(): Promise<void> {
+async function refreshSlots(generation: number): Promise<void> {
   if (!state.snapshot) return;
   const selectedClient = findFeaturedClient(state.snapshot, state.selectedClientId);
-  state.recommendedSlots = await instructorCommandApi.findAvailableSlots(
+  const slots = await instructorCommandApi.findAvailableSlots(
     buildFindSlotsRequest(state.snapshot.instructor.id, selectedClient, state.snapshot.date),
   );
+  if (!isCurrentSignedInGeneration(generation)) return;
+  state.recommendedSlots = slots;
 }
 
 async function bookSlot(slotId: string, returnFocusKey: string): Promise<void> {
-  await runAction(async () => {
+  await runAction(async (generation) => {
     if (!state.snapshot) return;
     const selectedClient = findFeaturedClient(state.snapshot, state.selectedClientId);
     const slot = state.recommendedSlots.find((item) => item.id === slotId);
@@ -599,11 +707,13 @@ async function bookSlot(slotId: string, returnFocusKey: string): Promise<void> {
       is_instructor_facility: slot.target_location.is_instructor_facility,
       idempotency_key: `command:${selectedClient.id}:${slot.start_time}`,
     });
+    if (!isCurrentSignedInGeneration(generation)) return;
     await completePersistedAction(
       booking.appointment_id,
       booking.calendar_links ?? null,
       returnFocusKey,
       "finder",
+      generation,
     );
   });
 }
@@ -613,17 +723,21 @@ async function completePersistedAction(
   mutationLinks: CalendarLinks | null,
   returnFocusKey: string,
   returnFocusFallback: "finder" | "requests",
+  generation: number,
 ): Promise<void> {
+  if (!isCurrentSignedInGeneration(generation)) return;
   state.toast = "";
   let links = mutationLinks;
 
   if (!links && appointmentId) {
     try {
       links = await instructorCommandApi.getAppointmentCalendarLinks(appointmentId);
+      if (!isCurrentSignedInGeneration(generation)) return;
     } catch (error) {
-      if (handleAuthFailure(error, persistedAuthMessage())) return;
+      if (!isCurrentGeneration(generation)) return;
+      if (handleAuthFailure(error, persistedAuthMessage(), generation)) return;
       state.calendarHandoff = unavailableHandoff(appointmentId, returnFocusKey, returnFocusFallback);
-      await refreshAfterPersistence();
+      await refreshAfterPersistence(generation);
       return;
     }
   }
@@ -639,7 +753,7 @@ async function completePersistedAction(
         inlineError: "",
       }
     : unavailableHandoff(appointmentId, returnFocusKey, returnFocusFallback);
-  await refreshAfterPersistence();
+  await refreshAfterPersistence(generation);
 }
 
 function unavailableHandoff(
@@ -658,44 +772,75 @@ function unavailableHandoff(
   };
 }
 
-async function refreshAfterPersistence(): Promise<void> {
-  if (state.authStatus !== "signed_in") return;
+async function refreshAfterPersistence(generation: number): Promise<void> {
+  if (!isCurrentSignedInGeneration(generation)) return;
   try {
-    applySnapshot(await instructorCommandApi.getSnapshot(instructorId, commandDate));
-    await refreshSlots();
+    const snapshot = await instructorCommandApi.getSnapshot(instructorId, commandDate);
+    if (!isCurrentSignedInGeneration(generation)) return;
+    applySnapshot(snapshot);
+    await refreshSlots(generation);
   } catch (error) {
-    if (!handleAuthFailure(error, persistedRefreshAuthMessage())) {
+    if (!isCurrentGeneration(generation)) return;
+    if (!handleAuthFailure(error, persistedRefreshAuthMessage(), generation)) {
       state.error = "The appointment was saved, but the schedule could not be refreshed. Reload to see the latest schedule.";
     }
   }
 }
 
-async function runAction(action: () => Promise<void>): Promise<void> {
+async function runAction(action: (generation: number) => Promise<void>): Promise<void> {
+  const generation = authGeneration;
   state.error = "";
   try {
-    await action();
+    await action(generation);
+    if (!isCurrentGeneration(generation)) return;
     render();
   } catch (error) {
-    if (!handleAuthFailure(error)) {
+    if (!isCurrentGeneration(generation)) return;
+    if (!handleAuthFailure(error, undefined, generation)) {
       state.error = formatApiError(error);
     }
     render();
   }
 }
 
-function handleAuthFailure(error: unknown, persistedMessage?: string): boolean {
+function handleAuthFailure(error: unknown, persistedMessage?: string, generation = authGeneration): boolean {
   if (instructorCommandApi.authMode !== "live") return false;
-  if (!(error instanceof InstructorCommandApiError) || !error.isAuthFailure) return false;
+  if (!isAuthenticationFailure(error)) return false;
+  if (!isCurrentGeneration(generation)) return true;
 
-  instructorCommandApi.clearSession();
+  nextAuthGeneration();
+  clearProtectedState();
+  state.authStatus = "expired";
+  state.error = persistedMessage ?? "Your session expired. Sign in again to continue.";
+  render();
+  return true;
+}
+
+function isAuthenticationFailure(error: unknown): boolean {
+  return error instanceof InstructorCommandApiError && error.isAuthFailure;
+}
+
+function nextAuthGeneration(): number {
+  authGeneration += 1;
+  return authGeneration;
+}
+
+function isCurrentGeneration(generation: number): boolean {
+  return generation === authGeneration;
+}
+
+function isCurrentSignedInGeneration(generation: number): boolean {
+  return isCurrentGeneration(generation) && state.authStatus === "signed_in";
+}
+
+function clearProtectedState(): void {
   state.authSession = null;
   state.snapshot = null;
   state.recommendedSlots = [];
   state.calendarHandoff = null;
+  state.settingsPending = false;
+  state.settingsError = "";
   clearEmailDeliveryState();
-  state.authStatus = "expired";
-  state.error = persistedMessage ?? "Your session expired. Sign in again to continue.";
-  return true;
 }
 
 function persistedAuthMessage(): string {
@@ -776,6 +921,7 @@ function closeCalendarHandoff(): void {
 }
 
 async function downloadCalendarFile(calendarUrl: string): Promise<void> {
+  const generation = authGeneration;
   const appointmentId = state.calendarHandoff?.appointmentId;
   if (!state.calendarHandoff || state.calendarHandoff.status !== "ready") return;
   state.calendarHandoff.downloadStatus = "downloading";
@@ -784,14 +930,13 @@ async function downloadCalendarFile(calendarUrl: string): Promise<void> {
 
   try {
     const blob = await instructorCommandApi.downloadCalendarIcs(calendarUrl);
+    if (!isCurrentSignedInGeneration(generation)) return;
     if (!state.calendarHandoff || state.calendarHandoff.appointmentId !== appointmentId) return;
     triggerCalendarDownload(blob);
     state.calendarHandoff.downloadStatus = "downloaded";
   } catch (error) {
-    if (handleAuthFailure(error, persistedAuthMessage())) {
-      render();
-      return;
-    }
+    if (!isCurrentGeneration(generation)) return;
+    if (handleAuthFailure(error, persistedAuthMessage(), generation)) return;
     if (!state.calendarHandoff || state.calendarHandoff.appointmentId !== appointmentId) return;
     if (error instanceof InstructorCommandApiError && error.code === "CALENDAR_LINKS_UNAVAILABLE") {
       state.calendarHandoff = unavailableHandoff(
@@ -804,7 +949,7 @@ async function downloadCalendarFile(calendarUrl: string): Promise<void> {
       state.calendarHandoff.inlineError = formatApiError(error);
     }
   }
-  render();
+  if (isCurrentGeneration(generation)) render();
 }
 
 function triggerCalendarDownload(blob: Blob): void {

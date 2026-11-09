@@ -748,9 +748,11 @@
       },
       "CoachAuthResponse": {
         "properties": {
-          "access_token": {
-            "title": "Access Token",
-            "type": "string"
+          "authenticated": {
+            "const": true,
+            "default": true,
+            "title": "Authenticated",
+            "type": "boolean"
           },
           "coach": {
             "$ref": "#/components/schemas/CoachContext"
@@ -759,16 +761,9 @@
             "format": "date-time",
             "title": "Expires At",
             "type": "string"
-          },
-          "token_type": {
-            "const": "bearer",
-            "default": "bearer",
-            "title": "Token Type",
-            "type": "string"
           }
         },
         "required": [
-          "access_token",
           "expires_at",
           "coach"
         ],
@@ -1733,9 +1728,15 @@
           },
           "coach": {
             "$ref": "#/components/schemas/CoachContext"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
           }
         },
         "required": [
+          "expires_at",
           "coach"
         ],
         "title": "CoachSessionResponse",
@@ -2353,9 +2354,11 @@
       }
     },
     "securitySchemes": {
-      "HTTPBearer": {
-        "scheme": "bearer",
-        "type": "http"
+      "CoachSessionCookie": {
+        "description": "Opaque revocable provider session cookie.",
+        "in": "cookie",
+        "name": "swim_session",
+        "type": "apiKey"
       }
     }
   },
@@ -2368,7 +2371,24 @@
   "paths": {
     "/api/auth/coach/login": {
       "post": {
+        "deprecated": true,
         "operationId": "login_coach_api_auth_coach_login_post",
+        "parameters": [
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2409,7 +2429,24 @@
     },
     "/api/auth/coach/logout": {
       "post": {
+        "deprecated": true,
         "operationId": "logout_coach_api_auth_coach_logout_post",
+        "parameters": [
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -2445,7 +2482,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Read Coach Session",
@@ -2457,6 +2494,22 @@
     "/api/auth/coach/sign-in": {
       "post": {
         "operationId": "login_coach_api_auth_coach_sign_in_post",
+        "parameters": [
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2498,6 +2551,22 @@
     "/api/auth/coach/sign-out": {
       "post": {
         "operationId": "logout_coach_api_auth_coach_sign_out_post",
+        "parameters": [
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -2554,7 +2623,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Read Appointment Calendar Links",
@@ -2601,7 +2670,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Download Appointment Calendar",
@@ -2613,6 +2682,22 @@
     "/api/coach/availability": {
       "post": {
         "operationId": "find_availability_api_coach_availability_post",
+        "parameters": [
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2647,7 +2732,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Find Availability",
@@ -2659,6 +2744,22 @@
     "/api/coach/bookings": {
       "post": {
         "operationId": "create_booking_api_coach_bookings_post",
+        "parameters": [
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2693,7 +2794,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Create Booking",
@@ -2741,7 +2842,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Read Command Center Snapshot",
@@ -2771,7 +2872,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Read Email Deliveries",
@@ -2790,6 +2891,20 @@
             "required": true,
             "schema": {
               "title": "Delivery Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
               "type": "string"
             }
           }
@@ -2828,7 +2943,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Update Email Delivery Contact",
@@ -2847,6 +2962,20 @@
             "required": true,
             "schema": {
               "title": "Delivery Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
               "type": "string"
             }
           }
@@ -2875,7 +3004,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Resend Email Delivery",
@@ -2907,6 +3036,20 @@
               "title": "Idempotency-Key",
               "type": "string"
             }
+          },
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -2933,7 +3076,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Send Invite Notification",
@@ -2952,6 +3095,20 @@
             "required": true,
             "schema": {
               "title": "Request Token",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
               "type": "string"
             }
           }
@@ -2992,7 +3149,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Request Lesson Alternatives",
@@ -3012,6 +3169,20 @@
             "required": true,
             "schema": {
               "title": "Request Token",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
               "type": "string"
             }
           }
@@ -3040,7 +3211,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Approve Lesson Request",
@@ -3059,6 +3230,20 @@
             "required": true,
             "schema": {
               "title": "Request Token",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
               "type": "string"
             }
           }
@@ -3097,7 +3282,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Confirm Lesson Request",
@@ -3116,6 +3301,20 @@
             "required": true,
             "schema": {
               "title": "Request Token",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
               "type": "string"
             }
           }
@@ -3144,7 +3343,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Decline Lesson Request",
@@ -3170,7 +3369,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Read Current Coach",
@@ -3218,7 +3417,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Read Schedule",
@@ -3244,7 +3443,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Read Scheduler Settings",
@@ -3254,6 +3453,22 @@
       },
       "put": {
         "operationId": "save_scheduler_settings_api_coach_settings_put",
+        "parameters": [
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3288,7 +3503,7 @@
         },
         "security": [
           {
-            "HTTPBearer": []
+            "CoachSessionCookie": []
           }
         ],
         "summary": "Save Scheduler Settings",

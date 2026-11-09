@@ -14,6 +14,7 @@ from sqlalchemy import (
     Index,
     Integer,
     JSON,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -39,6 +40,81 @@ class InstructorDB(Base):
     clients = relationship("ClientDB", back_populates="instructor")
     invite_tokens = relationship("InviteTokenDB", back_populates="instructor")
     lesson_requests = relationship("LessonRequestDB", back_populates="instructor")
+    provider_account = relationship(
+        "ProviderAccountDB",
+        back_populates="instructor",
+        uselist=False,
+    )
+
+
+class ProviderAccountDB(Base):
+    __tablename__ = "provider_accounts"
+    __table_args__ = (
+        CheckConstraint("session_version >= 1", name="ck_provider_accounts_session_version"),
+        UniqueConstraint("instructor_id", name="uq_provider_accounts_instructor_id"),
+        UniqueConstraint("email_normalized", name="uq_provider_accounts_email_normalized"),
+    )
+
+    id = Column(String, primary_key=True)
+    instructor_id = Column(String, ForeignKey("instructors.id", ondelete="RESTRICT"), nullable=False)
+    email_normalized = Column(String(254), nullable=False)
+    password_hash = Column(Text, nullable=False)
+    is_demo = Column(Boolean, nullable=False, default=False, server_default="false")
+    session_version = Column(Integer, nullable=False, default=1, server_default="1")
+    disabled_at = Column(DateTime(timezone=True), nullable=True)
+    password_changed_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    instructor = relationship("InstructorDB", back_populates="provider_account")
+    sessions = relationship(
+        "ProviderSessionDB",
+        back_populates="account",
+        cascade="all, delete-orphan",
+    )
+
+
+class ProviderSessionDB(Base):
+    __tablename__ = "provider_sessions"
+    __table_args__ = (
+        CheckConstraint("session_version >= 1", name="ck_provider_sessions_session_version"),
+        CheckConstraint("octet_length(token_digest) = 32", name="ck_provider_sessions_digest_length"),
+        Index("uq_provider_sessions_token_digest", "token_digest", unique=True),
+        Index("ix_provider_sessions_account_revoked", "account_id", "revoked_at"),
+        Index("ix_provider_sessions_expires_at", "expires_at"),
+    )
+
+    id = Column(String, primary_key=True)
+    account_id = Column(
+        String,
+        ForeignKey("provider_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_digest = Column(LargeBinary(32), nullable=False)
+    session_version = Column(Integer, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revocation_reason = Column(String(80), nullable=True)
+
+    account = relationship("ProviderAccountDB", back_populates="sessions")
 
 class AppointmentDB(Base):
     __tablename__ = 'appointments'
@@ -53,7 +129,13 @@ class AppointmentDB(Base):
             name="ck_appointments_status",
         ),
         Index("ix_appointments_instructor_window", "instructor_id", "start_time", "end_time"),
-        Index("uq_appointments_idempotency_key", "idempotency_key", unique=True),
+        Index(
+            "uq_appointments_instructor_idempotency_key",
+            "instructor_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
     )
 
     id = Column(String, primary_key=True)
@@ -112,6 +194,7 @@ class InviteTokenDB(Base):
     location_label = Column(String, nullable=False)
     preferred_duration_mins = Column(Integer, nullable=False, default=60)
     allowed_durations_mins = Column(Text, nullable=False, default="30,45,60")
+    is_demo = Column(Boolean, nullable=False, default=False, server_default="false")
     expires_at = Column(DateTime, nullable=False)
     revoked_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

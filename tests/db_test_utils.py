@@ -45,4 +45,4 @@ def reset_postgres_database(seed: bool = True) -> None:
             os.environ["SWIM_DATABASE_URL"] = previous_database_url
     db.configure_database(TEST_DATABASE_URL)
     if seed:
-        db.seed_data()
+        db.init_db()
