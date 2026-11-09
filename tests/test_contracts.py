@@ -15,6 +15,7 @@ from app.api_schemas import (
     CoachEmailDeliveryResponse,
     CoachAuthResponse,
     CoachLessonRequestConfirmResponse,
+    CoachProviderSettingsResponse,
     CoachScheduleResponse,
     CoachSchedulerRules,
     ErrorResponse,
@@ -40,6 +41,7 @@ FIXTURE_SCHEMAS = {
     "fixtures/coach/availability_search_response.json": AvailabilitySearchResponse,
     "fixtures/coach/schedule_response.json": CoachScheduleResponse,
     "fixtures/coach/settings.json": CoachSchedulerRules,
+    "fixtures/coach/provider.json": CoachProviderSettingsResponse,
     "fixtures/coach/command_center_snapshot.json": CoachCommandCenterSnapshot,
 }
 FORBIDDEN_PUBLIC_KEYS = {"instructor_id", "client_id"}
@@ -86,12 +88,14 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/coach/lesson-requests/{request_token}/alternatives" in paths
     assert "/api/coach/lesson-requests/{request_token}/decline" in paths
     assert "/api/coach/settings" in paths
+    assert "/api/coach/provider" in paths
     assert "/api/coach/invites/{invite_token}/notifications" in paths
     assert "/api/coach/email-deliveries" in paths
     assert "/api/coach/email-deliveries/{delivery_id}/resend" in paths
     assert "/api/coach/email-deliveries/{delivery_id}/contact" in paths
     assert "/api/public/command-center/snapshot" not in paths
     assert "/api/public/settings" not in paths
+    assert "/api/public/provider" not in paths
 
     sign_in = openapi["paths"]["/api/auth/coach/sign-in"]["post"]
     login_alias = openapi["paths"]["/api/auth/coach/login"]["post"]
@@ -220,6 +224,7 @@ def test_public_fixtures_do_not_leak_private_identifiers_or_schedule_details():
         keys = _flatten_keys(payload)
         values = _flatten_values(payload)
         assert FORBIDDEN_PUBLIC_KEYS.isdisjoint(keys), path
+        assert "base_location" not in keys, path
         assert FORBIDDEN_PUBLIC_VALUES.isdisjoint(values), path
         assert not any(
             isinstance(value, str) and value.startswith(FORBIDDEN_PUBLIC_VALUE_PREFIXES)

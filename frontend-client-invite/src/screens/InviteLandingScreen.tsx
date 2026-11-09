@@ -3,15 +3,30 @@ import type { ClientIntake, LessonLocationType } from "../api/types";
 import { SectionCard } from "../components/SectionCard";
 import { ToggleButton } from "../components/ToggleButton";
 
+const HOME_POOL_ADDRESS_PROMPT = "Enter home pool address";
+
 type InviteLandingScreenProps = {
   intake: ClientIntake;
   instructorName: string;
+  serviceName: string | null;
+  serviceLocation: { address: string; lat: number; lng: number } | null;
   onChange: (intake: ClientIntake) => void;
   onContinue: () => void;
   saving: boolean;
 };
 
-export function InviteLandingScreen({ intake, instructorName, onChange, onContinue, saving }: InviteLandingScreenProps) {
+export function InviteLandingScreen({
+  intake,
+  instructorName,
+  serviceName,
+  serviceLocation,
+  onChange,
+  onContinue,
+  saving,
+}: InviteLandingScreenProps) {
+  const needsHomePoolAddress =
+    intake.location_type === "home" && intake.location.address === HOME_POOL_ADDRESS_PROMPT;
+
   const updateField = (field: keyof ClientIntake, value: string) => {
     onChange({ ...intake, [field]: value });
   };
@@ -22,9 +37,14 @@ export function InviteLandingScreen({ intake, instructorName, onChange, onContin
       location_type: type,
       location: {
         ...intake.location,
-        address: type === intake.location_type ? intake.location.address : "",
-        lat: type === intake.location_type ? intake.location.lat : null,
-        lng: type === intake.location_type ? intake.location.lng : null,
+        address:
+          type === "facility"
+            ? serviceLocation?.address ?? "Facility unavailable"
+            : type === intake.location_type
+              ? intake.location.address
+              : "",
+        lat: type === "facility" ? serviceLocation?.lat ?? null : null,
+        lng: type === "facility" ? serviceLocation?.lng ?? null : null,
         is_instructor_facility: type === "facility",
       },
     });
@@ -72,7 +92,10 @@ export function InviteLandingScreen({ intake, instructorName, onChange, onContin
         <label>
           <span>{intake.location_type === "home" ? "Home pool address" : "Preferred facility"}</span>
           <input
-            value={intake.location.address}
+            value={needsHomePoolAddress ? "" : intake.location.address}
+            placeholder={intake.location_type === "home" ? HOME_POOL_ADDRESS_PROMPT : undefined}
+            required={intake.location_type === "home"}
+            readOnly={intake.location_type === "facility"}
             onChange={(event) =>
               onChange({
                 ...intake,
@@ -83,6 +106,7 @@ export function InviteLandingScreen({ intake, instructorName, onChange, onContin
               })
             }
           />
+          {intake.location_type === "facility" && serviceName ? <small>{serviceName}</small> : null}
         </label>
       </SectionCard>
 

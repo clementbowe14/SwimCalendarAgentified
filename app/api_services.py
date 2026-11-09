@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 import hashlib
+import math
 import re
 from typing import Optional
 from urllib.parse import quote
@@ -20,6 +21,7 @@ from app.api_errors import (
     LessonRequestConfirmConflict,
     LessonRequestExpired,
     LessonRequestNotFound,
+    ProviderSetupRequired,
     ResourceNotFound,
     RoutingConfigurationError,
     RoutingEstimateFailed as RoutingEstimateFailedApiError,
@@ -46,6 +48,11 @@ from app.api_schemas import (
     CoachSchedulerRules,
     CoachTimeSlotResponse,
     CoachInstructorProfileResponse,
+    CoachProviderLocationResponse,
+    CoachProviderServiceResponse,
+    CoachProviderSettingsResponse,
+    CoachProviderSettingsUpdate,
+    CoachProviderWorkingHours,
     InstructorProfileResponse,
     LocationResponse,
     PublicAvailabilitySearchRequest,
@@ -67,8 +74,19 @@ from app.models import (
     TimeSlotDTO,
 )
 from app.notifications import coach_email_delivery_for_request, list_coach_email_deliveries
+from app.provider_settings import (
+    ProviderConfiguration,
+    ProviderLocation,
+    ProviderNotFound,
+    ProviderSetupIncomplete,
+    load_provider_configuration,
+    require_provider_setup,
+    save_provider_configuration,
+    service_location_matches,
+)
 from app.public_tokens import (
     InviteContext,
+    LessonRequestRecord,
     create_lesson_request,
     resolve_lesson_request_by_idempotency_key,
     resolve_lesson_request,
@@ -88,26 +106,180 @@ def get_instructor_profile(instructor_id: str) -> InstructorProfileResponse:
     instructor = db.get_instructor_info(instructor_id)
     if not instructor:
         raise ResourceNotFound("The instructor could not be found.")
+    try:
+        configuration = load_provider_configuration(instructor_id)
+    except ProviderNotFound:
+        raise ResourceNotFound("The instructor could not be found.")
+    service_location = configuration.service_location
+    first_enabled = next(
+        (row for row in configuration.working_hours if row.enabled),
+        None,
+    )
     return InstructorProfileResponse(
         id=instructor.id,
-        name=instructor.name,
-        main_address=instructor.main_address,
-        lat=instructor.lat,
-        lng=instructor.lng,
-        work_start_time=instructor.work_start_time,
-        work_end_time=instructor.work_end_time,
-        timezone=instructor.timezone,
+        name=configuration.display_name,
+        main_address=service_location.address if service_location else "",
+        lat=service_location.lat if service_location else 0.0,
+        lng=service_location.lng if service_location else 0.0,
+        work_start_time=(first_enabled.start_time if first_enabled else None) or "",
+        work_end_time=(first_enabled.end_time if first_enabled else None) or "",
+        timezone=configuration.timezone,
     )
+
+
+def get_coach_provider_settings(instructor_id: str) -> CoachProviderSettingsResponse:
+    try:
+        return _provider_settings_response(load_provider_configuration(instructor_id))
+    except ProviderNotFound as exc:
+        raise ResourceNotFound("The instructor could not be found.") from exc
+
+
+def update_coach_provider_settings(
+    instructor_id: str,
+    request: CoachProviderSettingsUpdate,
+) -> CoachProviderSettingsResponse:
+    try:
+        current = load_provider_configuration(instructor_id)
+    except ProviderNotFound as exc:
+        raise ResourceNotFound("The instructor could not be found.") from exc
+
+    geocode_cache: dict[str, tuple[float, float]] = {}
+    base_coords = _provider_location_coordinates(
+        request.base_address,
+        current.base_location,
+        "base_address",
+        geocode_cache,
+    )
+    service_coords = _provider_location_coordinates(
+        request.service_address,
+        current.service_location,
+        "service_address",
+        geocode_cache,
+    )
+    try:
+        saved = save_provider_configuration(
+            instructor_id,
+            display_name=request.display_name,
+            business_name=request.business_name,
+            timezone_name=request.timezone,
+            base_address=request.base_address,
+            base_coords=base_coords,
+            service_address=request.service_address,
+            service_coords=service_coords,
+            service_name=request.service_name,
+            default_duration_mins=request.default_duration_mins,
+            working_hours=request.working_hours,
+        )
+    except ProviderNotFound as exc:
+        raise ResourceNotFound("The instructor could not be found.") from exc
+    return _provider_settings_response(saved)
+
+
+def _provider_settings_response(
+    configuration: ProviderConfiguration,
+) -> CoachProviderSettingsResponse:
+    return CoachProviderSettingsResponse(
+        id=configuration.id,
+        display_name=configuration.display_name,
+        business_name=configuration.business_name,
+        timezone=configuration.timezone,
+        base_location=_provider_location_response(configuration.base_location),
+        service=CoachProviderServiceResponse(
+            name=configuration.service_name,
+            default_duration_mins=configuration.default_duration_mins,
+            location=_provider_location_response(configuration.service_location),
+        ),
+        working_hours=[
+            CoachProviderWorkingHours(**hours.__dict__)
+            for hours in configuration.working_hours
+        ],
+        setup_complete=configuration.setup_complete,
+        setup_missing_fields=list(configuration.setup_missing_fields),
+    )
+
+
+def _provider_location_response(
+    location: Optional[ProviderLocation],
+) -> Optional[CoachProviderLocationResponse]:
+    if location is None:
+        return None
+    return CoachProviderLocationResponse(
+        address=location.address,
+        lat=location.lat,
+        lng=location.lng,
+    )
+
+
+def _provider_location_coordinates(
+    address: str,
+    current: Optional[ProviderLocation],
+    field: str,
+    cache: dict[str, tuple[float, float]],
+) -> tuple[float, float]:
+    normalized = address.strip()
+    if current is not None and normalized == current.address:
+        return current.lat, current.lng
+    cache_key = normalized.casefold()
+    if cache_key in cache:
+        return cache[cache_key]
+    try:
+        lat, lng = tools.routing_provider.geocode(normalized)
+    except GeocodeFailed as exc:
+        raise GeocodingFailedApiError({"field": field}) from exc
+    except RoutingTimeout as exc:
+        raise RoutingTimeoutApiError() from exc
+    except RoutingProviderUnavailable as exc:
+        raise RoutingProviderUnavailableApiError() from exc
+    except RoutingProviderNotConfigured as exc:
+        raise RoutingConfigurationError() from exc
+    except RouteEstimateFailed as exc:
+        raise RoutingEstimateFailedApiError() from exc
+    if (
+        not math.isfinite(lat)
+        or not math.isfinite(lng)
+        or not -90 <= lat <= 90
+        or not -180 <= lng <= 180
+    ):
+        raise GeocodingFailedApiError({"field": field})
+    cache[cache_key] = (lat, lng)
+    return cache[cache_key]
 
 
 def get_coach_command_center_snapshot(
     instructor_id: str,
     snapshot_date: date,
 ) -> CoachCommandCenterSnapshot:
-    instructor = get_instructor_profile(instructor_id)
+    try:
+        configuration = load_provider_configuration(instructor_id)
+    except ProviderNotFound as exc:
+        raise ResourceNotFound("The instructor could not be found.") from exc
+    service_location = configuration.service_location
+    first_enabled = next(
+        (row for row in configuration.working_hours if row.enabled),
+        None,
+    )
     coach_instructor = CoachInstructorProfileResponse(
-        **instructor.model_dump(),
-        business_name=_business_name_for_instructor(instructor_id),
+        id=configuration.id,
+        name=configuration.display_name,
+        main_address=service_location.address if service_location else "",
+        lat=service_location.lat if service_location else 0.0,
+        lng=service_location.lng if service_location else 0.0,
+        work_start_time=(first_enabled.start_time if first_enabled else None) or "",
+        work_end_time=(first_enabled.end_time if first_enabled else None) or "",
+        timezone=configuration.timezone,
+        business_name=configuration.presentation_business_name,
+        base_location=_provider_location_response(configuration.base_location),
+        service=CoachProviderServiceResponse(
+            name=configuration.service_name,
+            default_duration_mins=configuration.default_duration_mins,
+            location=_provider_location_response(configuration.service_location),
+        ),
+        working_hours=[
+            CoachProviderWorkingHours(**hours.__dict__)
+            for hours in configuration.working_hours
+        ],
+        setup_complete=configuration.setup_complete,
+        setup_missing_fields=list(configuration.setup_missing_fields),
     )
     clients = [
         _client_response(client, coach_instructor)
@@ -170,32 +342,20 @@ def get_coach_schedule(instructor_id: str, schedule_date: date) -> CoachSchedule
     )
 
 
-def _business_name_for_instructor(instructor_id: str) -> str:
-    session = db.SessionLocal()
-    try:
-        query = session.query(InviteTokenDB).filter_by(instructor_id=instructor_id)
-        if not demo_data_access_enabled_from_env():
-            query = query.filter(InviteTokenDB.is_demo.is_(False))
-        invite = (
-            query.filter_by(business_name="Swim Command")
-            .first()
-        )
-        if invite:
-            return invite.business_name
-        invite = (
-            query.order_by(InviteTokenDB.created_at.desc())
-            .first()
-        )
-        return invite.business_name if invite else "Swim Command"
-    finally:
-        session.close()
-
-
 def _client_response(client: dict, instructor: CoachInstructorProfileResponse) -> CoachClientResponse:
-    address = client["default_location_address"] or instructor.main_address
-    lat = client["default_lat"] if client["default_lat"] is not None else instructor.lat
-    lng = client["default_lng"] if client["default_lng"] is not None else instructor.lng
-    is_facility = address == instructor.main_address
+    service_location = instructor.service.location
+    fallback_address = service_location.address if service_location else instructor.main_address
+    fallback_lat = service_location.lat if service_location else instructor.lat
+    fallback_lng = service_location.lng if service_location else instructor.lng
+    address = client["default_location_address"] or fallback_address
+    lat = client["default_lat"] if client["default_lat"] is not None else fallback_lat
+    lng = client["default_lng"] if client["default_lng"] is not None else fallback_lng
+    is_facility = (
+        service_location is not None
+        and address == service_location.address
+        and lat == service_location.lat
+        and lng == service_location.lng
+    )
     return CoachClientResponse(
         id=client["id"],
         name=client["name"],
@@ -240,8 +400,7 @@ def _schedule_item_response(
 
 
 def _coach_lesson_request_response(request: dict) -> CoachLessonRequestResponse:
-    instructor = db.get_instructor_info(request["instructor_id"])
-    timezone_name = instructor.timezone if instructor else timezones.DEFAULT_INSTRUCTOR_TIMEZONE
+    timezone_name = _instructor_timezone(request["instructor_id"])
     location = LocationResponse(
         address=request["client_address"],
         lat=request["lat"],
@@ -441,15 +600,10 @@ def _optional_coach_calendar_links(
 
 
 def book_coach_lesson(instructor_id: str, request: CoachBookLessonRequest) -> BookLessonResponse:
-    instructor = db.get_instructor_info(instructor_id)
-    if not instructor:
-        raise ResourceNotFound("The instructor could not be found.")
     try:
-        requested_start = _canonical_request_time(request.start_time, instructor.timezone)
-    except ValueError as exc:
-        raise InvalidSchedulingRequest("The requested local time is invalid for the instructor timezone.") from exc
-    requested_start_storage = timezones.to_utc_storage(requested_start)
-    requested_end_storage = requested_start_storage + _duration_delta(request.duration_mins)
+        provider = load_provider_configuration(instructor_id)
+    except ProviderNotFound as exc:
+        raise ResourceNotFound("The instructor could not be found.") from exc
     try:
         existing = db.get_appointment_by_idempotency_key(
             instructor_id,
@@ -457,20 +611,22 @@ def book_coach_lesson(instructor_id: str, request: CoachBookLessonRequest) -> Bo
         )
     except db.IdempotencyKeyConflictError as exc:
         raise IdempotencyConflict() from exc
+    try:
+        requested_start = _canonical_request_time(request.start_time, provider.timezone)
+    except timezones.InvalidTimezoneError as exc:
+        if existing is not None and _is_aware(request.start_time):
+            requested_start = request.start_time
+            _validate_coach_booking_replay(existing, instructor_id, request, requested_start)
+            return _coach_booking_replay_response(existing, request, provider.timezone)
+        raise ProviderSetupRequired(list(provider.setup_missing_fields)) from exc
+    except (timezones.AmbiguousLocalTimeError, timezones.NonexistentLocalTimeError) as exc:
+        raise InvalidSchedulingRequest("The requested local time is invalid for the instructor timezone.") from exc
     if existing:
-        if (
-            existing["instructor_id"] != instructor_id
-            or existing["client_id"] != _client_id_from_name(request.client_name)
-            or timezones.to_utc_storage(existing["start_time"]) != requested_start_storage
-            or timezones.to_utc_storage(existing["end_time"]) != requested_end_storage
-        ):
-            raise IdempotencyConflict()
-        return BookLessonResponse(
-            success=True,
-            appointment_id=existing["id"],
-            message=f"Successfully booked swim lesson for {request.client_name} on {timezones.storage_to_local(existing['start_time'], instructor.timezone).strftime('%b %d, %Y at %I:%M %p')}!",
-            calendar_links=_optional_coach_calendar_links(instructor_id, [existing["id"]]),
-        )
+        _validate_coach_booking_replay(existing, instructor_id, request, requested_start)
+        return _coach_booking_replay_response(existing, request, provider.timezone)
+
+    if not provider.setup_complete:
+        raise ProviderSetupRequired(list(provider.setup_missing_fields))
 
     policy = load_buffer_policy(instructor_id, operation="coach_booking")
     location = _resolve_location(instructor_id, request.client_address, request.is_instructor_facility)
@@ -490,9 +646,53 @@ def book_coach_lesson(instructor_id: str, request: CoachBookLessonRequest) -> Bo
         raise SchedulingConflict() from exc
     except db.IdempotencyKeyConflictError as exc:
         raise IdempotencyConflict() from exc
+    except ProviderSetupIncomplete as exc:
+        raise ProviderSetupRequired(list(exc.missing_fields)) from exc
     return BookLessonResponse(
         **result,
         calendar_links=_optional_coach_calendar_links(instructor_id, [result["appointment_id"]]),
+    )
+
+
+def _validate_coach_booking_replay(
+    existing: dict,
+    instructor_id: str,
+    request: CoachBookLessonRequest,
+    requested_start: datetime,
+) -> None:
+    requested_start_storage = timezones.to_utc_storage(requested_start)
+    requested_end_storage = requested_start_storage + _duration_delta(request.duration_mins)
+    if (
+        existing["instructor_id"] != instructor_id
+        or existing["client_id"] != _client_id_from_name(request.client_name)
+        or timezones.to_utc_storage(existing["start_time"]) != requested_start_storage
+        or timezones.to_utc_storage(existing["end_time"]) != requested_end_storage
+    ):
+        raise IdempotencyConflict()
+
+
+def _coach_booking_replay_response(
+    existing: dict,
+    request: CoachBookLessonRequest,
+    timezone_name: str,
+) -> BookLessonResponse:
+    readable_start, used_authoritative_timezone = _stored_time_for_response(
+        existing["start_time"],
+        timezone_name,
+    )
+    timezone_suffix = "" if used_authoritative_timezone else " UTC"
+    return BookLessonResponse(
+        success=True,
+        appointment_id=existing["id"],
+        message=(
+            f"Successfully booked swim lesson for {request.client_name} on "
+            f"{readable_start.strftime('%b %d, %Y at %I:%M %p')}"
+            f"{timezone_suffix}!"
+        ),
+        calendar_links=_optional_coach_calendar_links(
+            existing["instructor_id"],
+            [existing["id"]],
+        ),
     )
 
 
@@ -548,6 +748,7 @@ def confirm_coach_lesson_request(
         if lesson_request.status not in {"pending", "alternatives_sent"}:
             raise InvalidSchedulingRequest("Only pending lesson requests can be confirmed.")
 
+        _require_coach_provider_setup(lesson_request.instructor_id)
         explicit_offer = _resolve_confirm_offer(session, lesson_request, request.slot_id)
         if explicit_offer is not None:
             _apply_offer_to_request(lesson_request, explicit_offer)
@@ -557,6 +758,7 @@ def confirm_coach_lesson_request(
 
         policy = load_buffer_policy(instructor_id, operation="confirm_lesson_request")
         try:
+            _validate_current_facility_request(lesson_request)
             _validate_occurrences(lesson_request, occurrences, policy)
             appointments = _insert_occurrence_appointments(session, lesson_request, occurrences)
             # Force database overlap and integrity checks while they can still
@@ -627,7 +829,18 @@ def request_alternatives_for_coach_lesson_request(
             lesson_request.id,
         ):
             raise InvalidSchedulingRequest("Confirmed lesson requests cannot be marked for new times.")
-        promoted = _promote_alternative_offers(session, lesson_request, body)
+        provider = _require_coach_provider_setup(lesson_request.instructor_id)
+        policy = load_buffer_policy(
+            lesson_request.instructor_id,
+            operation="send_lesson_request_alternatives",
+        )
+        promoted = _promote_alternative_offers(
+            session,
+            lesson_request,
+            body,
+            provider,
+            policy,
+        )
         now = datetime.utcnow()
         lesson_request.status = "alternatives_sent"
         lesson_request.alternatives_sent_at = now
@@ -730,7 +943,15 @@ def _is_request_expired(lesson_request: LessonRequestDB) -> bool:
 
 def _instructor_timezone(instructor_id: str) -> str:
     instructor = db.get_instructor_info(instructor_id)
-    return instructor.timezone if instructor else timezones.DEFAULT_INSTRUCTOR_TIMEZONE
+    if instructor is None or not instructor.timezone or not instructor.timezone.strip():
+        return "UTC"
+    try:
+        return timezones.get_zone(instructor.timezone if instructor else None).key
+    except timezones.InvalidTimezoneError:
+        # Read-only responses still need to expose committed instants when a
+        # legacy row contains an invalid zone. UTC is an explicit, truthful
+        # representation; using the product default would imply provider intent.
+        return "UTC"
 
 
 def _confirmed_slot_matches(lesson_request: LessonRequestDB, slot_id: Optional[str]) -> bool:
@@ -788,8 +1009,7 @@ def _selected_alternative_offer(
 def _request_occurrences(
     lesson_request: LessonRequestDB,
 ) -> list[tuple[datetime, datetime]]:
-    instructor = db.get_instructor_info(lesson_request.instructor_id)
-    timezone_name = instructor.timezone if instructor else timezones.DEFAULT_INSTRUCTOR_TIMEZONE
+    timezone_name = _instructor_timezone(lesson_request.instructor_id)
     base_local_start = timezones.storage_to_local(lesson_request.slot_start, timezone_name).replace(tzinfo=None)
     base_local_end = timezones.storage_to_local(lesson_request.slot_end, timezone_name).replace(tzinfo=None)
     count = lesson_request.recurrence_count if lesson_request.recurrence == "weekly" else 1
@@ -797,8 +1017,17 @@ def _request_occurrences(
     for index in range(count):
         local_start = base_local_start + timedelta(days=7 * index)
         local_end = base_local_end + timedelta(days=7 * index)
-        start = timezones.validate_local_datetime(local_start, timezone_name)
-        end = timezones.validate_local_datetime(local_end, timezone_name)
+        try:
+            start = timezones.validate_local_datetime(local_start, timezone_name)
+            end = timezones.validate_local_datetime(local_end, timezone_name)
+        except (
+            timezones.AmbiguousLocalTimeError,
+            timezones.NonexistentLocalTimeError,
+        ) as exc:
+            raise SchedulingConflict(
+                "The recurring lesson crosses an unavailable local time. "
+                "Send the client new times."
+            ) from exc
         occurrences.append((timezones.to_utc_storage(start), timezones.to_utc_storage(end)))
     return occurrences
 
@@ -820,8 +1049,7 @@ def _acquire_confirmation_locks(
 ) -> None:
     if session.bind is None or session.bind.dialect.name != "postgresql":
         return
-    instructor = db.get_instructor_info(instructor_id)
-    timezone_name = instructor.timezone if instructor else timezones.DEFAULT_INSTRUCTOR_TIMEZONE
+    timezone_name = _instructor_timezone(instructor_id)
     local_dates = set()
     for start, _ in occurrences:
         local_date = timezones.storage_to_local(start, timezone_name).date()
@@ -849,6 +1077,35 @@ def _validate_occurrences(
             requested_start=requested_start,
             buffer_policy=buffer_policy,
         )
+
+
+def _validate_current_facility_request(lesson_request: LessonRequestDB) -> None:
+    if lesson_request.location_type != "facility":
+        return
+    try:
+        provider = require_provider_setup(lesson_request.instructor_id)
+    except ProviderNotFound as exc:
+        raise ResourceNotFound("The instructor could not be found.") from exc
+    except ProviderSetupIncomplete as exc:
+        raise ProviderSetupRequired(list(exc.missing_fields)) from exc
+    if not service_location_matches(
+        provider,
+        address=lesson_request.client_address,
+        lat=lesson_request.lat,
+        lng=lesson_request.lng,
+    ):
+        raise SchedulingConflict(
+            "The provider service location changed. Send the client new times."
+        )
+
+
+def _require_coach_provider_setup(instructor_id: str) -> ProviderConfiguration:
+    try:
+        return require_provider_setup(instructor_id)
+    except ProviderNotFound as exc:
+        raise ResourceNotFound("The instructor could not be found.") from exc
+    except ProviderSetupIncomplete as exc:
+        raise ProviderSetupRequired(list(exc.missing_fields)) from exc
 
 
 def _insert_occurrence_appointments(
@@ -927,6 +1184,8 @@ def _promote_alternative_offers(
     session,
     lesson_request: LessonRequestDB,
     request: CoachLessonRequestAlternativesRequest,
+    provider: ProviderConfiguration,
+    buffer_policy: BufferPolicy,
 ) -> list[InviteSlotOfferDB]:
     if not request.slot_ids:
         return []
@@ -945,6 +1204,7 @@ def _promote_alternative_offers(
     for offer in offers:
         if not _offer_matches_request_context(offer, lesson_request):
             raise AlternativeSlotContextMismatch()
+        _validate_alternative_offer(offer, provider, buffer_policy)
     promoted: list[InviteSlotOfferDB] = []
     now = datetime.utcnow()
     for offer in offers:
@@ -991,6 +1251,59 @@ def _promote_alternative_offers(
     return promoted
 
 
+def _validate_alternative_offer(
+    offer: InviteSlotOfferDB,
+    provider: ProviderConfiguration,
+    buffer_policy: BufferPolicy,
+) -> None:
+    if offer.location_type == "facility" and not service_location_matches(
+        provider,
+        address=offer.location_address,
+        lat=offer.lat,
+        lng=offer.lng,
+    ):
+        raise SchedulingConflict(
+            "The provider service location changed. Find current times and try again."
+        )
+    if offer.recurrence == "weekly" and not offer.recurrence_available:
+        raise SchedulingConflict(
+            "The recurring lesson time is no longer available. Find current times and try again."
+        )
+
+    base_local = timezones.storage_to_local(offer.slot_start, provider.timezone).replace(
+        tzinfo=None
+    )
+    if base_local.date() != offer.requested_date:
+        raise SchedulingConflict(
+            "The provider timezone changed. Find current times and try again."
+        )
+    count = offer.recurrence_count if offer.recurrence == "weekly" else 1
+    for index in range(count):
+        local_label = base_local + timedelta(days=7 * index)
+        try:
+            requested_start = timezones.validate_local_datetime(
+                local_label,
+                provider.timezone,
+            )
+        except (
+            timezones.AmbiguousLocalTimeError,
+            timezones.NonexistentLocalTimeError,
+        ) as exc:
+            raise SchedulingConflict(
+                "The recurring lesson crosses an unavailable local time. "
+                "Find current times and try again."
+            ) from exc
+        _require_available_start(
+            instructor_id=offer.instructor_id,
+            requested_date=requested_start.date(),
+            client_address=offer.client_address,
+            is_instructor_facility=offer.location_type == "facility",
+            duration_mins=offer.duration_mins,
+            requested_start=requested_start,
+            buffer_policy=buffer_policy,
+        )
+
+
 def _offer_matches_request_context(offer: InviteSlotOfferDB, lesson_request: LessonRequestDB) -> bool:
     return (
         offer.invite_token == lesson_request.invite_token
@@ -1019,6 +1332,8 @@ def public_invite_response(invite: InviteContext) -> PublicInviteResponse:
         instructor_name=invite.instructor_name,
         business_name=invite.business_name,
         location_label=invite.location_label,
+        service_name=invite.service_name,
+        service_location=_provider_location_response(invite.service_location),
         preferred_duration_mins=invite.preferred_duration_mins,
         allowed_durations_mins=list(invite.allowed_durations_mins),
         expires_at=invite.expires_at,
@@ -1036,6 +1351,7 @@ def search_public_availability(
         client_address=request.client_address,
         is_instructor_facility=is_facility,
         duration_mins=request.duration_mins,
+        public=True,
     )
     location = _resolve_location(invite.instructor_id, request.client_address, is_facility)
     return PublicAvailabilitySearchResponse(
@@ -1051,49 +1367,43 @@ def create_public_lesson_request(
     invite: InviteContext,
     request: PublicLessonRequestCreate,
 ) -> PublicLessonRequestResponse:
-    instructor = db.get_instructor_info(invite.instructor_id)
-    if not instructor:
-        raise ResourceNotFound("The instructor could not be found.")
     try:
-        requested_start = _canonical_request_time(request.slot_start, instructor.timezone)
-    except ValueError as exc:
-        raise InvalidSchedulingRequest("The requested local time is invalid for the instructor timezone.") from exc
-    requested_date = timezones.requested_local_date(requested_start, instructor.timezone)
+        provider = load_provider_configuration(invite.instructor_id)
+    except ProviderNotFound as exc:
+        raise ResourceNotFound("The instructor could not be found.") from exc
     existing = resolve_lesson_request_by_idempotency_key(request.idempotency_key)
+    try:
+        requested_start = _canonical_request_time(request.slot_start, provider.timezone)
+        requested_date = timezones.requested_local_date(requested_start, provider.timezone)
+    except timezones.InvalidTimezoneError as exc:
+        if existing is not None and _is_aware(request.slot_start):
+            requested_start = request.slot_start
+            _validate_public_lesson_request_replay(
+                existing,
+                invite,
+                request,
+                requested_start,
+                request.requested_date,
+            )
+            return _public_lesson_request_replay_response(
+                existing,
+                provider.timezone,
+            )
+        raise ProviderSetupRequired(public=True) from exc
+    except (timezones.AmbiguousLocalTimeError, timezones.NonexistentLocalTimeError) as exc:
+        raise InvalidSchedulingRequest("The requested local time is invalid for the instructor timezone.") from exc
     if existing:
-        if (
-            existing.invite_token != invite.token
-            or existing.client_name != request.client_name
-            or existing.client_address != request.client_address
-            or existing.requested_date != requested_date
-            or timezones.to_utc_storage(existing.selected_slot_start) != timezones.to_utc_storage(requested_start)
-            or existing.duration_mins != request.duration_mins
-            or existing.location_type != request.location_type
-        ):
-            raise IdempotencyConflict()
-        from app.notifications import public_notifications
-        with db.SessionLocal() as session:
-            notifications = public_notifications(session, existing.id)
-        return PublicLessonRequestResponse(
-            notifications=notifications,
-            request_token=existing.request_token,
-            status="pending",
-            selected_slot=TimeSlotResponse(
-                start_iso=timezones.storage_to_local(existing.selected_slot_start, instructor.timezone),
-                end_iso=timezones.storage_to_local(existing.selected_slot_end, instructor.timezone),
-                display=_format_slot_display(
-                    timezones.storage_to_local(existing.selected_slot_start, instructor.timezone),
-                    timezones.storage_to_local(existing.selected_slot_end, instructor.timezone),
-                    existing.travel_time_mins,
-                    existing.buffer_mins,
-                    existing.distance_miles,
-                ),
-                travel_time_mins=existing.travel_time_mins,
-                buffer_mins=existing.buffer_mins,
-                distance_miles=existing.distance_miles,
-            ),
-            message="Your lesson request was sent to the instructor for confirmation.",
+        _validate_public_lesson_request_replay(
+            existing,
+            invite,
+            request,
+            requested_start,
+            requested_date,
         )
+        return _public_lesson_request_replay_response(existing, provider.timezone)
+
+    if not provider.setup_complete:
+        raise ProviderSetupRequired(public=True)
 
     is_facility = request.location_type == "facility"
     policy = load_buffer_policy(invite.instructor_id, operation="public_request_creation")
@@ -1105,6 +1415,7 @@ def create_public_lesson_request(
         duration_mins=request.duration_mins,
         requested_start=requested_start,
         buffer_policy=policy,
+        public=True,
     )
     location = _resolve_location(invite.instructor_id, request.client_address, is_facility)
     try:
@@ -1112,7 +1423,7 @@ def create_public_lesson_request(
             invite_token=invite.token,
             instructor_id=invite.instructor_id,
             client_name=request.client_name,
-            client_address=request.client_address,
+            client_address=location.address,
             requested_date=requested_date,
             selected_slot_start=timezones.to_utc_storage(requested_start),
             selected_slot_end=timezones.to_utc_storage(selected_slot.end_time),
@@ -1131,6 +1442,73 @@ def create_public_lesson_request(
         request_token=record.request_token,
         status="pending",
         selected_slot=_slot_response(selected_slot),
+        message="Your lesson request was sent to the instructor for confirmation.",
+    )
+
+
+def _validate_public_lesson_request_replay(
+    existing: LessonRequestRecord,
+    invite: InviteContext,
+    request: PublicLessonRequestCreate,
+    requested_start: datetime,
+    requested_date: date,
+) -> None:
+    if (
+        existing.invite_token != invite.token
+        or existing.client_name != request.client_name
+        or (
+            request.location_type != "facility"
+            and existing.client_address != request.client_address
+        )
+        or existing.requested_date != requested_date
+        or timezones.to_utc_storage(existing.selected_slot_start)
+        != timezones.to_utc_storage(requested_start)
+        or existing.duration_mins != request.duration_mins
+        or existing.location_type != request.location_type
+    ):
+        raise IdempotencyConflict()
+
+
+def _public_lesson_request_replay_response(
+    existing: LessonRequestRecord,
+    timezone_name: str,
+) -> PublicLessonRequestResponse:
+    start_time, start_uses_authoritative_timezone = _stored_time_for_response(
+        existing.selected_slot_start,
+        timezone_name,
+    )
+    end_time, end_uses_authoritative_timezone = _stored_time_for_response(
+        existing.selected_slot_end,
+        timezone_name,
+    )
+    timezone_label = (
+        None
+        if start_uses_authoritative_timezone and end_uses_authoritative_timezone
+        else "UTC"
+    )
+    from app.notifications import public_notifications
+
+    with db.SessionLocal() as session:
+        notifications = public_notifications(session, existing.id)
+    return PublicLessonRequestResponse(
+        notifications=notifications,
+        request_token=existing.request_token,
+        status="pending",
+        selected_slot=TimeSlotResponse(
+            start_iso=start_time,
+            end_iso=end_time,
+            display=_format_slot_display(
+                start_time,
+                end_time,
+                existing.travel_time_mins,
+                existing.buffer_mins,
+                existing.distance_miles,
+                timezone_label=timezone_label,
+            ),
+            travel_time_mins=existing.travel_time_mins,
+            buffer_mins=existing.buffer_mins,
+            distance_miles=existing.distance_miles,
+        ),
         message="Your lesson request was sent to the instructor for confirmation.",
     )
 
@@ -1212,6 +1590,7 @@ def _find_slots(
     is_instructor_facility: bool,
     duration_mins: int,
     buffer_policy: Optional[BufferPolicy] = None,
+    public: bool = False,
 ) -> list[TimeSlotDTO]:
     try:
         return tools.find_available_swim_slots(
@@ -1232,6 +1611,11 @@ def _find_slots(
         raise RoutingConfigurationError() from exc
     except RouteEstimateFailed as exc:
         raise RoutingEstimateFailedApiError() from exc
+    except ProviderSetupIncomplete as exc:
+        raise ProviderSetupRequired(
+            list(exc.missing_fields),
+            public=public,
+        ) from exc
     except ValueError as exc:
         message = str(exc)
         if "not found" in message.lower():
@@ -1247,6 +1631,7 @@ def _require_available_start(
     duration_mins: int,
     requested_start: datetime,
     buffer_policy: Optional[BufferPolicy] = None,
+    public: bool = False,
 ) -> TimeSlotDTO:
     slots = _find_slots(
         instructor_id=instructor_id,
@@ -1255,6 +1640,7 @@ def _require_available_start(
         is_instructor_facility=is_instructor_facility,
         duration_mins=duration_mins,
         buffer_policy=buffer_policy,
+        public=public,
     )
     requested_storage = timezones.to_utc_storage(requested_start)
     for slot in slots:
@@ -1273,14 +1659,19 @@ def _resolve_location(
     client_address: str,
     is_instructor_facility: bool,
 ) -> LocationResponse:
-    instructor = db.get_instructor_info(instructor_id)
-    if not instructor:
+    try:
+        configuration = load_provider_configuration(instructor_id)
+    except ProviderNotFound:
         raise ResourceNotFound("The instructor could not be found.")
     if is_instructor_facility:
+        if configuration.service_location is None:
+            raise ProviderSetupRequired(
+                list(configuration.setup_missing_fields),
+            )
         return LocationResponse(
-            address=instructor.main_address,
-            lat=instructor.lat,
-            lng=instructor.lng,
+            address=configuration.service_location.address,
+            lat=configuration.service_location.lat,
+            lng=configuration.service_location.lng,
             is_instructor_facility=True,
         )
     try:
@@ -1320,9 +1711,13 @@ def _format_slot_display(
     travel_time_mins: int,
     buffer_mins: int,
     distance_miles: float,
+    *,
+    timezone_label: Optional[str] = None,
 ) -> str:
+    timezone_suffix = f"{timezone_label} " if timezone_label else ""
     return (
         f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} "
+        f"{timezone_suffix}"
         f"(Travel: {travel_time_mins}m, Buffer: {buffer_mins}m, Dist: {distance_miles:.1f}mi)"
     )
 
@@ -1336,7 +1731,29 @@ def _duration_delta(duration_mins: int) -> timedelta:
     return timedelta(minutes=duration_mins)
 
 
+def _is_aware(value: datetime) -> bool:
+    return value.tzinfo is not None and value.utcoffset() is not None
+
+
+def _stored_time_for_response(
+    value: datetime,
+    timezone_name: str,
+) -> tuple[datetime, bool]:
+    try:
+        zone = _authoritative_zone(timezone_name)
+        return timezones.storage_to_aware_utc(value).astimezone(zone), True
+    except timezones.InvalidTimezoneError:
+        return timezones.storage_to_aware_utc(value), False
+
+
+def _authoritative_zone(timezone_name: str):
+    if not timezone_name or not timezone_name.strip():
+        raise timezones.InvalidTimezoneError("Provider timezone is blank.")
+    return timezones.get_zone(timezone_name)
+
+
 def _canonical_request_time(value: datetime, timezone_name: str) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
+    if not _is_aware(value):
+        _authoritative_zone(timezone_name)
         return timezones.validate_local_datetime(value, timezone_name)
-    return value
+    return value.astimezone(_authoritative_zone(timezone_name))

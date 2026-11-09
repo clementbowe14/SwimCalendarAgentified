@@ -17,6 +17,7 @@ from app.api_schemas import (
     CoachCommandCenterSnapshot,
     CoachEmailDeliveryResponse,
     CoachLessonRequestConfirmResponse,
+    CoachProviderSettingsResponse,
     CoachSchedulerRules,
     InviteNotificationResponse,
 )
@@ -24,6 +25,7 @@ from app.api_schemas import (
 
 def build_contract_artifacts() -> dict[str, Any]:
     coach_settings_fixture = _coach_settings_fixture()
+    coach_provider_fixture = _coach_provider_fixture()
     coach_email_delivery = CoachEmailDeliveryResponse.model_validate(
         {
             "id": "delivery_contract_confirmation_email",
@@ -73,6 +75,12 @@ def build_contract_artifacts() -> dict[str, Any]:
             "invite_token": "invite_sofia_0826",
             "instructor_name": "Coach Sarah",
             "business_name": "Swim Command",
+            "service_name": "Swim lesson",
+            "service_location": {
+                "address": "100 Main St, Austin, TX",
+                "lat": 30.2672,
+                "lng": -97.7431,
+            },
             "expires_at_iso": "2026-09-27T16:20:44",
             "intake": {
                 "client_name": "Sofia Martinez",
@@ -300,6 +308,7 @@ def build_contract_artifacts() -> dict[str, Any]:
             ],
         },
         "fixtures/coach/settings.json": coach_settings_fixture,
+        "fixtures/coach/provider.json": coach_provider_fixture,
         "fixtures/coach/command_center_snapshot.json": _coach_command_center_snapshot_fixture(
             coach_settings_fixture,
             coach_email_delivery,
@@ -355,6 +364,50 @@ def _coach_settings_fixture() -> dict[str, Any]:
     ).model_dump(mode="json")
 
 
+def _coach_provider_fixture() -> dict[str, Any]:
+    return CoachProviderSettingsResponse.model_validate(
+        {
+            "id": "inst_001",
+            "display_name": "Coach Sarah",
+            "business_name": "Swim Command",
+            "timezone": "America/Chicago",
+            "base_location": {
+                "address": "100 Main St, Austin, TX",
+                "lat": 30.2672,
+                "lng": -97.7431,
+            },
+            "service": {
+                "name": "Swim lesson",
+                "default_duration_mins": 45,
+                "location": {
+                    "address": "100 Main St, Austin, TX",
+                    "lat": 30.2672,
+                    "lng": -97.7431,
+                },
+            },
+            "working_hours": [
+                {
+                    "weekday": weekday,
+                    "enabled": True,
+                    "start_time": "08:00",
+                    "end_time": "17:00",
+                }
+                for weekday in (
+                    "monday",
+                    "tuesday",
+                    "wednesday",
+                    "thursday",
+                    "friday",
+                    "saturday",
+                    "sunday",
+                )
+            ],
+            "setup_complete": True,
+            "setup_missing_fields": [],
+        }
+    ).model_dump(mode="json")
+
+
 def _coach_command_center_snapshot_fixture(
     rules: dict[str, Any],
     email_delivery: dict[str, Any],
@@ -365,6 +418,23 @@ def _coach_command_center_snapshot_fixture(
                 "id": "inst_001",
                 "name": "Coach Sarah",
                 "business_name": "Swim Command",
+                "base_location": {
+                    "address": "100 Main St, Austin, TX",
+                    "lat": 30.2672,
+                    "lng": -97.7431,
+                },
+                "service": {
+                    "name": "Swim lesson",
+                    "default_duration_mins": 45,
+                    "location": {
+                        "address": "100 Main St, Austin, TX",
+                        "lat": 30.2672,
+                        "lng": -97.7431,
+                    },
+                },
+                "working_hours": _coach_provider_fixture()["working_hours"],
+                "setup_complete": True,
+                "setup_missing_fields": [],
                 "main_address": "100 Main St, Austin, TX",
                 "lat": 30.2672,
                 "lng": -97.7431,
@@ -479,6 +549,11 @@ requests send `X-CSRF-Protection: 1`. Bearer headers and browser credential stor
 `GET /api/auth/coach/session` validates the cookie before any protected data is requested or rendered.
 `POST /api/auth/coach/sign-out` revokes the current database session and clears the cookie. Public
 invite requests remain unauthenticated and explicitly omit credentials.
+
+Authoritative provider identity, timezone, private base location, client-facing service location,
+default duration, and weekly hours use authenticated `GET /api/coach/provider` and full-replacement
+`PUT /api/coach/provider`. The existing `/api/coach/settings` resource remains scheduler buffer and
+payment policy. Public invite payloads expose only the service location, never the private base.
 
 Instructor calendar handoffs use authenticated
 `GET /api/coach/appointments/{appointment_id}/calendar-links` and

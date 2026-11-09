@@ -20,6 +20,62 @@ test("navigates the instructor command screens with the local adapter", async ({
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
 });
 
+test("saves one canonical provider configuration while keeping scheduler rules separate", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Settings" }).click();
+
+  await expect(page.getByRole("heading", { name: "Scheduling is ready" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save provider settings" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save rules" })).toBeVisible();
+
+  await page.getByLabel("Display name").fill("Jordan Lee");
+  await page.getByLabel("Business name Optional").fill("");
+  await page.getByLabel("Service name").fill("Private aquatic coaching");
+  const sundayHours = page.getByRole("group", { name: "Sunday working hours" });
+  await sundayHours.getByRole("switch").check();
+  await sundayHours.getByLabel("Opens").fill("10:00");
+  await sundayHours.getByLabel("Closes").fill("14:00");
+  await page.getByRole("button", { name: "Save provider settings" }).click();
+
+  await expect(page.locator("[data-provider-save-status]")).toContainText("Provider settings saved");
+  await expect(page.getByRole("heading", { name: "Scheduling is ready" })).toBeVisible();
+  await page.getByRole("button", { name: "Today" }).click();
+  await expect(page.locator(".operator-card")).toContainText("Jordan Lee");
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(page.getByLabel("Display name")).toHaveValue("Jordan Lee");
+  await expect(page.getByLabel("Business name Optional")).toHaveValue("");
+  await expect(page.getByRole("group", { name: "Sunday working hours" }).getByRole("switch")).toBeChecked();
+});
+
+for (const width of [320, 375]) {
+  test(`keeps provider setup one-handed without page overflow at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 720 });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Settings" }).click();
+
+    const providerForm = page.locator("[data-provider-form]");
+    for (const control of await providerForm.locator("input, select, button").all()) {
+      const bounds = await control.boundingBox();
+      expect(bounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+    }
+    const overflow = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      body: document.body.scrollWidth - document.body.clientWidth,
+    }));
+    expect(overflow.document).toBeLessThanOrEqual(1);
+    expect(overflow.body).toBeLessThanOrEqual(1);
+
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    const sunday = page.locator('[data-weekday="sunday"]');
+    const saveBar = page.locator(".provider-save-bar");
+    await expect(sunday).toBeVisible();
+    await expect(saveBar).toBeVisible();
+    const sundayBounds = await sunday.boundingBox();
+    const saveBounds = await saveBar.boundingBox();
+    expect((sundayBounds?.y ?? 0) + (sundayBounds?.height ?? 0)).toBeLessThanOrEqual((saveBounds?.y ?? 0) + 1);
+  });
+}
+
 test("renders truthful email delivery states and server-authorized recovery", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Requests", exact: true }).click();

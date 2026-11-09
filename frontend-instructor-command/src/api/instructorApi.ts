@@ -1,4 +1,4 @@
-import { candidateSlots, snapshot } from "./mockData.js";
+import { candidateSlots, providerConfiguration, snapshot } from "./mockData.js";
 import { trustedInstructorCalendarUrl } from "./calendar.js";
 import {
   resolveInstructorDataMode,
@@ -18,6 +18,8 @@ import type {
   InstructorAuthSession,
   InstructorCommandApi,
   LessonRequest,
+  ProviderConfiguration,
+  ProviderConfigurationUpdate,
   SchedulerRules,
   TimeSlotDTO,
 } from "./types.js";
@@ -38,6 +40,7 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
   readonly authMode = "mock" as const;
 
   private currentSnapshot: CommandCenterSnapshot = clone(snapshot);
+  private currentProvider: ProviderConfiguration = clone(providerConfiguration);
   private readonly calendarHandoffs = new Map<Id, CalendarLinks>();
   private readonly confirmations = new Map<Id, {
     slotId: Id | null;
@@ -68,6 +71,55 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
 
   async signOut(): Promise<void> {
     return;
+  }
+
+  async getProvider(): Promise<ProviderConfiguration> {
+    return clone(this.currentProvider);
+  }
+
+  async saveProvider(payload: ProviderConfigurationUpdate): Promise<ProviderConfiguration> {
+    const base_location = mockGeocodedLocation(payload.base_address, this.currentProvider.base_location, 0);
+    const service_location = mockGeocodedLocation(
+      payload.service_address,
+      this.currentProvider.service.location,
+      1,
+    );
+    this.currentProvider = {
+      id: this.currentProvider.id,
+      display_name: payload.display_name,
+      business_name: payload.business_name,
+      timezone: payload.timezone,
+      base_location,
+      service: {
+        name: payload.service_name,
+        default_duration_mins: payload.default_duration_mins,
+        location: service_location,
+      },
+      working_hours: clone(payload.working_hours),
+      setup_complete: true,
+      setup_missing_fields: [],
+    };
+    const firstEnabled = payload.working_hours.find((hours) => hours.enabled);
+    this.currentSnapshot = {
+      ...this.currentSnapshot,
+      instructor: {
+        ...this.currentSnapshot.instructor,
+        name: payload.display_name,
+        business_name: payload.business_name || payload.display_name,
+        timezone: payload.timezone,
+        base_location,
+        service: this.currentProvider.service,
+        working_hours: clone(payload.working_hours),
+        setup_complete: true,
+        setup_missing_fields: [],
+        main_address: service_location.address,
+        lat: service_location.lat,
+        lng: service_location.lng,
+        work_start_time: firstEnabled?.start_time ?? "",
+        work_end_time: firstEnabled?.end_time ?? "",
+      },
+    };
+    return clone(this.currentProvider);
   }
 
   async getSnapshot(instructor_id: Id, date: string): Promise<CommandCenterSnapshot> {
@@ -360,6 +412,14 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     }
   }
 
+  getProvider(): Promise<ProviderConfiguration> {
+    return this.get("/coach/provider");
+  }
+
+  saveProvider(provider: ProviderConfigurationUpdate): Promise<ProviderConfiguration> {
+    return this.put("/coach/provider", provider);
+  }
+
   async getSnapshot(_instructor_id: Id, date: string): Promise<CommandCenterSnapshot> {
     return this.get<CommandCenterSnapshot>(`/coach/command-center/snapshot?date=${encodeURIComponent(date)}`);
   }
@@ -615,6 +675,19 @@ function nextMockUpdatedAt(deliveries: readonly CoachEmailDelivery[]): string {
 
 function isMockEmailAddress(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+function mockGeocodedLocation(
+  address: string,
+  current: ProviderConfiguration["base_location"],
+  offset: number,
+): NonNullable<ProviderConfiguration["base_location"]> {
+  if (current?.address === address) return clone(current);
+  return {
+    address,
+    lat: 30.2672 + offset * 0.001,
+    lng: -97.7431 - offset * 0.001,
+  };
 }
 
 function addMinutes(isoDateTime: string, minutes: number): string {

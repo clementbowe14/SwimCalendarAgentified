@@ -6,6 +6,12 @@ const serverEnvelope: ClientInviteEnvelope = {
   invite_token: "server-invite-token",
   instructor_name: "Jordan Lee",
   business_name: "Clearwater Services",
+  service_name: "On-site session",
+  service_location: {
+    address: "500 Provider Plaza",
+    lat: 30.25,
+    lng: -97.75,
+  },
   expires_at_iso: "2027-01-01T00:00:00Z",
   preferred_duration_mins: 60,
   allowed_durations_mins: [30, 60],
@@ -44,7 +50,8 @@ test("delayed HTTP bootstrap remains neutral and fixture-free until server data 
   await expect(page.getByText(/Jordan Lee/).first()).toBeVisible();
   await expectNoMockFixtureText(page);
   await page.getByRole("button", { name: "Facility" }).click();
-  await expect(page.getByLabel("Preferred facility")).toHaveValue("");
+  await expect(page.getByLabel("Preferred facility")).toHaveValue("500 Provider Plaza");
+  await expect(page.getByLabel("Preferred facility")).toHaveAttribute("readonly", "");
   await expectNoMockFixtureText(page);
 });
 

@@ -15,8 +15,10 @@ from sqlalchemy import (
     Integer,
     JSON,
     LargeBinary,
+    PrimaryKeyConstraint,
     String,
     Text,
+    Time,
     UniqueConstraint,
     text,
 )
@@ -26,6 +28,35 @@ Base = declarative_base()
 
 class InstructorDB(Base):
     __tablename__ = 'instructors'
+    __table_args__ = (
+        CheckConstraint(
+            "default_duration_mins IS NULL OR "
+            "(default_duration_mins BETWEEN 15 AND 240 AND default_duration_mins % 15 = 0)",
+            name="ck_instructors_default_duration",
+        ),
+        CheckConstraint(
+            "(base_address IS NULL AND base_lat IS NULL AND base_lng IS NULL) OR "
+            "(base_address IS NOT NULL AND btrim(base_address) <> '' "
+            "AND base_lat IS NOT NULL AND base_lng IS NOT NULL)",
+            name="ck_instructors_base_location_complete",
+        ),
+        CheckConstraint(
+            "(base_lat IS NULL OR base_lat BETWEEN -90 AND 90) AND "
+            "(base_lng IS NULL OR base_lng BETWEEN -180 AND 180)",
+            name="ck_instructors_base_coordinates",
+        ),
+        CheckConstraint(
+            "(service_address IS NULL AND service_lat IS NULL AND service_lng IS NULL) OR "
+            "(service_address IS NOT NULL AND btrim(service_address) <> '' "
+            "AND service_lat IS NOT NULL AND service_lng IS NOT NULL)",
+            name="ck_instructors_service_location_complete",
+        ),
+        CheckConstraint(
+            "(service_lat IS NULL OR service_lat BETWEEN -90 AND 90) AND "
+            "(service_lng IS NULL OR service_lng BETWEEN -180 AND 180)",
+            name="ck_instructors_service_coordinates",
+        ),
+    )
 
     id = Column(String, primary_key=True)
     name = Column(String, nullable=False)
@@ -35,6 +66,15 @@ class InstructorDB(Base):
     work_start_time = Column(String, default="08:00") # HH:MM format
     work_end_time = Column(String, default="18:00")   # HH:MM format
     timezone = Column(String, nullable=False, default="America/Chicago")
+    business_name = Column(String(160), nullable=True)
+    base_address = Column(String(300), nullable=True)
+    base_lat = Column(Float, nullable=True)
+    base_lng = Column(Float, nullable=True)
+    service_address = Column(String(300), nullable=True)
+    service_lat = Column(Float, nullable=True)
+    service_lng = Column(Float, nullable=True)
+    service_name = Column(String(160), nullable=True)
+    default_duration_mins = Column(Integer, nullable=True)
 
     appointments = relationship("AppointmentDB", back_populates="instructor")
     clients = relationship("ClientDB", back_populates="instructor")
@@ -45,6 +85,64 @@ class InstructorDB(Base):
         back_populates="instructor",
         uselist=False,
     )
+    working_hours = relationship(
+        "ProviderWorkingHoursDB",
+        back_populates="instructor",
+        cascade="all, delete-orphan",
+        order_by="ProviderWorkingHoursDB.weekday",
+    )
+
+
+class ProviderWorkingHoursDB(Base):
+    __tablename__ = "provider_working_hours"
+    __table_args__ = (
+        CheckConstraint(
+            "weekday BETWEEN 0 AND 6",
+            name="ck_provider_working_hours_weekday",
+        ),
+        CheckConstraint(
+            "(enabled AND start_time IS NOT NULL AND end_time IS NOT NULL AND end_time > start_time) "
+            "OR (NOT enabled AND start_time IS NULL AND end_time IS NULL)",
+            name="ck_provider_working_hours_state",
+        ),
+        ForeignKeyConstraint(
+            ["instructor_id"],
+            ["instructors.id"],
+            name="fk_provider_working_hours_instructor_id",
+            ondelete="CASCADE",
+        ),
+        PrimaryKeyConstraint(
+            "instructor_id",
+            "weekday",
+            name="pk_provider_working_hours",
+        ),
+    )
+
+    instructor_id = Column(String, nullable=False)
+    weekday = Column(Integer, nullable=False)
+    enabled = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    start_time = Column(Time, nullable=True)
+    end_time = Column(Time, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+    instructor = relationship("InstructorDB", back_populates="working_hours")
 
 
 class ProviderAccountDB(Base):

@@ -6,7 +6,7 @@ from alembic.config import Config
 from sqlalchemy import inspect
 
 from app import db
-from app.models import InstructorDB, InviteTokenDB
+from app.models import InstructorDB, InviteTokenDB, ProviderWorkingHoursDB
 from tests.db_test_utils import TEST_DATABASE_URL
 
 
@@ -125,7 +125,25 @@ def test_downgrade_aborts_without_data_loss_on_cross_provider_duplicate_keys(
                 work_start_time="08:00",
                 work_end_time="17:00",
                 timezone="America/Chicago",
+                base_address="2 Migration Way",
+                base_lat=30.1,
+                base_lng=-97.1,
+                service_address="2 Migration Way",
+                service_lat=30.1,
+                service_lng=-97.1,
             )
+        )
+        session.add_all(
+            [
+                ProviderWorkingHoursDB(
+                    instructor_id="inst_migration_other",
+                    weekday=weekday,
+                    enabled=True,
+                    start_time=datetime.time(8, 0),
+                    end_time=datetime.time(17, 0),
+                )
+                for weekday in range(7)
+            ]
         )
         session.commit()
     shared_key = "cross-provider-downgrade-key"

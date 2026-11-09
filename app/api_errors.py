@@ -115,6 +115,29 @@ class SchedulingConflict(ApiException):
         super().__init__("SCHEDULING_CONFLICT", message, status_code=409, details=details)
 
 
+class ProviderSetupRequired(ApiException):
+    def __init__(
+        self,
+        missing_fields: Optional[list[str]] = None,
+        *,
+        public: bool = False,
+    ):
+        super().__init__(
+            "PROVIDER_SETUP_REQUIRED",
+            (
+                "Scheduling is temporarily unavailable."
+                if public
+                else "Complete provider settings before scheduling."
+            ),
+            status_code=409,
+            details=(
+                None
+                if public or not missing_fields
+                else {"missing_fields": missing_fields}
+            ),
+        )
+
+
 class IdempotencyConflict(ApiException):
     def __init__(self):
         super().__init__(

@@ -105,7 +105,7 @@ test.describe("MVP coach auth flow", () => {
 
     await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
     expect(api.sessionCalls()).toBe(priorSessionChecks + 1);
-    const reloadOrder = api.requestOrder().slice(-3);
+    const reloadOrder = api.requestOrder().slice(-4);
     expect(reloadOrder[0]).toBe("session");
     expect(api.protectedCalls().slice(priorProtectedCalls).every((call) => !call.beforeValidation)).toBe(true);
   });
@@ -729,6 +729,17 @@ async function fulfillProtectedCoachRoute(
   pathname: string,
   state: MockCoachApiState,
 ): Promise<void> {
+  if (pathname.endsWith("/coach/provider")) {
+    const request = route.request();
+    if (request.method() === "PUT") {
+      const payload = request.postDataJSON() as Record<string, unknown>;
+      await route.fulfill({ json: providerSettingsResponse(payload) });
+    } else {
+      await route.fulfill({ json: providerSettingsResponse() });
+    }
+    return;
+  }
+
   if (pathname.endsWith("/coach/command-center/snapshot")) {
     await route.fulfill({ json: commandCenterSnapshot(state.emailDeliveries) });
     return;
@@ -888,11 +899,18 @@ function calendarLinksResponse(anchor: string, recurring: boolean): Record<strin
 }
 
 function commandCenterSnapshot(emailDeliveries: Array<Record<string, unknown>>): Record<string, unknown> {
+  const provider = providerSettingsResponse();
   return {
     instructor: {
       id: "inst_001",
       name: "Coach Sarah",
       business_name: "Swim Command",
+      timezone: provider.timezone,
+      base_location: provider.base_location,
+      service: provider.service,
+      working_hours: provider.working_hours,
+      setup_complete: provider.setup_complete,
+      setup_missing_fields: provider.setup_missing_fields,
       main_address: "100 Main St, Austin, TX",
       lat: 30.2672,
       lng: -97.7431,
@@ -1008,6 +1026,40 @@ function commandCenterSnapshot(emailDeliveries: Array<Record<string, unknown>>):
         require_payment_method_for_new_clients: true,
       },
     },
+  };
+}
+
+function providerSettingsResponse(update: Record<string, unknown> = {}): Record<string, unknown> {
+  const workingHours = Array.isArray(update.working_hours)
+    ? update.working_hours
+    : ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].map((weekday) => ({
+        weekday,
+        enabled: true,
+        start_time: "08:00",
+        end_time: "17:00",
+      }));
+  const displayName = typeof update.display_name === "string" ? update.display_name : "Coach Sarah";
+  const businessName = typeof update.business_name === "string" || update.business_name === null
+    ? update.business_name
+    : "Swim Command";
+  const baseAddress = typeof update.base_address === "string" ? update.base_address : "100 Main St, Austin, TX";
+  const serviceAddress = typeof update.service_address === "string"
+    ? update.service_address
+    : "Riverside Pool, Austin, TX";
+  return {
+    id: "inst_001",
+    display_name: displayName,
+    business_name: businessName,
+    timezone: typeof update.timezone === "string" ? update.timezone : "America/Chicago",
+    base_location: { address: baseAddress, lat: 30.2672, lng: -97.7431 },
+    service: {
+      name: typeof update.service_name === "string" ? update.service_name : "Private lesson",
+      default_duration_mins: typeof update.default_duration_mins === "number" ? update.default_duration_mins : 45,
+      location: { address: serviceAddress, lat: 30.27, lng: -97.74 },
+    },
+    working_hours: workingHours,
+    setup_complete: true,
+    setup_missing_fields: [],
   };
 }
 

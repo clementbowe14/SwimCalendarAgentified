@@ -14,6 +14,7 @@ from app.api_errors import (
     InvalidSchedulingRequest,
     LessonRequestExpired,
     LessonRequestNotFound,
+    ProviderSetupRequired,
     ResourceNotFound,
     RoutingConfigurationError,
     RoutingEstimateFailed as RoutingEstimateFailedApiError,
@@ -36,6 +37,13 @@ from app.api_schemas import (
     ClientInviteUnavailableWindow,
 )
 from app.models import AppointmentDB, InviteIntakeDB, InviteSlotOfferDB, LessonRequestDB, TimeSlotDTO
+from app.provider_settings import (
+    ProviderConfiguration,
+    ProviderNotFound,
+    ProviderSetupIncomplete,
+    require_provider_setup,
+    service_location_matches,
+)
 from app.public_tokens import (
     InviteContext,
     create_lesson_request,
@@ -56,6 +64,7 @@ from app.scheduler_settings import load_buffer_policy
 
 SLOT_OFFER_TTL_MINUTES = 30
 DAY_KEYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+HOME_POOL_ADDRESS_PROMPT = "Enter home pool address"
 
 
 def get_client_invite_envelope(invite_token: str) -> ClientInviteEnvelopeResponse:
@@ -68,6 +77,13 @@ def submit_client_invite_intake(
     intake: ClientInviteIntake,
 ) -> ClientInviteEnvelopeResponse:
     invite = resolve_invite(invite_token)
+    intake = _project_authoritative_facility_intake(invite, intake)
+    if (
+        intake.location_type == "home"
+        and intake.location.address.strip().casefold()
+        == HOME_POOL_ADDRESS_PROMPT.casefold()
+    ):
+        raise InvalidSchedulingRequest("Enter a home pool address.")
     session = db.SessionLocal()
     try:
         existing = session.query(InviteIntakeDB).filter_by(invite_token=invite.token).first()
@@ -134,8 +150,10 @@ def request_client_invite_lesson_slot(
             raise IdempotencyConflict()
         return _lesson_request_response(existing.request_token)
 
+    provider = _require_public_provider_setup(offer.instructor_id)
+    _validate_current_facility_offer(offer, provider)
     policy = load_buffer_policy(invite.instructor_id, operation="client_invite_request_creation")
-    _validate_offer_occurrences(offer, policy)
+    _validate_offer_occurrences(offer, policy, provider.timezone)
     try:
         record = create_lesson_request(
             invite_token=invite.token,
@@ -272,6 +290,8 @@ def _find_slots(
         raise RoutingConfigurationError() from exc
     except RouteEstimateFailed as exc:
         raise RoutingEstimateFailedApiError() from exc
+    except ProviderSetupIncomplete as exc:
+        raise ProviderSetupRequired(public=True) from exc
     except ValueError as exc:
         message = str(exc)
         if "not found" in message.lower():
@@ -279,13 +299,24 @@ def _find_slots(
         raise InvalidSchedulingRequest("The scheduling request could not be evaluated.") from exc
 
 
-def _validate_offer_occurrences(offer: InviteSlotOfferDB, buffer_policy: BufferPolicy) -> None:
-    timezone_name = _instructor_timezone(offer.instructor_id)
+def _validate_offer_occurrences(
+    offer: InviteSlotOfferDB,
+    buffer_policy: BufferPolicy,
+    timezone_name: str,
+) -> None:
     base_local = timezones.storage_to_local(offer.slot_start, timezone_name)
     count = offer.recurrence_count if offer.recurrence == "weekly" else 1
     for index in range(count):
         local_label = base_local.replace(tzinfo=None) + datetime.timedelta(days=7 * index)
-        occurrence = timezones.validate_local_datetime(local_label, timezone_name)
+        try:
+            occurrence = timezones.validate_local_datetime(local_label, timezone_name)
+        except (
+            timezones.AmbiguousLocalTimeError,
+            timezones.NonexistentLocalTimeError,
+        ) as exc:
+            raise InvalidSchedulingRequest(
+                "The selected lesson time is no longer available."
+            ) from exc
         slots = _find_slots(
             instructor_id=offer.instructor_id,
             requested_date=occurrence.date(),
@@ -299,19 +330,48 @@ def _validate_offer_occurrences(offer: InviteSlotOfferDB, buffer_policy: BufferP
             raise InvalidSchedulingRequest("The selected lesson time is no longer available.")
 
 
+def _validate_current_facility_offer(
+    offer: InviteSlotOfferDB,
+    provider: ProviderConfiguration,
+) -> None:
+    if offer.location_type != "facility":
+        return
+    if not service_location_matches(
+        provider,
+        address=offer.location_address,
+        lat=offer.lat,
+        lng=offer.lng,
+    ):
+        raise InvalidSchedulingRequest("The selected lesson time is no longer available.")
+
+
+def _require_public_provider_setup(instructor_id: str) -> ProviderConfiguration:
+    try:
+        return require_provider_setup(instructor_id)
+    except ProviderNotFound as exc:
+        raise ResourceNotFound("The instructor could not be found.") from exc
+    except ProviderSetupIncomplete as exc:
+        raise ProviderSetupRequired(public=True) from exc
+
+
 def _resolve_location(
     instructor_id: str,
     location: ClientInviteLocation,
     is_facility: bool,
 ) -> ClientInviteLocation:
-    instructor = db.get_instructor_info(instructor_id)
-    if not instructor:
+    try:
+        provider = require_provider_setup(instructor_id)
+    except ProviderNotFound as exc:
         raise ResourceNotFound("The instructor could not be found.")
+    except ProviderSetupIncomplete as exc:
+        raise ProviderSetupRequired(public=True) from exc
     if is_facility:
+        if provider.service_location is None:
+            raise ProviderSetupRequired(public=True)
         return ClientInviteLocation(
-            address=instructor.main_address,
-            lat=instructor.lat,
-            lng=instructor.lng,
+            address=provider.service_location.address,
+            lat=provider.service_location.lat,
+            lng=provider.service_location.lng,
             is_instructor_facility=True,
         )
     if location.lat is not None and location.lng is not None:
@@ -351,7 +411,7 @@ def _load_or_default_intake(invite: InviteContext) -> ClientInviteIntake:
         notes="",
         location_type="home",
         location=ClientInviteLocation(
-            address=invite.location_label,
+            address=HOME_POOL_ADDRESS_PROMPT,
             lat=None,
             lng=None,
             is_instructor_facility=False,
@@ -360,14 +420,49 @@ def _load_or_default_intake(invite: InviteContext) -> ClientInviteIntake:
 
 
 def _envelope_response(invite: InviteContext, intake: ClientInviteIntake) -> ClientInviteEnvelopeResponse:
+    intake = _project_authoritative_facility_intake(invite, intake)
     return ClientInviteEnvelopeResponse(
         invite_token=invite.token,
         instructor_name=invite.instructor_name,
         business_name=invite.business_name,
+        service_name=invite.service_name,
+        service_location=(
+            {
+                "address": invite.service_location.address,
+                "lat": invite.service_location.lat,
+                "lng": invite.service_location.lng,
+            }
+            if invite.service_location is not None
+            else None
+        ),
         expires_at_iso=invite.expires_at,
         intake=intake,
         preferred_duration_mins=invite.preferred_duration_mins,
         allowed_durations_mins=list(invite.allowed_durations_mins),
+    )
+
+
+def _project_authoritative_facility_intake(
+    invite: InviteContext,
+    intake: ClientInviteIntake,
+) -> ClientInviteIntake:
+    if intake.location_type != "facility" and not intake.location.is_instructor_facility:
+        return intake
+    service_location = invite.service_location
+    return intake.model_copy(
+        update={
+            "location_type": "facility",
+            "location": ClientInviteLocation(
+                address=(
+                    service_location.address
+                    if service_location is not None
+                    else invite.location_label
+                ),
+                lat=service_location.lat if service_location is not None else None,
+                lng=service_location.lng if service_location is not None else None,
+                is_instructor_facility=True,
+            ),
+        }
     )
 
 
@@ -500,14 +595,19 @@ def _load_active_offer(invite_token: str, slot_id: str) -> InviteSlotOfferDB:
 
 def _lesson_request_response(request_token: str) -> ClientInviteLessonRequestResponse:
     request, appointments = _load_request_and_appointments(request_token)
-    timezone_name = _instructor_timezone(request.instructor_id)
+    timezone_name, uses_authoritative_timezone = _instructor_response_timezone(
+        request.instructor_id
+    )
     local_start = timezones.storage_to_local(request.slot_start, timezone_name)
     local_end = timezones.storage_to_local(request.slot_end, timezone_name)
     slot = ClientInviteSchedulerSlot(
         id=request.original_slot_offer_id or _slot_id_from_request(request),
         start_iso=local_start,
         end_iso=local_end,
-        display=_display_slot(local_start),
+        display=_display_slot(
+            local_start,
+            timezone_label=None if uses_authoritative_timezone else "UTC",
+        ),
         location_address=request.client_address,
         travel_time_mins=request.travel_time_mins,
         buffer_mins=request.buffer_mins,
@@ -570,14 +670,21 @@ def _confirmation_response(
 ) -> ClientInviteLessonConfirmation:
     first = appointments[0]
     links = calendar_links(request.request_token, appointments)
-    local_start = timezones.storage_to_local(first.start_time, _instructor_timezone(request.instructor_id))
+    timezone_name, uses_authoritative_timezone = _instructor_response_timezone(
+        request.instructor_id
+    )
+    local_start = timezones.storage_to_local(first.start_time, timezone_name)
+    timezone_label = None if uses_authoritative_timezone else "UTC"
     return ClientInviteLessonConfirmation(
         appointment_id=request.request_token,
         appointment_ids=[
             request.request_token if len(appointments) == 1 else f"{request.request_token}-{index + 1}"
             for index, _ in enumerate(appointments)
         ],
-        message=f"Your swim lesson is confirmed for {_display_slot(local_start)}.",
+        message=(
+            "Your swim lesson is confirmed for "
+            f"{_display_slot(local_start, timezone_label=timezone_label)}."
+        ),
         confirmed_at_iso=first.created_at,
         calendar_links=links,
     )
@@ -650,9 +757,17 @@ def _intake_id(invite_token: str) -> str:
     return f"intake_{hashlib.sha256(invite_token.encode('utf-8')).hexdigest()[:12]}"
 
 
-def _display_slot(start_time: datetime.datetime) -> str:
+def _display_slot(
+    start_time: datetime.datetime,
+    *,
+    timezone_label: Optional[str] = None,
+) -> str:
     hour = start_time.strftime("%I").lstrip("0") or "12"
-    return f"{start_time.strftime('%a, %b')} {start_time.day} at {hour}:{start_time.strftime('%M %p')}"
+    suffix = f" {timezone_label}" if timezone_label else ""
+    return (
+        f"{start_time.strftime('%a, %b')} {start_time.day} at "
+        f"{hour}:{start_time.strftime('%M %p')}{suffix}"
+    )
 
 
 def _weekly_candidate(start_time: datetime.datetime) -> bool:
@@ -660,8 +775,19 @@ def _weekly_candidate(start_time: datetime.datetime) -> bool:
 
 
 def _instructor_timezone(instructor_id: str) -> str:
+    return _instructor_response_timezone(instructor_id)[0]
+
+
+def _instructor_response_timezone(instructor_id: str) -> tuple[str, bool]:
     instructor = db.get_instructor_info(instructor_id)
-    return instructor.timezone if instructor else timezones.DEFAULT_INSTRUCTOR_TIMEZONE
+    if instructor is None or not instructor.timezone or not instructor.timezone.strip():
+        return "UTC", False
+    try:
+        return timezones.get_zone(instructor.timezone if instructor else None).key, True
+    except timezones.InvalidTimezoneError:
+        # Existing requests remain readable even while setup is incomplete.
+        # UTC preserves their exact instants without inventing a provider zone.
+        return "UTC", False
 
 
 def _instructor_local(value: datetime.datetime, instructor_id: str) -> datetime.datetime:
@@ -687,20 +813,34 @@ def _alternative_slot_responses(request: LessonRequestDB) -> list[ClientInviteSc
             .order_by(InviteSlotOfferDB.slot_start.asc())
             .all()
         )
-        timezone_name = _instructor_timezone(request.instructor_id)
-        return [_offer_slot_response(offer, timezone_name) for offer in offers]
+        timezone_name, uses_authoritative_timezone = _instructor_response_timezone(
+            request.instructor_id
+        )
+        return [
+            _offer_slot_response(
+                offer,
+                timezone_name,
+                timezone_label=None if uses_authoritative_timezone else "UTC",
+            )
+            for offer in offers
+        ]
     finally:
         session.close()
 
 
-def _offer_slot_response(offer: InviteSlotOfferDB, timezone_name: str) -> ClientInviteSchedulerSlot:
+def _offer_slot_response(
+    offer: InviteSlotOfferDB,
+    timezone_name: str,
+    *,
+    timezone_label: Optional[str] = None,
+) -> ClientInviteSchedulerSlot:
     local_start = timezones.storage_to_local(offer.slot_start, timezone_name)
     local_end = timezones.storage_to_local(offer.slot_end, timezone_name)
     return ClientInviteSchedulerSlot(
         id=offer.id,
         start_iso=local_start,
         end_iso=local_end,
-        display=_display_slot(local_start),
+        display=_display_slot(local_start, timezone_label=timezone_label),
         location_address=offer.location_address,
         travel_time_mins=offer.travel_time_mins,
         buffer_mins=offer.buffer_mins,

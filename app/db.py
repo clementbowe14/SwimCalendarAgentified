@@ -24,6 +24,7 @@ from app.models import (
     SchedulerSettingsDB,
     InviteSlotOfferDB,
     ProviderAccountDB,
+    ProviderWorkingHoursDB,
 )
 
 DATABASE_URL = os.getenv(
@@ -71,6 +72,15 @@ def seed_data():
             work_start_time="08:00",
             work_end_time="17:00",
             timezone=timezones.DEFAULT_INSTRUCTOR_TIMEZONE,
+            business_name="Swim Command",
+            base_address="100 Main St, Austin, TX",
+            base_lat=30.2672,
+            base_lng=-97.7431,
+            service_address="100 Main St, Austin, TX",
+            service_lat=30.2672,
+            service_lng=-97.7431,
+            service_name="Swim lesson",
+            default_duration_mins=45,
         )
         session.add(instructor)
         session.commit()
@@ -140,6 +150,20 @@ def seed_data():
 
         session.add_all([app1, app2, app3])
         session.commit()
+
+    if not session.query(ProviderWorkingHoursDB).filter_by(instructor_id="inst_001").first():
+        session.add_all(
+            [
+                ProviderWorkingHoursDB(
+                    instructor_id="inst_001",
+                    weekday=weekday,
+                    enabled=True,
+                    start_time=datetime.time(8, 0),
+                    end_time=datetime.time(17, 0),
+                )
+                for weekday in range(7)
+            ]
+        )
 
     if not session.query(ClientDB).filter_by(id="client_alice").first():
         session.add(
@@ -309,15 +333,27 @@ def get_local_appointments_for_date(instructor_id: str, date_str: str) -> List[d
     instructor = get_instructor_info(instructor_id)
     if not instructor:
         return []
-    rows = _get_appointment_rows_for_local_date(instructor_id, date_str, instructor.timezone)
-    return [_appointment_to_dict(row, timezone_name=instructor.timezone) for row in rows]
+    timezone_name = _read_timezone(instructor.timezone)
+    rows = _get_appointment_rows_for_local_date(instructor_id, date_str, timezone_name)
+    return [_appointment_to_dict(row, timezone_name=timezone_name) for row in rows]
 
 def get_utc_appointment_events_for_date(instructor_id: str, date_str: str) -> List[dict]:
     instructor = get_instructor_info(instructor_id)
     if not instructor:
         return []
-    rows = _get_appointment_rows_for_local_date(instructor_id, date_str, instructor.timezone)
+    rows = _get_appointment_rows_for_local_date(
+        instructor_id,
+        date_str,
+        _read_timezone(instructor.timezone),
+    )
     return [_appointment_to_dict(row, aware_utc=True) for row in rows]
+
+
+def _read_timezone(timezone_name: Optional[str]) -> str:
+    try:
+        return timezones.get_zone(timezone_name).key
+    except timezones.InvalidTimezoneError:
+        return timezones.DEFAULT_INSTRUCTOR_TIMEZONE
 
 def _get_appointment_rows_for_local_date(
     instructor_id: str,

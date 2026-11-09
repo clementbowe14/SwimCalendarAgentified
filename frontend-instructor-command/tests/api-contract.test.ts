@@ -10,6 +10,8 @@ import type {
   CoachEmailDelivery,
   CommandCenterSnapshot,
   InstructorAuthSession,
+  ProviderConfiguration,
+  ProviderConfigurationUpdate,
   SchedulerRules,
 } from "../src/api/types.js";
 
@@ -407,6 +409,65 @@ test("HTTP instructor adapter preserves stable backend error codes", async () =>
   assert.equal((caught as InstructorCommandApiError).code, "SCHEDULING_CONFLICT");
 });
 
+test("HTTP instructor adapter reads and atomically replaces the current provider", async () => {
+  const calls: FetchCall[] = [];
+  const api = new HttpInstructorCommandApi("http://api.test/api/");
+  const provider = providerConfigurationContract();
+  const update = providerUpdateContract();
+
+  await withMockFetch(
+    calls,
+    async (_input, init) => jsonResponse(init?.method === "PUT" ? provider : provider),
+    async () => {
+      const loaded = await api.getProvider();
+      const saved = await api.saveProvider(update);
+      assert.deepEqual(loaded, provider);
+      assert.deepEqual(saved, provider);
+    },
+  );
+
+  assert.equal(calls[0].url, "http://api.test/api/coach/provider");
+  assert.equal(calls[0].init?.method, "GET");
+  assert.equal(calls[0].init?.credentials, "include");
+  assert.equal(headerValue(calls[0].init?.headers, "x-csrf-protection"), null);
+  assert.equal(headerValue(calls[0].init?.headers, "authorization"), null);
+
+  assert.equal(calls[1].url, "http://api.test/api/coach/provider");
+  assert.equal(calls[1].init?.method, "PUT");
+  assert.equal(calls[1].init?.credentials, "include");
+  assert.equal(headerValue(calls[1].init?.headers, "x-csrf-protection"), "1");
+  assert.equal(headerValue(calls[1].init?.headers, "authorization"), null);
+  assert.deepEqual(JSON.parse(String(calls[1].init?.body)), update);
+  assert.equal("id" in JSON.parse(String(calls[1].init?.body)), false);
+  assert.equal("lat" in JSON.parse(String(calls[1].init?.body)), false);
+});
+
+test("HTTP instructor adapter preserves provider field-error details", async () => {
+  const api = new HttpInstructorCommandApi("http://api.test/api");
+  let caught: unknown;
+  const details = {
+    fields: [{ loc: ["body", "working_hours", 0, "end_time"], msg: "Closing must be later." }],
+  };
+
+  await withMockFetch(
+    [],
+    async () => jsonResponse(
+      { error: { code: "VALIDATION_ERROR", message: "Request validation failed.", details } },
+      { status: 422 },
+    ),
+    async () => {
+      try {
+        await api.saveProvider(providerUpdateContract());
+      } catch (error) {
+        caught = error;
+      }
+    },
+  );
+
+  assert.equal(caught instanceof InstructorCommandApiError, true);
+  assert.deepEqual((caught as InstructorCommandApiError).details, details);
+});
+
 test("HTTP instructor adapter saves scheduler rules through the coach settings contract", async () => {
   const calls: FetchCall[] = [];
   const api = new HttpInstructorCommandApi("http://api.test/api");
@@ -503,11 +564,18 @@ function emailDeliveryContract(
 }
 
 function snapshotContract(): CommandCenterSnapshot {
+  const provider = providerConfigurationContract();
   return {
     instructor: {
       id: "inst_001",
       name: "Coach Sarah",
       business_name: "Swim Command",
+      timezone: provider.timezone,
+      base_location: provider.base_location,
+      service: provider.service,
+      working_hours: provider.working_hours,
+      setup_complete: provider.setup_complete,
+      setup_missing_fields: provider.setup_missing_fields,
       main_address: "100 Main St, Austin, TX",
       lat: 30.2672,
       lng: -97.7431,
@@ -596,5 +664,56 @@ function snapshotContract(): CommandCenterSnapshot {
         require_payment_method_for_new_clients: true,
       },
     },
+  };
+}
+
+function providerConfigurationContract(
+  overrides: Partial<ProviderConfiguration> = {},
+): ProviderConfiguration {
+  return {
+    id: "inst_001",
+    display_name: "Coach Sarah",
+    business_name: "Swim Command",
+    timezone: "America/Chicago",
+    base_location: {
+      address: "100 Main St, Austin, TX",
+      lat: 30.2672,
+      lng: -97.7431,
+    },
+    service: {
+      name: "Private lesson",
+      default_duration_mins: 45,
+      location: {
+        address: "Riverside Pool, Austin, TX",
+        lat: 30.2701,
+        lng: -97.7402,
+      },
+    },
+    working_hours: [
+      { weekday: "monday", enabled: true, start_time: "08:00", end_time: "17:00" },
+      { weekday: "tuesday", enabled: true, start_time: "08:00", end_time: "17:00" },
+      { weekday: "wednesday", enabled: true, start_time: "08:00", end_time: "17:00" },
+      { weekday: "thursday", enabled: true, start_time: "08:00", end_time: "17:00" },
+      { weekday: "friday", enabled: true, start_time: "08:00", end_time: "17:00" },
+      { weekday: "saturday", enabled: false, start_time: null, end_time: null },
+      { weekday: "sunday", enabled: false, start_time: null, end_time: null },
+    ],
+    setup_complete: true,
+    setup_missing_fields: [],
+    ...overrides,
+  };
+}
+
+function providerUpdateContract(): ProviderConfigurationUpdate {
+  const provider = providerConfigurationContract();
+  return {
+    display_name: provider.display_name,
+    business_name: provider.business_name,
+    timezone: provider.timezone,
+    base_address: provider.base_location!.address,
+    service_address: provider.service.location!.address,
+    service_name: provider.service.name!,
+    default_duration_mins: provider.service.default_duration_mins!,
+    working_hours: provider.working_hours,
   };
 }

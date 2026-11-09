@@ -1,7 +1,8 @@
 from typing import TypedDict, List, Optional
 import datetime
-from app import tools, db
+from app import tools
 from app.models import TimeSlotDTO
+from app.provider_settings import require_provider_setup
 
 class AgentState(TypedDict):
     messages: List[dict]
@@ -70,12 +71,16 @@ class SwimSchedulingAgent:
             state["status"] = "PRESENTING"
 
             # Format dialogue response
-            inst_info = db.get_instructor_info(self.instructor_id)
-            location_str = inst_info.main_address if is_instructor_facility else client_address
+            provider = require_provider_setup(self.instructor_id)
+            location_str = (
+                provider.service_location.address
+                if is_instructor_facility and provider.service_location is not None
+                else client_address
+            )
 
             if not raw_slots:
                 state["dialogue_response"] = (
-                    f"Hello {client_name}, I checked Coach {inst_info.name}'s schedule for {requested_date} at {location_str}. "
+                    f"Hello {client_name}, I checked {provider.display_name}'s schedule for {requested_date} at {location_str}. "
                     f"Unfortunately, due to distance travel buffers and existing appointments, there are no open slots available on this date. "
                     f"Would you like to check an alternative date?"
                 )
@@ -84,7 +89,7 @@ class SwimSchedulingAgent:
                 slots_formatted = "\n".join(slot_lines)
                 state["dialogue_response"] = (
                     f"Hello {client_name}! Here are the mathematically calculated, available swim lesson times for "
-                    f"{requested_date} at '{location_str}' (accounting for Coach {inst_info.name}'s schedule & travel buffers):\n\n"
+                    f"{requested_date} at '{location_str}' (accounting for {provider.display_name}'s schedule & travel buffers):\n\n"
                     f"{slots_formatted}\n\n"
                     f"Please confirm which slot number you'd like to book!"
                 )

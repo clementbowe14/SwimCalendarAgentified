@@ -7,7 +7,11 @@ import {
   type Page,
   type TestInfo,
 } from "@playwright/test";
-import type { CalendarLinks, CoachLessonRequestConfirmResponse } from "../src/api/types";
+import type {
+  CalendarLinks,
+  CoachLessonRequestConfirmResponse,
+  ProviderConfiguration,
+} from "../src/api/types";
 
 const liveApiBase = readLiveApiBase();
 const publicApiBase = `${liveApiBase}/public`;
@@ -117,6 +121,38 @@ test.describe("instructor command real-backend integration", () => {
     await page.getByRole("button", { name: "Find safe starts" }).click();
     await expect(page.getByRole("heading", { name: "Availability finder" })).toBeVisible();
     await expect(page.locator("main")).toContainText(/safe options|No safe starts/i);
+  });
+
+  test("saves and reloads provider configuration without mobile overflow", async ({ page }) => {
+    await signIn(page);
+    await page.getByRole("button", { name: "Settings" }).click();
+    const displayName = await page.getByLabel("Display name").inputValue();
+    const putResponsePromise = page.waitForResponse((response) =>
+      response.request().method() === "PUT" && response.url().endsWith("/coach/provider"),
+    );
+    await page.getByRole("button", { name: "Save provider settings" }).click();
+    const putResponse = await putResponsePromise;
+    const saved = await jsonResponse<ProviderConfiguration>(putResponse, "provider settings save");
+    expect(saved.working_hours).toHaveLength(7);
+    expect(saved.display_name).toBe(displayName);
+    await expect(page.locator("[data-provider-save-status]")).toContainText("Provider settings saved");
+
+    await page.reload();
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(page.getByLabel("Display name")).toHaveValue(displayName);
+    await expect(page.getByRole("switch")).toHaveCount(7);
+
+    for (const width of [375, 320]) {
+      await page.setViewportSize({ width, height: 720 });
+      const overflow = await page.evaluate(() => Math.max(
+        document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        document.body.scrollWidth - document.body.clientWidth,
+      ));
+      expect(overflow).toBeLessThanOrEqual(1);
+      for (const control of await page.locator("[data-provider-form] input, [data-provider-form] select, [data-provider-form] button").all()) {
+        expect((await control.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+      }
+    }
   });
 
   test("books a safe slot and independently reads back its exact appointment ID", async ({ page }) => {

@@ -120,6 +120,57 @@ export type InstructorAuthSession = {
   expires_at: string;
 };
 
+export type ProviderWeekday =
+  | "monday"
+  | "tuesday"
+  | "wednesday"
+  | "thursday"
+  | "friday"
+  | "saturday"
+  | "sunday";
+
+export type ProviderWorkingHour = {
+  weekday: ProviderWeekday;
+  enabled: boolean;
+  start_time: string | null;
+  end_time: string | null;
+};
+
+export type ProviderLocation = {
+  address: string;
+  lat: number;
+  lng: number;
+};
+
+export type ProviderService = {
+  name: string | null;
+  default_duration_mins: number | null;
+  location: ProviderLocation | null;
+};
+
+export type ProviderConfiguration = {
+  id: Id;
+  display_name: string;
+  business_name: string | null;
+  timezone: string;
+  base_location: ProviderLocation | null;
+  service: ProviderService;
+  working_hours: ProviderWorkingHour[];
+  setup_complete: boolean;
+  setup_missing_fields: string[];
+};
+
+export type ProviderConfigurationUpdate = {
+  display_name: string;
+  business_name: string | null;
+  timezone: string;
+  base_address: string;
+  service_address: string;
+  service_name: string;
+  default_duration_mins: number;
+  working_hours: ProviderWorkingHour[];
+};
+
 export type CoachLessonRequestActionResponse = {
   id: Id;
   status: "approved" | "needs_alternatives" | "declined";
@@ -141,6 +192,12 @@ export type InstructorProfile = {
   id: Id;
   name: string;
   business_name: string;
+  timezone: string;
+  base_location: ProviderLocation | null;
+  service: ProviderService;
+  working_hours: ProviderWorkingHour[];
+  setup_complete: boolean;
+  setup_missing_fields: string[];
   main_address: string;
   lat: number;
   lng: number;
@@ -234,6 +291,8 @@ export type InstructorCommandApi = {
   validateSession(): Promise<InstructorAuthSession>;
   signIn(credentials: InstructorAuthCredentials): Promise<InstructorAuthSession>;
   signOut(): Promise<void>;
+  getProvider(): Promise<ProviderConfiguration>;
+  saveProvider(provider: ProviderConfigurationUpdate): Promise<ProviderConfiguration>;
   getSnapshot(instructor_id: Id, date: string): Promise<CommandCenterSnapshot>;
   findAvailableSlots(request: BookingRequestDTO): Promise<TimeSlotDTO[]>;
   bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse>;

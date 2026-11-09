@@ -18,6 +18,7 @@ export function renderShell(
   body: string,
 ): string {
   const requestSummary = summarizeRequests(snapshot.requests);
+  const schedulingReady = snapshot.instructor.setup_complete;
 
   return `
     <main class="command-shell">
@@ -33,7 +34,11 @@ export function renderShell(
           ${navItems
             .map(
               (item) => `
-                <button class="${item.id === activeScreen ? "selected" : ""}" data-screen="${item.id}" type="button">
+                <button
+                  class="${item.id === activeScreen ? "selected" : ""}${item.id === "finder" && !schedulingReady ? " setup-gated" : ""}"
+                  ${item.id === "finder" && !schedulingReady ? 'data-setup-required-action="find availability" title="Complete provider setup first"' : `data-screen="${item.id}"`}
+                  type="button"
+                >
                   ${escapeHtml(item.label)}
                 </button>
               `,
@@ -54,7 +59,11 @@ export function renderShell(
           </div>
           <div class="topbar-actions">
             <span class="metric-pill">${requestSummary.totalPending} pending</span>
-            <button class="primary-compact" data-screen="finder" type="button">New client</button>
+            <button
+              class="primary-compact${schedulingReady ? "" : " setup-gated"}"
+              ${schedulingReady ? 'data-screen="finder"' : 'data-setup-required-action="find availability" title="Complete provider setup first"'}
+              type="button"
+            >New client</button>
           </div>
         </header>
         ${body}

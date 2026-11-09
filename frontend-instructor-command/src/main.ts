@@ -9,6 +9,8 @@ import type {
   CoachEmailDelivery,
   CommandCenterSnapshot,
   InstructorAuthSession,
+  ProviderConfiguration,
+  ProviderConfigurationUpdate,
   SchedulerRules,
   TimeSlotDTO,
 } from "./api/types.js";
@@ -25,10 +27,23 @@ import {
   renderRequestManagement,
   type DeliveryCardUiState,
 } from "./components/RequestManagement.js";
+import {
+  providerDraftWithField,
+  renderProviderSettings,
+} from "./components/ProviderSettings.js";
 import { renderSettingsRules } from "./components/SettingsRules.js";
 import { renderTodaySchedule } from "./components/TodaySchedule.js";
 import { buildFindSlotsRequest, findFeaturedClient } from "./domain/screenModels.js";
 import { mergeEmailDeliveries } from "./domain/emailDelivery.js";
+import {
+  firstProviderErrorField,
+  normalizeProviderDraft,
+  projectProviderOntoInstructor,
+  providerDraftFromConfiguration,
+  providerFieldErrorsFromApi,
+  validateProviderDraft,
+  type ProviderFieldErrors,
+} from "./domain/providerSettings.js";
 import { escapeHtml } from "./lib/html.js";
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -69,6 +84,13 @@ type AppState = {
   error: string;
   settingsPending: boolean;
   settingsError: string;
+  provider: ProviderConfiguration | null;
+  providerDraft: ProviderConfigurationUpdate | null;
+  providerPending: boolean;
+  providerError: string;
+  providerFieldErrors: ProviderFieldErrors;
+  providerSuccess: string;
+  providerSetupPrompt: string;
 };
 
 const state: AppState = {
@@ -89,6 +111,13 @@ const state: AppState = {
   error: "",
   settingsPending: false,
   settingsError: "",
+  provider: null,
+  providerDraft: null,
+  providerPending: false,
+  providerError: "",
+  providerFieldErrors: {},
+  providerSuccess: "",
+  providerSetupPrompt: "",
 };
 
 const instructorId = import.meta.env?.VITE_INSTRUCTOR_ID || "inst_riley_001";
@@ -156,6 +185,10 @@ async function validateLiveSession(): Promise<void> {
 
 async function loadCommandCenter(generation: number): Promise<void> {
   try {
+    const provider = await instructorCommandApi.getProvider();
+    if (!isCurrentSignedInGeneration(generation)) return;
+    state.provider = provider;
+    state.providerDraft = providerDraftFromConfiguration(provider);
     const snapshot = await instructorCommandApi.getSnapshot(instructorId, commandDate);
     if (!isCurrentSignedInGeneration(generation)) return;
     applySnapshot(snapshot);
@@ -163,15 +196,20 @@ async function loadCommandCenter(generation: number): Promise<void> {
     if (!state.snapshot.clients.some((client) => client.id === state.selectedClientId)) {
       state.selectedClientId = state.snapshot.clients[0]?.id ?? "client_new";
     }
-    const selectedClient = findFeaturedClient(state.snapshot, state.selectedClientId);
-    const slots = await instructorCommandApi.findAvailableSlots(
-      buildFindSlotsRequest(state.snapshot.instructor.id, selectedClient, state.snapshot.date),
-    );
-    if (!isCurrentSignedInGeneration(generation)) return;
-    state.recommendedSlots = slots;
+    if (!provider.setup_complete) {
+      state.activeScreen = "settings";
+      state.recommendedSlots = [];
+    } else {
+      const selectedClient = findFeaturedClient(state.snapshot, state.selectedClientId);
+      const slots = await instructorCommandApi.findAvailableSlots(
+        buildFindSlotsRequest(state.snapshot.instructor.id, selectedClient, state.snapshot.date),
+      );
+      if (!isCurrentSignedInGeneration(generation)) return;
+      state.recommendedSlots = slots;
+    }
   } catch (error) {
     if (!isCurrentGeneration(generation)) return;
-    if (!handleAuthFailure(error, undefined, generation)) {
+    if (!handleAuthFailure(error, undefined, generation) && !handleProviderSetupRequired(error)) {
       state.error = formatApiError(error);
     }
   }
@@ -309,12 +347,21 @@ function renderActiveScreen(snapshot: CommandCenterSnapshot): string {
       refreshPending: state.deliveryRefreshPending,
       refreshResult: state.deliveryRefreshResult,
       refreshError: state.deliveryRefreshError,
-    });
+    }, isProviderSetupComplete());
   }
+  const providerSettings = state.provider && state.providerDraft
+    ? renderProviderSettings(state.provider, state.providerDraft, {
+        pending: state.providerPending,
+        error: state.providerError,
+        fieldErrors: state.providerFieldErrors,
+        success: state.providerSuccess,
+        setupPrompt: state.providerSetupPrompt,
+      })
+    : `<section class="provider-settings-loading" aria-live="polite">Loading provider settings…</section>`;
   return renderSettingsRules(snapshot.rules, instructorCommandApi.authMode === "live", {
     pending: state.settingsPending,
     error: state.settingsError,
-  });
+  }, providerSettings);
 }
 
 function wireEvents(): void {
@@ -325,7 +372,21 @@ function wireEvents(): void {
   app.querySelectorAll<HTMLButtonElement>("[data-screen]").forEach((button) => {
     button.addEventListener("click", () => {
       state.activeScreen = button.dataset.screen as ScreenId;
+      state.providerSetupPrompt = "";
       render();
+    });
+  });
+
+  app.querySelectorAll<HTMLButtonElement>("[data-setup-required-action], [data-open-provider-settings]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const action = button.dataset.setupRequiredAction;
+      state.activeScreen = "settings";
+      state.providerSetupPrompt = action
+        ? `Save provider settings before you ${action}.`
+        : "Complete provider setup to schedule new lesson times.";
+      render();
+      app.querySelector<HTMLElement>("[data-setup-status]")?.focus({ preventScroll: true });
+      app.querySelector<HTMLElement>("[data-provider-field='display_name']")?.focus();
     });
   });
 
@@ -386,6 +447,7 @@ function wireEvents(): void {
   });
 
   wireEmailDeliveryEvents();
+  wireProviderSettingsEvents();
 
   app.querySelector<HTMLFormElement>("[data-rules-form]")?.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -410,6 +472,146 @@ function wireEvents(): void {
       app.querySelector<HTMLElement>("[data-settings-error]")?.focus();
     }
   });
+}
+
+function wireProviderSettingsEvents(): void {
+  const form = app.querySelector<HTMLFormElement>("[data-provider-form]");
+  if (!form || !state.providerDraft) return;
+
+  form.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-provider-field]").forEach((control) => {
+    const eventName = control instanceof HTMLInputElement && control.type === "text" ? "input" : "change";
+    control.addEventListener(eventName, () => {
+      if (!state.providerDraft) return;
+      const field = control.dataset.providerField ?? "";
+      const value = control instanceof HTMLInputElement && control.type === "checkbox"
+        ? control.checked
+        : control.value;
+      state.providerDraft = providerDraftWithField(state.providerDraft, field, value);
+      delete state.providerFieldErrors[field];
+      if (control instanceof HTMLInputElement && control.type === "checkbox") {
+        const weekdayPrefix = field.replace(/\.enabled$/, "");
+        delete state.providerFieldErrors[`${weekdayPrefix}.start_time`];
+        delete state.providerFieldErrors[`${weekdayPrefix}.end_time`];
+      }
+      state.providerError = "";
+      state.providerSuccess = "";
+      control.setAttribute("aria-invalid", "false");
+      control.removeAttribute("aria-describedby");
+      control.closest("label")?.querySelector(".provider-field-error")?.remove();
+      const saveStatus = app.querySelector<HTMLElement>("[data-provider-save-status]");
+      if (saveStatus) saveStatus.textContent = "";
+      app.querySelector<HTMLElement>("[data-provider-error]")?.remove();
+
+      if (control instanceof HTMLInputElement && control.type === "checkbox") {
+        render();
+        findProviderField(field)?.focus();
+      }
+    });
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (state.providerPending || !state.providerDraft) return;
+    await saveProviderSettings(form);
+  });
+}
+
+async function saveProviderSettings(form: HTMLFormElement): Promise<void> {
+  if (!state.providerDraft) return;
+  const payload = normalizeProviderDraft(providerDraftFromForm(form, state.providerDraft));
+  const errors = validateProviderDraft(payload);
+  state.providerDraft = payload;
+  state.providerFieldErrors = errors;
+  state.providerError = "";
+  state.providerSuccess = "";
+
+  if (Object.keys(errors).length) {
+    render();
+    focusProviderField(firstProviderErrorField(errors));
+    return;
+  }
+
+  const generation = authGeneration;
+  state.providerPending = true;
+  render();
+
+  try {
+    const saved = await instructorCommandApi.saveProvider(payload);
+    if (!isCurrentSignedInGeneration(generation)) return;
+    state.provider = saved;
+    state.providerDraft = providerDraftFromConfiguration(saved);
+    state.providerFieldErrors = {};
+    state.providerError = "";
+    state.providerSuccess = "Provider settings saved.";
+    state.providerSetupPrompt = "";
+    if (state.snapshot) {
+      state.snapshot = {
+        ...state.snapshot,
+        instructor: projectProviderOntoInstructor(state.snapshot.instructor, saved),
+      };
+    }
+
+    if (saved.setup_complete) {
+      try {
+        await refreshSlots(generation);
+      } catch (error) {
+        if (!isCurrentGeneration(generation)) return;
+        if (!handleAuthFailure(error, undefined, generation) && !handleProviderSetupRequired(error)) {
+          state.error = "Settings were saved, but safe starts could not be refreshed. Try Find again.";
+        }
+      }
+    } else {
+      state.recommendedSlots = [];
+    }
+  } catch (error) {
+    if (!isCurrentGeneration(generation)) return;
+    if (!handleAuthFailure(error, undefined, generation)) {
+      const fieldErrors = providerFieldErrorsFromApi(error, payload);
+      state.providerFieldErrors = fieldErrors;
+      state.providerError = Object.keys(fieldErrors).length ? "" : formatApiError(error);
+    }
+  } finally {
+    if (!isCurrentGeneration(generation)) return;
+    state.providerPending = false;
+    render();
+    if (Object.keys(state.providerFieldErrors).length) {
+      focusProviderField(firstProviderErrorField(state.providerFieldErrors));
+    } else {
+      app.querySelector<HTMLElement>("[data-provider-error]")?.focus();
+    }
+  }
+}
+
+function providerDraftFromForm(
+  form: HTMLFormElement,
+  current: ProviderConfigurationUpdate,
+): ProviderConfigurationUpdate {
+  let draft = current;
+  form.querySelectorAll<HTMLInputElement>("input[type='checkbox'][data-provider-field]").forEach((control) => {
+    draft = providerDraftWithField(draft, control.dataset.providerField ?? "", control.checked);
+  });
+  form.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-provider-field]:not([type='checkbox'])").forEach((control) => {
+    if (!control.disabled) {
+      draft = providerDraftWithField(draft, control.dataset.providerField ?? "", control.value);
+    }
+  });
+  return draft;
+}
+
+function findProviderField(field: string | null): HTMLElement | null {
+  if (!field) return null;
+  return [...app.querySelectorAll<HTMLElement>("[data-provider-field]")]
+    .find((element) => element.dataset.providerField === field)
+    ?? (field === "working_hours" ? app.querySelector<HTMLElement>(".working-hours-card") : null);
+}
+
+function focusProviderField(field: string | null): void {
+  const target = findProviderField(field);
+  if (!target) return;
+  if (!target.hasAttribute("tabindex") && !(target instanceof HTMLInputElement) && !(target instanceof HTMLSelectElement)) {
+    target.tabIndex = -1;
+  }
+  target.focus();
 }
 
 function wireEmailDeliveryEvents(): void {
@@ -569,7 +771,13 @@ function isValidEmailAddress(value: string): boolean {
 function applySnapshot(snapshot: CommandCenterSnapshot): void {
   const mergedDeliveries = mergeEmailDeliveries(state.emailDeliveries, snapshot.email_deliveries ?? []);
   state.emailDeliveries = mergedDeliveries;
-  state.snapshot = { ...snapshot, email_deliveries: mergedDeliveries };
+  state.snapshot = {
+    ...snapshot,
+    instructor: state.provider
+      ? projectProviderOntoInstructor(snapshot.instructor, state.provider)
+      : snapshot.instructor,
+    email_deliveries: mergedDeliveries,
+  };
 }
 
 function patchEmailDeliveries(deliveries: CoachEmailDelivery[]): void {
@@ -682,6 +890,10 @@ async function signOut(): Promise<void> {
 
 async function refreshSlots(generation: number): Promise<void> {
   if (!state.snapshot) return;
+  if (!isProviderSetupComplete()) {
+    state.recommendedSlots = [];
+    return;
+  }
   const selectedClient = findFeaturedClient(state.snapshot, state.selectedClientId);
   const slots = await instructorCommandApi.findAvailableSlots(
     buildFindSlotsRequest(state.snapshot.instructor.id, selectedClient, state.snapshot.date),
@@ -781,7 +993,10 @@ async function refreshAfterPersistence(generation: number): Promise<void> {
     await refreshSlots(generation);
   } catch (error) {
     if (!isCurrentGeneration(generation)) return;
-    if (!handleAuthFailure(error, persistedRefreshAuthMessage(), generation)) {
+    if (
+      !handleAuthFailure(error, persistedRefreshAuthMessage(), generation)
+      && !handleProviderSetupRequired(error)
+    ) {
       state.error = "The appointment was saved, but the schedule could not be refreshed. Reload to see the latest schedule.";
     }
   }
@@ -796,7 +1011,7 @@ async function runAction(action: (generation: number) => Promise<void>): Promise
     render();
   } catch (error) {
     if (!isCurrentGeneration(generation)) return;
-    if (!handleAuthFailure(error, undefined, generation)) {
+    if (!handleAuthFailure(error, undefined, generation) && !handleProviderSetupRequired(error)) {
       state.error = formatApiError(error);
     }
     render();
@@ -820,6 +1035,37 @@ function isAuthenticationFailure(error: unknown): boolean {
   return error instanceof InstructorCommandApiError && error.isAuthFailure;
 }
 
+function handleProviderSetupRequired(error: unknown): boolean {
+  if (!(error instanceof InstructorCommandApiError) || error.code !== "PROVIDER_SETUP_REQUIRED") return false;
+  const details = typeof error.details === "object" && error.details !== null
+    ? error.details as Record<string, unknown>
+    : {};
+  const missingFields = Array.isArray(details.missing_fields)
+    ? details.missing_fields.filter((field): field is string => typeof field === "string")
+    : state.provider?.setup_missing_fields ?? [];
+  if (state.provider) {
+    state.provider = {
+      ...state.provider,
+      setup_complete: false,
+      setup_missing_fields: missingFields,
+    };
+  }
+  if (state.snapshot) {
+    state.snapshot = {
+      ...state.snapshot,
+      instructor: {
+        ...state.snapshot.instructor,
+        setup_complete: false,
+        setup_missing_fields: missingFields,
+      },
+    };
+  }
+  state.recommendedSlots = [];
+  state.activeScreen = "settings";
+  state.providerSetupPrompt = "Complete provider setup before scheduling new lesson times.";
+  return true;
+}
+
 function nextAuthGeneration(): number {
   authGeneration += 1;
   return authGeneration;
@@ -840,7 +1086,18 @@ function clearProtectedState(): void {
   state.calendarHandoff = null;
   state.settingsPending = false;
   state.settingsError = "";
+  state.provider = null;
+  state.providerDraft = null;
+  state.providerPending = false;
+  state.providerError = "";
+  state.providerFieldErrors = {};
+  state.providerSuccess = "";
+  state.providerSetupPrompt = "";
   clearEmailDeliveryState();
+}
+
+function isProviderSetupComplete(): boolean {
+  return state.provider?.setup_complete ?? state.snapshot?.instructor.setup_complete ?? false;
 }
 
 function persistedAuthMessage(): string {
