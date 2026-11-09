@@ -276,7 +276,10 @@ function wireEvents(): void {
   app.querySelectorAll<HTMLButtonElement>("[data-confirm-request]").forEach((button) => {
     button.addEventListener("click", async () => {
       await runAction(async () => {
-        const confirmation = await instructorCommandApi.confirmRequest(button.dataset.confirmRequest ?? "");
+        const confirmation = await instructorCommandApi.confirmRequest(
+          button.dataset.confirmRequest ?? "",
+          button.dataset.confirmSlotId,
+        );
         if (confirmation.email_delivery) patchEmailDeliveries([confirmation.email_delivery]);
         const appointmentId = confirmation.appointment_id ?? confirmation.appointment_ids[0] ?? null;
         await completePersistedAction(

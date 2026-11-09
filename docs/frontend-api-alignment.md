@@ -14,6 +14,10 @@ Current API calls wired or expected:
 - `GET /api/coach/schedule?date=YYYY-MM-DD` for the Today schedule shell and a partial command snapshot.
 - `POST /api/coach/availability` for the Availability Finder.
 - `POST /api/coach/bookings` for coach-created bookings, with `idempotency_key` when available.
+- `POST /api/coach/lesson-requests/{request_token}/confirm` for canonical request confirmation. Send an
+  optional request-bound alternative `slot_id` when the client selected that alternative.
+- `POST /api/coach/lesson-requests/{request_token}/approve` is retained only as a deprecated, bodyless
+  compatibility alias; first-party frontend code and live product-flow tests use `/confirm`.
 
 All `/api/coach/*` requests must send `Authorization: Bearer <access_token>`. The live frontend must
 not authorize by `VITE_INSTRUCTOR_ID`; the backend scopes protected data from the authenticated coach
@@ -29,7 +33,7 @@ Neglected frontend tests by screen/component:
 - `TodaySchedule`: loading, empty day, backend-only schedule rows, computed next lesson, open gaps, and schedule conflict states.
 - `AvailabilityFinder`: no client fallback, facility vs home-pool requests, zero safe slots, booking retry with idempotency, and backend validation errors.
 - `ClientDetail`: missing client profile, no upcoming lesson, partially loaded schedule-derived client, and contact action states.
-- `RequestManagement`: empty queue, approved/needs-alternatives mutations, conflict error, stale request state, and optimistic update rollback.
+- `RequestManagement`: empty queue, confirmed/needs-alternatives mutations, conflict error, stale request state, and optimistic update rollback.
 - `SettingsRules`: backend settings load, validation for invalid buffer tiers, save failure, and disabled state while saving.
 - `Layout`: navigation state, pending request count from backend, mobile layout, and keyboard focus order.
 
@@ -62,6 +66,10 @@ Implemented now:
 - Client invite unit contract tests around public-token path scoping, no raw internal IDs in request bodies, idempotency keys, and stable error parsing.
 - Client invite Playwright suites with explicit mock, intercepted-HTTP, and live FastAPI modes. Live commands require `VITE_CLIENT_INVITE_API_URL` and fail closed when it is absent.
 - Instructor Playwright suites with explicit mock, intercepted-auth, and live FastAPI modes. Live commands require `VITE_INSTRUCTOR_API_URL` and fail closed when it is absent.
+- Live confirmation coverage carries an API-issued selected-alternative ID through the instructor UI to
+  `/confirm`, then compares coach schedule/calendar timestamps with
+  `GET /api/public/lesson-requests/{request_token}`. The client live suite also confirms through
+  `/confirm` and compares its selected occurrence with refreshed confirmation events.
 
 Still needed:
 

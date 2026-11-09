@@ -9,8 +9,10 @@ Start from the latest remote `master`. Keep the work focused, reviewable, and co
 - Backend coach routes live under `app/routes/coach.py` and already depend on `get_current_coach` from `app/dependencies.py`.
 - `get_current_coach` is currently an MVP stub that always resolves `inst_001`; this is the main auth gap.
 - Public client invite routes live under `app/routes/public.py` and are intentionally scoped by invite/request tokens. They should remain public and should not require coach login.
-- Coach request approval exists on current `master`:
-  - `POST /api/coach/lesson-requests/{request_token}/approve`
+- Canonical coach request confirmation exists on current `master`:
+  - `POST /api/coach/lesson-requests/{request_token}/confirm`
+  - `POST /api/coach/lesson-requests/{request_token}/approve` is a deprecated, bodyless compatibility
+    alias only; new product code must use `/confirm`.
   - `POST /api/coach/lesson-requests/{request_token}/alternatives`
   - `POST /api/coach/lesson-requests/{request_token}/decline`
 - `frontend-instructor-command` is a plain TypeScript/Vite app using `src/main.ts`, `src/api/instructorApi.ts`, and CSS in `src/styles.css`.
@@ -58,7 +60,7 @@ Implement a pragmatic MVP that is suitable for local development and CI:
 
 - Unauthenticated requests to every `/api/coach/*` endpoint return a stable `401` JSON error.
 - Invalid credentials fail with a stable `401` JSON error.
-- A valid coach login/session can access `/api/coach/me`, schedule, command-center snapshot, settings, availability, bookings, and lesson request approval actions.
+- A valid coach login/session can access `/api/coach/me`, schedule, command-center snapshot, settings, availability, bookings, and lesson request confirmation actions.
 - A coach cannot access another instructor's protected resources. Add a test with at least two instructors or credentials.
 - Public invite endpoints still work without authentication and still do not expose raw private IDs in public responses.
 - Existing Postgres-backed migrations and tests still pass.

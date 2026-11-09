@@ -37,6 +37,10 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
 
   private currentSnapshot: CommandCenterSnapshot = clone(snapshot);
   private readonly calendarHandoffs = new Map<Id, CalendarLinks>();
+  private readonly confirmations = new Map<Id, {
+    slotId: Id | null;
+    response: CoachLessonRequestConfirmResponse;
+  }>();
 
   getStoredSession(): InstructorAuthSession | null {
     return null;
@@ -111,12 +115,48 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
     };
   }
 
-  async confirmRequest(request_id: Id): Promise<CoachLessonRequestConfirmResponse> {
-    const updated = this.updateRequest(request_id, (request) => ({ ...request, status: "approved" }));
-    const occurrenceStarts = request_id === "req_sofia_0827"
+  async confirmRequest(requestId: Id, slotId?: Id): Promise<CoachLessonRequestConfirmResponse> {
+    const existingConfirmation = this.confirmations.get(requestId);
+    if (existingConfirmation) {
+      if (slotId !== undefined && slotId !== existingConfirmation.slotId) {
+        throw new InstructorCommandApiError(
+          409,
+          "LESSON_REQUEST_CONFIRM_CONFLICT",
+          "This lesson request was already confirmed for a different time.",
+        );
+      }
+      return clone(existingConfirmation.response);
+    }
+
+    const request = this.currentSnapshot.requests.find((candidate) => candidate.id === requestId);
+    if (!request) {
+      throw new Error(`Request ${requestId} was not found.`);
+    }
+
+    const selectedAlternative = slotId === undefined
+      ? undefined
+      : request.alternative_slots.find((candidate) => candidate.id === slotId);
+    if (slotId !== undefined && !selectedAlternative) {
+      throw new InstructorCommandApiError(
+        400,
+        "INVALID_SCHEDULING_REQUEST",
+        "The selected time is not available for this lesson request.",
+      );
+    }
+
+    const selectedSlot = selectedAlternative ?? request.requested_slot;
+    const confirmedAlternativeId = selectedAlternative?.id
+      ?? request.alternative_slots.find((candidate) => candidate.id === request.requested_slot.id)?.id
+      ?? null;
+    const updated = this.updateRequest(requestId, (current) => ({
+      ...current,
+      requested_slot: clone(selectedSlot),
+      status: "approved",
+    }));
+    const occurrenceStarts = requestId === "req_sofia_0827"
       ? [updated.requested_slot.start_time, addDays(updated.requested_slot.start_time, 7)]
       : [updated.requested_slot.start_time];
-    const appointment_ids = occurrenceStarts.map((_, index) => `appt_${request_id}_${index + 1}`);
+    const appointment_ids = occurrenceStarts.map((_, index) => `appt_${requestId}_${index + 1}`);
     const calendar_links = mockCalendarLinks(
       appointment_ids[0],
       occurrenceStarts.map((startIso) => ({
@@ -127,7 +167,7 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
     for (const appointmentId of appointment_ids) {
       this.calendarHandoffs.set(appointmentId, calendar_links);
     }
-    const deliveryId = `delivery_confirmation_${request_id}`;
+    const deliveryId = `delivery_confirmation_${requestId}`;
     const existingDelivery = this.currentSnapshot.email_deliveries.find((delivery) => delivery.id === deliveryId);
     const email_delivery = existingDelivery ?? {
       id: deliveryId,
@@ -136,7 +176,7 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
       updated_at: nextMockUpdatedAt(this.currentSnapshot.email_deliveries),
       client_id: updated.client_id,
       client_name: updated.client_name,
-      request_token: request_id,
+      request_token: requestId,
       issue: null,
       source_state: "active" as const,
       can_resend: false,
@@ -148,8 +188,8 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
         email_deliveries: [email_delivery, ...this.currentSnapshot.email_deliveries],
       };
     }
-    return {
-      id: request_id,
+    const response: CoachLessonRequestConfirmResponse = {
+      id: requestId,
       status: "confirmed",
       appointment_id: appointment_ids[0],
       appointment_ids,
@@ -157,6 +197,11 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
       calendar_links,
       email_delivery: clone(email_delivery),
     };
+    this.confirmations.set(requestId, {
+      slotId: confirmedAlternativeId,
+      response: clone(response),
+    });
+    return clone(response);
   }
 
   async getEmailDeliveries(): Promise<CoachEmailDelivery[]> {
@@ -360,8 +405,11 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     });
   }
 
-  confirmRequest(request_id: Id): Promise<CoachLessonRequestConfirmResponse> {
-    return this.post(`/coach/lesson-requests/${encodeURIComponent(request_id)}/confirm`, {});
+  confirmRequest(requestId: Id, slotId?: Id): Promise<CoachLessonRequestConfirmResponse> {
+    return this.post(
+      `/coach/lesson-requests/${encodeURIComponent(requestId)}/confirm`,
+      slotId === undefined ? {} : { slot_id: slotId },
+    );
   }
 
   getEmailDeliveries(): Promise<CoachEmailDelivery[]> {

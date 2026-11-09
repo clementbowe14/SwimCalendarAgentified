@@ -55,7 +55,11 @@ Protected coach endpoints:
 - `GET /api/coach/appointments/{appointment_id}/calendar.ics`
 - `GET /api/coach/settings`
 - `PUT /api/coach/settings`
-- `POST /api/coach/lesson-requests/{request_token}/confirm`
+- `POST /api/coach/lesson-requests/{request_token}/confirm` is the canonical confirmation endpoint. The
+  instructor app sends `{}` for the current requested occurrence or `{ "slot_id": "..." }` when the
+  client selected a request-bound alternative.
+- `POST /api/coach/lesson-requests/{request_token}/approve` is a deprecated, bodyless compatibility
+  alias only. New product code and live product-flow tests must use `/confirm`.
 - `POST /api/coach/lesson-requests/{request_token}/alternatives`
 - `POST /api/coach/lesson-requests/{request_token}/decline`
 
@@ -71,4 +75,6 @@ npm run test:e2e:auth
 selection. `npm run test:e2e` explicitly drives the browser prototype with the mock adapter.
 `npm run test:e2e:auth` exercises bearer-authenticated calendar fallback and failure states against
 intercepted API responses. `npm run test:e2e:live` requires `VITE_INSTRUCTOR_API_URL`; a missing URL fails
-rather than executing mock tests or passing with a skipped live suite.
+rather than executing mock tests or passing with a skipped live suite. The live suite discovers and
+selects a real request-bound alternative, confirms it through the UI, and independently checks the coach
+schedule plus the public request's selected occurrence and calendar timestamps.

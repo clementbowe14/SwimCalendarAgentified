@@ -217,12 +217,23 @@ def download_appointment_calendar(
     )
 
 
-@router.post("/lesson-requests/{request_token}/approve", response_model=CoachLessonRequestActionResponse)
-def approve_lesson_request(
+@router.post(
+    "/lesson-requests/{request_token}/approve",
+    response_model=CoachLessonRequestActionResponse,
+    deprecated=True,
+)
+async def approve_lesson_request(
     request_token: str,
+    request: Request,
     coach: CoachContext = Depends(get_current_coach),
 ) -> CoachLessonRequestActionResponse:
-    return approve_coach_lesson_request(coach.instructor_id, request_token)
+    if await request.body():
+        raise ApiException("VALIDATION_ERROR", "This endpoint does not accept a request body.", 422)
+    return await run_in_threadpool(
+        approve_coach_lesson_request,
+        coach.instructor_id,
+        request_token,
+    )
 
 
 @router.post("/lesson-requests/{request_token}/confirm", response_model=CoachLessonRequestConfirmResponse)

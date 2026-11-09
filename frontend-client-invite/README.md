@@ -44,9 +44,11 @@ npm run test:e2e
 
 `npm run test:e2e` explicitly runs the mock UI suite followed by the intercepted-HTTP suite. The live
 command requires an API URL and fails instead of passing with skipped tests when it is absent. The live
-suite uses no public API fixtures; it creates requests, reads the persisted request back, approves them
-with the seeded development coach account, refreshes notifications, follows Google occurrence links,
-and parses actual Apple/ICS downloads using `ical.js`.
+suite uses no public API fixtures; it creates requests, reads the persisted request back, confirms them
+through the canonical coach `/confirm` endpoint with the seeded development coach account, matches the
+client-selected occurrence to refreshed confirmation calendar events, refreshes notifications, follows
+Google occurrence links, and parses actual Apple/ICS downloads using `ical.js`. The legacy coach
+`/approve` route is a deprecated compatibility alias and is not used by this product-flow suite.
 
 ```bash
 VITE_CLIENT_INVITE_API_URL=http://127.0.0.1:8016/api/public npm run test:e2e:live

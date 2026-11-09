@@ -47,6 +47,12 @@ export function renderRequestManagement(
 
 function renderRequest(request: LessonRequest): string {
   const isPending = request.status === "pending";
+  const selectedAlternativeId = request.alternative_slots.find(
+    (slot) => slot.id === request.requested_slot.id,
+  )?.id;
+  const selectedAlternativeActionData = selectedAlternativeId
+    ? ` data-confirm-slot-id="${escapeHtml(selectedAlternativeId)}"`
+    : "";
   return `
     <article class="request-card ${request.risk === "at_risk" ? "warn" : "clear"}">
       <div class="request-head">
@@ -62,7 +68,7 @@ function renderRequest(request: LessonRequest): string {
       ${
         isPending
           ? `<div class="request-actions">
-              <button class="primary-action" type="button" data-confirm-request="${escapeHtml(request.id)}" data-calendar-focus="request:${escapeHtml(request.id)}">Confirm</button>
+              <button class="primary-action" type="button" data-confirm-request="${escapeHtml(request.id)}"${selectedAlternativeActionData} data-calendar-focus="request:${escapeHtml(request.id)}">Confirm</button>
               <button class="secondary-action" type="button" data-alternatives-request="${escapeHtml(request.id)}">Alternatives</button>
             </div>`
           : ""

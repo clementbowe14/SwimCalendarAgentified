@@ -240,7 +240,7 @@ export type InstructorCommandApi = {
   getSnapshot(instructor_id: Id, date: string): Promise<CommandCenterSnapshot>;
   findAvailableSlots(request: BookingRequestDTO): Promise<TimeSlotDTO[]>;
   bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse>;
-  confirmRequest(request_id: Id): Promise<CoachLessonRequestConfirmResponse>;
+  confirmRequest(requestId: Id, slotId?: Id): Promise<CoachLessonRequestConfirmResponse>;
   getEmailDeliveries(): Promise<CoachEmailDelivery[]>;
   resendEmailDelivery(delivery_id: Id): Promise<CoachEmailDelivery>;
   updateEmailDeliveryContact(delivery_id: Id, email: string): Promise<CoachEmailDelivery>;

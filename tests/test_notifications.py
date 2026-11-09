@@ -164,7 +164,8 @@ def test_confirmation_atomicity_and_public_privacy(authenticated_api_client, mon
         assert s.query(AppointmentDB).filter_by(request_id=r.id).count()==0
     monkeypatch.setattr(n,"enqueue_confirmation",original)
     for _ in range(2):
-        response=authenticated_api_client.post(f"/api/coach/lesson-requests/{REQUEST}/approve")
+        response=authenticated_api_client.post(
+            f"/api/coach/lesson-requests/{REQUEST}/confirm", json={})
         assert response.status_code==200,response.text
     assert len(events())==2
     for path in ("requests","lesson-requests"):
@@ -197,7 +198,8 @@ def test_tenant_foreign_key(migrated_postgres_db):
 @pytest.mark.parametrize("state",["queued","processing","accepted","delivered","failed","skipped"])
 def test_every_public_state(authenticated_api_client,state):
     prepare()
-    assert authenticated_api_client.post(f"/api/coach/lesson-requests/{REQUEST}/approve").status_code==200
+    assert authenticated_api_client.post(
+        f"/api/coach/lesson-requests/{REQUEST}/confirm", json={}).status_code==200
     with db.SessionLocal() as s:
         s.query(NotificationEventDB).update({"status":state})
         s.commit()
@@ -259,7 +261,7 @@ def test_channel_insert_failure_rolls_back(migrated_postgres_db,monkeypatch):
     assert not events()
 
 
-def test_no_intake_no_history_on_reads_or_legacy_retry(authenticated_api_client):
+def test_no_intake_no_history_on_reads_or_canonical_retry(authenticated_api_client):
     with db.SessionLocal() as s:
         s.query(InviteIntakeDB).filter_by(invite_token=INVITE).delete()
         s.query(LessonRequestDB).filter_by(request_token=REQUEST).one().status="confirmed"
@@ -268,7 +270,8 @@ def test_no_intake_no_history_on_reads_or_legacy_retry(authenticated_api_client)
         response=authenticated_api_client.get(f"/api/public/{route}/{REQUEST}")
         assert response.status_code==200
         assert response.json()["notifications"]==[]
-    assert authenticated_api_client.post(f"/api/coach/lesson-requests/{REQUEST}/approve").status_code==200
+    assert authenticated_api_client.post(
+        f"/api/coach/lesson-requests/{REQUEST}/confirm", json={}).status_code==200
     assert not events()
     with db.SessionLocal() as s:
         instructor=s.query(InviteTokenDB).filter_by(token=INVITE).one().instructor_id
@@ -295,7 +298,8 @@ def test_failed_booking_has_no_events(authenticated_api_client):
     from tests.test_coach_lesson_request_approval import _add_conflicting_appointment
     prepare()
     _add_conflicting_appointment(REQUEST)
-    assert authenticated_api_client.post(f"/api/coach/lesson-requests/{REQUEST}/approve").status_code==409
+    assert authenticated_api_client.post(
+        f"/api/coach/lesson-requests/{REQUEST}/confirm", json={}).status_code==409
     assert not events()
 
 
