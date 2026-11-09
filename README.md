@@ -206,13 +206,15 @@ Example public invite request:
 curl http://127.0.0.1:8000/api/public/invites/demo-invite-token
 ```
 
-The `frontend-client-invite` app can disable its mock adapter by setting:
+The `frontend-client-invite` app uses HTTP by default and requires its API URL:
 
 ```bash
 VITE_CLIENT_INVITE_API_URL=http://127.0.0.1:8000/api/public
 ```
 
-It defaults to the seeded `invite_sofia_0826` token. The backend exposes the matching fetch adapter
+For deliberate local fixture work, start it with `VITE_USE_MOCK_API=true` and no API URL. Missing
+configuration fails instead of silently selecting fixtures, and production builds reject mock mode.
+Only explicit mock mode defaults to the seeded `invite_sofia_0826` token. The backend exposes the matching fetch adapter
 routes under `/api/public/client-invites/{token}` and `/api/public/lesson-requests/{request_token}`.
 Public routes are scoped by invite/request tokens and do not require clients to submit raw instructor
 or client IDs.
@@ -326,6 +328,7 @@ cd frontend-client-invite && npm run test:unit
 cd frontend-client-invite && npm run test:e2e
 ```
 
-Set `VITE_INSTRUCTOR_API_URL=http://127.0.0.1:8000/api` or
-`VITE_CLIENT_INVITE_API_URL=http://127.0.0.1:8000/api/public` before running
-the frontend e2e commands to exercise a live local backend.
+The standard frontend e2e commands explicitly run mock mode. For live suites, set
+`VITE_INSTRUCTOR_API_URL=http://127.0.0.1:8000/api` or
+`VITE_CLIENT_INVITE_API_URL=http://127.0.0.1:8000/api/public` and run the app's
+`test:e2e:live` command. Live commands fail when their URL is absent rather than passing with skipped tests.

@@ -60,8 +60,8 @@ Implemented now:
 
 - Instructor unit contract tests around `HttpInstructorCommandApi` path selection, DTO mapping, and stable error parsing.
 - Client invite unit contract tests around public-token path scoping, no raw internal IDs in request bodies, idempotency keys, and stable error parsing.
-- Client invite Playwright skeleton for real-backend e2e checks, skipped until `VITE_CLIENT_INVITE_API_URL` is configured.
-- Instructor Playwright skeleton for command-center navigation, with live-backend checks skipped until `VITE_INSTRUCTOR_API_URL` is configured.
+- Client invite Playwright suites with explicit mock, intercepted-HTTP, and live FastAPI modes. Live commands require `VITE_CLIENT_INVITE_API_URL` and fail closed when it is absent.
+- Instructor Playwright suites with explicit mock, intercepted-auth, and live FastAPI modes. Live commands require `VITE_INSTRUCTOR_API_URL` and fail closed when it is absent.
 
 Still needed:
 

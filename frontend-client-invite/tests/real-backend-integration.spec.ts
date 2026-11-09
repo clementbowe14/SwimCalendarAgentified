@@ -4,15 +4,19 @@ import { readFile } from "node:fs/promises";
 import type { LessonRequest } from "../src/api/types";
 
 const apiBase = process.env.VITE_CLIENT_INVITE_API_URL;
-const describeLive = apiBase ? test.describe : test.describe.skip;
+if (!apiBase) {
+  throw new Error("VITE_CLIENT_INVITE_API_URL is required for the client invite live Playwright suite.");
+}
 
-describeLive("live backend calendar and notification handoff", () => {
+test.describe("live backend calendar and notification handoff", () => {
   test("weekly booking, coach approval, notification refresh and parsed calendar download", async ({ page, request, context }) => {
-    const backend = new URL(apiBase!).origin;
+    const backend = new URL(apiBase).origin;
     const token = process.env.VITE_CLIENT_INVITE_TOKEN || "invite_sofia_0826";
     const inviteResponse = page.waitForResponse((response) => response.url().endsWith(`/client-invites/${token}`));
     await page.goto(`/?invite_token=${encodeURIComponent(token)}`);
     expect((await inviteResponse).ok()).toBeTruthy();
+    await expect(page.locator("html")).toHaveAttribute("data-data-mode", "http");
+    await expect(page.getByText("Mock data", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Client name")).toHaveValue("Sofia Martinez");
     await page.getByRole("button", { name: "Continue to availability" }).click();
     await page.getByRole("button", { name: "Weekly", exact: true }).click();
@@ -24,6 +28,13 @@ describeLive("live backend calendar and notification handoff", () => {
     expect(createdResponse.ok()).toBeTruthy();
     const created = await createdResponse.json() as LessonRequest;
     expect(created.notifications).toEqual([]);
+    const persistedResponse = await request.get(
+      `${apiBase}/lesson-requests/${encodeURIComponent(created.id)}`,
+    );
+    expect(persistedResponse.ok(), await persistedResponse.text()).toBeTruthy();
+    const persisted = await persistedResponse.json() as LessonRequest;
+    expect(persisted.id).toBe(created.id);
+    expect(persisted.status).toBe("requested");
     const login = await request.post(`${backend}/api/auth/coach/login`, { data: { email: "coach@example.com", password: "swim-dev-pass" } });
     expect(login.ok()).toBeTruthy();
     const auth = await login.json();

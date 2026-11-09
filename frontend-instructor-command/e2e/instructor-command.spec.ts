@@ -1,12 +1,10 @@
 import { expect, test } from "@playwright/test";
-import type { Page } from "@playwright/test";
 
-const testWhenMockAdapter = process.env.VITE_INSTRUCTOR_API_URL ? test.skip : test;
-const describeWhenBackendConfigured = process.env.VITE_INSTRUCTOR_API_URL ? test.describe : test.describe.skip;
-
-testWhenMockAdapter("navigates the instructor command screens with the local adapter", async ({ page }) => {
+test("navigates the instructor command screens with the local adapter", async ({ page }) => {
   await page.goto("/");
 
+  await expect(page.locator("html")).toHaveAttribute("data-data-mode", "mock");
+  await expect(page.getByText("Mock data", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
   await page.getByRole("button", { name: "Find" }).click();
   await expect(page.getByRole("heading", { name: "Availability finder" })).toBeVisible();
@@ -22,7 +20,7 @@ testWhenMockAdapter("navigates the instructor command screens with the local ada
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
 });
 
-testWhenMockAdapter("renders truthful email delivery states and server-authorized recovery", async ({ page }) => {
+test("renders truthful email delivery states and server-authorized recovery", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Requests", exact: true }).click();
 
@@ -52,7 +50,7 @@ testWhenMockAdapter("renders truthful email delivery states and server-authorize
   await expect(missingIntake.getByRole("textbox")).toHaveCount(0);
 });
 
-testWhenMockAdapter("resends and corrects contact with persistent focus and card-local feedback", async ({ page }) => {
+test("resends and corrects contact with persistent focus and card-local feedback", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Requests", exact: true }).click();
 
@@ -83,7 +81,7 @@ testWhenMockAdapter("resends and corrects contact with persistent focus and card
   await expect(refresh).toBeFocused();
 });
 
-testWhenMockAdapter("keeps email recovery controls one-handed at 320px", async ({ page }) => {
+test("keeps email recovery controls one-handed at 320px", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 720 });
   await page.goto("/");
   await page.getByRole("button", { name: "Requests", exact: true }).click();
@@ -97,7 +95,7 @@ testWhenMockAdapter("keeps email recovery controls one-handed at 320px", async (
   expect(await section.evaluate((element) => element.scrollWidth > element.clientWidth + 1)).toBe(false);
 });
 
-testWhenMockAdapter("hands a directly booked persisted appointment to the instructor calendar", async ({ page }) => {
+test("hands a directly booked persisted appointment to the instructor calendar", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Find" }).click();
 
@@ -134,7 +132,7 @@ testWhenMockAdapter("hands a directly booked persisted appointment to the instru
   await expect(bookLesson).toBeFocused();
 });
 
-testWhenMockAdapter("uses confirmation IDs for a recurring request handoff", async ({ page }) => {
+test("uses confirmation IDs for a recurring request handoff", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Requests", exact: true }).click();
   await page.getByRole("button", { name: "Confirm" }).first().click();
@@ -154,7 +152,7 @@ testWhenMockAdapter("uses confirmation IDs for a recurring request handoff", asy
   );
 });
 
-testWhenMockAdapter("keeps calendar handoff controls usable at 320px", async ({ page }) => {
+test("keeps calendar handoff controls usable at 320px", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 720 });
   await page.goto("/");
   await page.getByRole("button", { name: "Find" }).click();
@@ -172,73 +170,3 @@ testWhenMockAdapter("keeps calendar handoff controls usable at 320px", async ({ 
   const hasHorizontalOverflow = await dialog.evaluate((element) => element.scrollWidth > element.clientWidth + 1);
   expect(hasHorizontalOverflow).toBe(false);
 });
-
-describeWhenBackendConfigured("instructor command real-backend integration", () => {
-  test("signs in, loads protected coach data, and signs out", async ({ page }) => {
-    await signIn(page);
-
-    await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Sign out" })).toHaveCount(0);
-
-    await page.getByRole("button", { name: "Settings" }).click();
-    await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
-    const signOut = page.getByRole("button", { name: "Sign out" });
-    await expect(signOut).toBeVisible();
-    await expect(signOut).toHaveCSS("color", "rgb(255, 255, 255)");
-    await expect(signOut).toHaveCSS("background-image", /rgb\(217, 71, 50\)/);
-    await page.getByRole("button", { name: "Sign out" }).click();
-    await expect(page.getByRole("heading", { name: /locked|sign in/i })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Today schedule" })).toHaveCount(0);
-  });
-
-  test("loads coach schedule data and searches availability through /api/coach", async ({ page }) => {
-    await signIn(page);
-
-    await page.getByRole("button", { name: "Find" }).click();
-    await expect(page.getByRole("heading", { name: "Availability finder" })).toBeVisible();
-
-    await page.getByRole("button", { name: "Find safe starts" }).click();
-    await expect(page.getByRole("heading", { name: "Availability finder" })).toBeVisible();
-    await expect(page.locator("main")).toContainText(/safe options|No safe starts/i);
-  });
-
-  test("books a safe slot and opens its calendar handoff", async ({ page }) => {
-    await signIn(page);
-    await page.getByRole("button", { name: "Find" }).click();
-    await page.getByRole("button", { name: "Book lesson" }).first().click();
-
-    const dialog = page.getByRole("dialog", { name: "Ready for your calendar" });
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("link", { name: /Google Calendar/ })).toHaveAttribute(
-      "href",
-      /^https:\/\/calendar\.google\.com\/calendar\/render/,
-    );
-    const downloadPromise = page.waitForEvent("download");
-    await dialog.getByRole("button", { name: "Download .ics" }).click();
-    const download = await downloadPromise;
-    expect(download.suggestedFilename()).toBe("appointment.ics");
-    await expect(dialog.getByRole("status")).toContainText(/downloaded/i);
-  });
-
-  test("confirms a pending request and opens its persisted calendar handoff", async ({ page }) => {
-    await signIn(page);
-    await page.getByRole("button", { name: "Requests", exact: true }).click();
-    await page.getByRole("button", { name: "Confirm" }).first().click();
-
-    const dialog = page.getByRole("dialog", { name: "Ready for your calendar" });
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("link", { name: /Google Calendar/ })).toHaveAttribute(
-      "href",
-      /^https:\/\/calendar\.google\.com\/calendar\/render/,
-    );
-    await expect(dialog).toContainText("does not add the appointment automatically");
-  });
-});
-
-async function signIn(page: Page): Promise<void> {
-  await page.goto("/");
-  await expect(page.getByRole("heading", { name: /locked|sign in/i })).toBeVisible();
-  await page.getByLabel("Email").fill(process.env.VITE_INSTRUCTOR_E2E_EMAIL ?? "coach@example.com");
-  await page.getByLabel("Password").fill(process.env.VITE_INSTRUCTOR_E2E_PASSWORD ?? "swim-dev-pass");
-  await page.getByRole("button", { name: "Sign in" }).click();
-}

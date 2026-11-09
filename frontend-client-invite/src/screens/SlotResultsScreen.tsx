@@ -5,6 +5,7 @@ import { SlotCard } from "../components/SlotCard";
 
 type SlotResultsScreenProps = {
   response: AvailabilitySearchResponse;
+  instructorName: string;
   selectedSlotId: string | null;
   recurrence: BookingRecurrence;
   onSelectSlot: (slotId: string) => void;
@@ -15,6 +16,7 @@ type SlotResultsScreenProps = {
 
 export function SlotResultsScreen({
   response,
+  instructorName,
   selectedSlotId,
   recurrence,
   onSelectSlot,
@@ -33,7 +35,7 @@ export function SlotResultsScreen({
       <SectionCard eyebrow="Open lesson times" title="Available to request" meta={`${response.slots.length} found`}>
         <div className="booking-note">
           <strong>Pick the time you prefer</strong>
-          <span>{recurrence === "weekly" ? "Weekly request" : "One-time request"} - Riley confirms after final schedule check.</span>
+          <span>{recurrence === "weekly" ? "Weekly request" : "One-time request"} - {instructorName} confirms after final schedule check.</span>
         </div>
         <div className="slot-list">
           {response.slots.map((slot) => (
@@ -60,7 +62,7 @@ export function SlotResultsScreen({
       {selectedSlot ? (
         <div className="confirmation-strip">
           <strong>{selectedSlot.display}</strong>
-          <span>Riley will confirm or send a backup if anything changes.</span>
+          <span>{instructorName} will confirm or send a backup if anything changes.</span>
         </div>
       ) : null}
 

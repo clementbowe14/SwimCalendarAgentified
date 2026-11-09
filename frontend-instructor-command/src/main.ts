@@ -1,5 +1,5 @@
 import "./styles.css";
-import { InstructorCommandApiError, instructorCommandApi } from "./api/instructorApi.js";
+import { createInstructorCommandApi, InstructorCommandApiError } from "./api/instructorApi.js";
 import type {
   CalendarLinks,
   CoachEmailDelivery,
@@ -8,6 +8,7 @@ import type {
   SchedulerRules,
   TimeSlotDTO,
 } from "./api/types.js";
+import { resolveInstructorDataMode } from "./config/dataMode.js";
 import { renderAvailabilityFinder } from "./components/AvailabilityFinder.js";
 import {
   renderCalendarHandoffModal,
@@ -33,6 +34,10 @@ if (!root) {
 }
 
 const app = root;
+const instructorRuntimeConfig = resolveInstructorDataMode(import.meta.env);
+const instructorCommandApi = createInstructorCommandApi(import.meta.env);
+
+exposeDevelopmentDataMode(instructorRuntimeConfig.mode);
 
 type AppState = {
   activeScreen: ScreenId;
@@ -76,9 +81,26 @@ const state: AppState = {
 
 const instructorId = import.meta.env?.VITE_INSTRUCTOR_ID || "inst_riley_001";
 const commandDate = import.meta.env?.VITE_INSTRUCTOR_COMMAND_DATE || "2026-08-27";
-const instructorApiBaseUrl = import.meta.env?.VITE_INSTRUCTOR_API_URL || "";
+const instructorApiBaseUrl = instructorRuntimeConfig.mode === "http"
+  ? instructorRuntimeConfig.apiBaseUrl
+  : "";
 
 void boot();
+
+function exposeDevelopmentDataMode(mode: "mock" | "http"): void {
+  if (!import.meta.env.DEV) return;
+
+  document.documentElement.dataset.dataMode = mode;
+  document.querySelector<HTMLElement>("[data-mock-data-badge]")?.remove();
+  if (mode !== "mock") return;
+
+  const badge = document.createElement("div");
+  badge.className = "mock-data-badge";
+  badge.dataset.mockDataBadge = "";
+  badge.setAttribute("role", "status");
+  badge.textContent = "Mock data";
+  document.body.append(badge);
+}
 
 async function boot(): Promise<void> {
   if (instructorCommandApi.authMode === "live") {

@@ -6,6 +6,7 @@ import { ConfirmedOccurrences } from "../components/ConfirmedOccurrences";
 
 type LessonRequestStatusScreenProps = {
   lessonRequest: LessonRequest;
+  instructorName: string;
   onRefreshStatus: () => void;
   onSelectAlternative: (slotId: string) => void;
   onCalendar: () => void;
@@ -14,6 +15,7 @@ type LessonRequestStatusScreenProps = {
 
 export function LessonRequestStatusScreen({
   lessonRequest,
+  instructorName,
   onRefreshStatus,
   onSelectAlternative,
   onCalendar,
@@ -37,8 +39,8 @@ export function LessonRequestStatusScreen({
                 : expired
                   ? "This request expired before it could be confirmed. Please choose another time from your invite."
                   : needsNewTimes
-                    ? "Riley sent new lesson times for you to review."
-                : "Riley has the request and the slot is held while the final schedule check runs."}
+                    ? `${instructorName} sent new lesson times for you to review.`
+                : `${instructorName} has the request and the slot is held while the final schedule check runs.`}
             </span>
           </div>
         </div>

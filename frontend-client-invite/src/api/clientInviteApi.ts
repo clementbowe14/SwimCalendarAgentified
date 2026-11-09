@@ -14,6 +14,11 @@ import type {
   LessonConfirmation,
   LessonRequest,
 } from "./types.js";
+import {
+  resolveClientInviteDataMode,
+  type ClientInviteDataModeCommand,
+  type ClientInviteDataModeEnvironment,
+} from "./dataMode.js";
 
 const wait = (ms: number) => new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 
@@ -190,9 +195,14 @@ export class FetchClientInviteApi implements ClientInviteApi {
   }
 }
 
-export const createClientInviteApi = (): ClientInviteApi => {
-  const baseUrl = import.meta.env.VITE_CLIENT_INVITE_API_URL as string | undefined;
-  return baseUrl ? new FetchClientInviteApi(baseUrl) : new MockClientInviteApi();
+export const createClientInviteApi = (
+  environment: ClientInviteDataModeEnvironment = import.meta.env ?? {},
+  command: ClientInviteDataModeCommand = "serve",
+): ClientInviteApi => {
+  const dataMode = resolveClientInviteDataMode(environment, command);
+  return dataMode.mode === "mock"
+    ? new MockClientInviteApi()
+    : new FetchClientInviteApi(dataMode.apiBaseUrl);
 };
 
 async function toApiError(response: Response): Promise<ClientInviteApiError> {

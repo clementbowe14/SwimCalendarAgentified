@@ -1,13 +1,11 @@
 import { expect, type Page, type Route, test } from "@playwright/test";
 
-const describeWhenLiveApiConfigured = process.env.VITE_INSTRUCTOR_API_URL ? test.describe : test.describe.skip;
-
 const AUTH_TOKEN = "playwright-coach-token";
 const COACH_EMAIL = "coach@example.com";
 const COACH_PASSWORD = "correct-horse-battery-staple";
 const LOCKED_OR_EXPIRED_HEADING = /sign in|locked|session expired/i;
 
-describeWhenLiveApiConfigured("MVP coach auth flow", () => {
+test.describe("MVP coach auth flow", () => {
   test.describe.configure({ timeout: 15_000 });
 
   test("shows compact locked state, signs in, keeps command-center styling, and signs out", async ({ page }) => {
@@ -15,6 +13,8 @@ describeWhenLiveApiConfigured("MVP coach auth flow", () => {
 
     await page.goto("/");
 
+    await expect(page.locator("html")).toHaveAttribute("data-data-mode", "http");
+    await expect(page.getByText("Mock data", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: LOCKED_OR_EXPIRED_HEADING })).toBeVisible();
     await expect(page.getByLabel(/email/i)).toBeVisible();
     await expect(page.getByLabel(/password/i)).toBeVisible();

@@ -4,6 +4,8 @@ test.describe("client invite self-booking flow", () => {
   test("remains public-token scoped without coach authentication UI", async ({ page }) => {
     await page.goto("/");
 
+    await expect(page.locator("html")).toHaveAttribute("data-data-mode", "mock");
+    await expect(page.getByText("Mock data", { exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Tell us when you can swim" })).toBeVisible();
     await expect(page.getByRole("button", { name: /sign in/i })).toHaveCount(0);
     await expect(page.getByLabel(/password/i)).toHaveCount(0);

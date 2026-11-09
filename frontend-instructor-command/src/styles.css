@@ -1256,3 +1256,22 @@ select {
     max-width: 100%;
   }
 }
+
+/* Development-only data source marker inserted by main.ts. */
+.mock-data-badge {
+  position: fixed;
+  z-index: 1200;
+  top: max(10px, env(safe-area-inset-top));
+  right: max(10px, env(safe-area-inset-right));
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 999px;
+  background: #5b3e96;
+  box-shadow: 0 6px 18px rgba(17, 24, 39, 0.2);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  pointer-events: none;
+}

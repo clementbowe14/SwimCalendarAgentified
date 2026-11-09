@@ -4,13 +4,21 @@ Token-scoped client booking prototype for the public invite flow.
 
 ## Local Data Modes
 
-By default the app uses `MockClientInviteApi`.
-
-Set `VITE_CLIENT_INVITE_API_URL` to use the FastAPI backend:
+Data mode is fail-closed. Mock data is available only when explicitly selected:
 
 ```bash
-VITE_CLIENT_INVITE_API_URL=http://127.0.0.1:8000/api/public npm run dev
+VITE_USE_MOCK_API=true npm run dev
 ```
+
+HTTP is the default mode and requires the FastAPI base URL:
+
+```bash
+VITE_USE_MOCK_API=false VITE_CLIENT_INVITE_API_URL=http://127.0.0.1:8000/api/public npm run dev
+```
+
+The `VITE_USE_MOCK_API=false` value may be omitted because HTTP is the default. Starting or building
+without an API URL fails instead of falling back to fixtures. Mock mode and an API URL cannot be set
+together, and production builds reject mock mode. See `.env.example` for the local HTTP configuration.
 
 Optional values:
 
@@ -34,7 +42,11 @@ npm run test:unit
 npm run test:e2e
 ```
 
-The live suite is skipped unless `VITE_CLIENT_INVITE_API_URL` is set. When set, only live tests run, with no public API fixtures. The suite creates weekly requests, approves them with the seeded development coach account, refreshes notifications, follows Google occurrence links, and parses actual Apple/ICS downloads using `ical.js`.
+`npm run test:e2e` explicitly runs the mock UI suite followed by the intercepted-HTTP suite. The live
+command requires an API URL and fails instead of passing with skipped tests when it is absent. The live
+suite uses no public API fixtures; it creates requests, reads the persisted request back, approves them
+with the seeded development coach account, refreshes notifications, follows Google occurrence links,
+and parses actual Apple/ICS downloads using `ical.js`.
 
 ```bash
 VITE_CLIENT_INVITE_API_URL=http://127.0.0.1:8016/api/public npm run test:e2e:live
