@@ -105,6 +105,12 @@ export type ClientInviteEnvelope = {
   invite_token: string;
   instructor_name: string;
   business_name: string;
+  service_name: string | null;
+  service_location: {
+    address: string;
+    lat: number;
+    lng: number;
+  } | null;
   expires_at_iso: string;
   intake: ClientIntake;
   preferred_duration_mins: number;

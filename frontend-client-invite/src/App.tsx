@@ -202,6 +202,8 @@ export default function App({ api, dataMode, inviteToken, requestedDate, showMoc
         <InviteLandingScreen
           intake={intake}
           instructorName={envelope.instructor_name}
+          serviceName={envelope.service_name}
+          serviceLocation={envelope.service_location}
           onChange={setIntake}
           onContinue={continueFromIntake}
           saving={loading}

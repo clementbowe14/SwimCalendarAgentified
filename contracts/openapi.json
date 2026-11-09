@@ -408,6 +408,27 @@
           "preferred_duration_mins": {
             "title": "Preferred Duration Mins",
             "type": "integer"
+          },
+          "service_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CoachProviderLocationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "service_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Name"
           }
         },
         "required": [
@@ -1181,6 +1202,16 @@
       },
       "CoachInstructorProfileResponse": {
         "properties": {
+          "base_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CoachProviderLocationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "business_name": {
             "title": "Business Name",
             "type": "string"
@@ -1205,6 +1236,20 @@
             "title": "Name",
             "type": "string"
           },
+          "service": {
+            "$ref": "#/components/schemas/CoachProviderServiceResponse"
+          },
+          "setup_complete": {
+            "title": "Setup Complete",
+            "type": "boolean"
+          },
+          "setup_missing_fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Setup Missing Fields",
+            "type": "array"
+          },
           "timezone": {
             "title": "Timezone",
             "type": "string"
@@ -1216,6 +1261,13 @@
           "work_start_time": {
             "title": "Work Start Time",
             "type": "string"
+          },
+          "working_hours": {
+            "items": {
+              "$ref": "#/components/schemas/CoachProviderWorkingHours"
+            },
+            "title": "Working Hours",
+            "type": "array"
           }
         },
         "required": [
@@ -1227,7 +1279,11 @@
           "work_start_time",
           "work_end_time",
           "timezone",
-          "business_name"
+          "business_name",
+          "service",
+          "working_hours",
+          "setup_complete",
+          "setup_missing_fields"
         ],
         "title": "CoachInstructorProfileResponse",
         "type": "object"
@@ -1504,6 +1560,260 @@
           "message"
         ],
         "title": "CoachLogoutResponse",
+        "type": "object"
+      },
+      "CoachProviderLocationResponse": {
+        "properties": {
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "lat": {
+            "title": "Lat",
+            "type": "number"
+          },
+          "lng": {
+            "title": "Lng",
+            "type": "number"
+          }
+        },
+        "required": [
+          "address",
+          "lat",
+          "lng"
+        ],
+        "title": "CoachProviderLocationResponse",
+        "type": "object"
+      },
+      "CoachProviderServiceResponse": {
+        "properties": {
+          "default_duration_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Duration Mins"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CoachProviderLocationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "CoachProviderServiceResponse",
+        "type": "object"
+      },
+      "CoachProviderSettingsResponse": {
+        "properties": {
+          "base_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CoachProviderLocationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "business_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Name"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "service": {
+            "$ref": "#/components/schemas/CoachProviderServiceResponse"
+          },
+          "setup_complete": {
+            "title": "Setup Complete",
+            "type": "boolean"
+          },
+          "setup_missing_fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Setup Missing Fields",
+            "type": "array"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
+          "working_hours": {
+            "items": {
+              "$ref": "#/components/schemas/CoachProviderWorkingHours"
+            },
+            "title": "Working Hours",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "display_name",
+          "timezone",
+          "service",
+          "working_hours",
+          "setup_complete",
+          "setup_missing_fields"
+        ],
+        "title": "CoachProviderSettingsResponse",
+        "type": "object"
+      },
+      "CoachProviderSettingsUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "base_address": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Base Address",
+            "type": "string"
+          },
+          "business_name": {
+            "anyOf": [
+              {
+                "maxLength": 160,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Name"
+          },
+          "default_duration_mins": {
+            "maximum": 240.0,
+            "minimum": 15.0,
+            "multipleOf": 15.0,
+            "title": "Default Duration Mins",
+            "type": "integer"
+          },
+          "display_name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "service_address": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Service Address",
+            "type": "string"
+          },
+          "service_name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Service Name",
+            "type": "string"
+          },
+          "timezone": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Timezone",
+            "type": "string"
+          },
+          "working_hours": {
+            "items": {
+              "$ref": "#/components/schemas/CoachProviderWorkingHours"
+            },
+            "maxItems": 7,
+            "minItems": 7,
+            "title": "Working Hours",
+            "type": "array"
+          }
+        },
+        "required": [
+          "display_name",
+          "timezone",
+          "base_address",
+          "service_address",
+          "service_name",
+          "default_duration_mins",
+          "working_hours"
+        ],
+        "title": "CoachProviderSettingsUpdate",
+        "type": "object"
+      },
+      "CoachProviderWorkingHours": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "end_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Time"
+          },
+          "start_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Time"
+          },
+          "weekday": {
+            "enum": [
+              "monday",
+              "tuesday",
+              "wednesday",
+              "thursday",
+              "friday",
+              "saturday",
+              "sunday"
+            ],
+            "title": "Weekday",
+            "type": "string"
+          }
+        },
+        "required": [
+          "weekday",
+          "enabled"
+        ],
+        "title": "CoachProviderWorkingHours",
         "type": "object"
       },
       "CoachScheduleItemResponse": {
@@ -2123,6 +2433,27 @@
           "preferred_duration_mins": {
             "title": "Preferred Duration Mins",
             "type": "integer"
+          },
+          "service_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CoachProviderLocationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "service_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Name"
           }
         },
         "required": [
@@ -3373,6 +3704,92 @@
           }
         ],
         "summary": "Read Current Coach",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/provider": {
+      "get": {
+        "operationId": "read_provider_settings_api_coach_provider_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachProviderSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Read Provider Settings",
+        "tags": [
+          "coach"
+        ]
+      },
+      "put": {
+        "operationId": "save_provider_settings_api_coach_provider_put",
+        "parameters": [
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoachProviderSettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachProviderSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Save Provider Settings",
         "tags": [
           "coach"
         ]

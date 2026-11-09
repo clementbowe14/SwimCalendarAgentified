@@ -21,6 +21,8 @@
 html,
 body,
 #app {
+  width: 100%;
+  max-width: 100%;
   min-height: 100%;
   margin: 0;
 }
@@ -49,6 +51,8 @@ button {
 .command-shell {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
+  width: 100%;
+  max-width: 100%;
   min-height: 100vh;
 }
 
@@ -63,6 +67,8 @@ button {
   border-right: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.9);
   backdrop-filter: blur(18px);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .brand-lockup,
@@ -126,6 +132,8 @@ button {
   display: grid;
   gap: 7px;
   margin-top: 10px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .section-nav button {
@@ -232,6 +240,12 @@ button {
   gap: 16px;
   max-width: 1180px;
   margin: 0 auto;
+}
+
+.screen-grid > *,
+.settings-screen form,
+.settings-screen fieldset {
+  min-width: 0;
 }
 
 .today-screen,
@@ -661,6 +675,9 @@ select {
   display: grid;
   grid-column: 1 / -1;
   gap: 14px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 18px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -671,9 +688,21 @@ select {
 .email-delivery-heading,
 .email-delivery-card-head {
   display: flex;
+  min-width: 0;
+  max-width: 100%;
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
+}
+
+.email-delivery-heading > *,
+.email-delivery-card-head > *,
+.email-delivery-list,
+.email-delivery-list > li,
+.email-correction-form,
+.email-correction-form > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .email-delivery-heading h2,
@@ -694,6 +723,7 @@ select {
   margin: 6px 0 0;
   color: var(--muted);
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .delivery-refresh-action {
@@ -753,6 +783,7 @@ select {
   font-weight: 900;
   line-height: 1.2;
   text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .delivery-status-progress {
@@ -829,6 +860,12 @@ select {
   min-width: 0;
 }
 
+.email-delivery-section button,
+.email-delivery-section input {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .email-correction-form .delivery-field-help,
 .email-correction-form .delivery-field-error {
   grid-column: 1 / -1;
@@ -864,6 +901,309 @@ select {
   justify-content: space-between;
   gap: 18px;
   grid-column: 1 / -1;
+}
+
+.setup-status-card,
+.provider-settings-form,
+.provider-settings-loading,
+.setup-required-notice {
+  grid-column: 1 / -1;
+}
+
+.setup-status-card,
+.provider-form-card,
+.provider-form-heading,
+.provider-save-bar,
+.setup-required-notice {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 32px rgba(4, 48, 93, 0.08);
+}
+
+.setup-status-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  padding: 20px;
+}
+
+.setup-status-card.complete {
+  border-color: rgba(10, 143, 66, 0.28);
+  background: linear-gradient(135deg, #f2fff7, #ffffff);
+}
+
+.setup-status-card.incomplete {
+  border-color: rgba(246, 160, 0, 0.34);
+  background: linear-gradient(135deg, #fff9e8, #ffffff);
+}
+
+.setup-status-mark {
+  display: grid;
+  place-items: center;
+  min-width: 64px;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 999px;
+  color: #ffffff;
+  background: var(--green);
+  font-size: 12px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.setup-status-card.incomplete .setup-status-mark {
+  color: #5e3a00;
+  background: #ffd77f;
+}
+
+.setup-status-card h2,
+.provider-form-heading h2,
+.provider-form-card h3,
+.setup-required-notice strong {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.1;
+  font-weight: 900;
+}
+
+.setup-status-card p,
+.provider-form-heading p,
+.provider-form-card .section-heading > p:last-child,
+.setup-required-notice span {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.setup-status-card p,
+.provider-form-heading p,
+.provider-form-card .section-heading > p:last-child {
+  margin: 8px 0 0;
+}
+
+.setup-missing-copy,
+.setup-route-message {
+  font-size: 13px;
+}
+
+.setup-route-message {
+  color: #815000 !important;
+  font-weight: 850;
+}
+
+.provider-settings-form {
+  display: grid;
+  gap: 14px;
+  padding-bottom: 1px;
+}
+
+.provider-form-heading,
+.provider-form-card {
+  padding: 18px;
+}
+
+.provider-form-heading {
+  box-shadow: none;
+}
+
+.provider-form-card {
+  box-shadow: 0 8px 22px rgba(4, 48, 93, 0.06);
+}
+
+.provider-form-card .section-heading {
+  margin-bottom: 14px;
+}
+
+.provider-form-card h3 {
+  font-size: 24px;
+}
+
+.provider-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.provider-field,
+.weekday-times label {
+  min-width: 0;
+}
+
+.provider-field-wide {
+  grid-column: 1 / -1;
+}
+
+.provider-field > span,
+.weekday-times label > span {
+  color: #33465e;
+  font-size: 13px;
+}
+
+.provider-field small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.provider-field-error {
+  margin: 0;
+  color: #9d331d;
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.35;
+}
+
+.provider-field [aria-invalid="true"] {
+  border-color: #b94a25;
+  background: #fff8f5;
+  box-shadow: 0 0 0 2px rgba(185, 74, 37, 0.1);
+}
+
+.weekday-list {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 8px;
+}
+
+.weekday-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(0, 1.2fr);
+  gap: 16px;
+  align-items: center;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid rgba(7, 109, 228, 0.14);
+  border-radius: 8px;
+  background: #f9fdff;
+}
+
+.weekday-switch {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+}
+
+.weekday-name {
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.switch-control {
+  position: relative;
+  flex: 0 0 auto;
+  width: 52px;
+  height: 32px;
+}
+
+.switch-control input {
+  position: absolute;
+  z-index: 2;
+  inset: -6px;
+  width: 64px;
+  min-height: 44px;
+  margin: 0;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.switch-track {
+  display: block;
+  width: 52px;
+  height: 32px;
+  padding: 4px;
+  border: 1px solid rgba(6, 24, 51, 0.2);
+  border-radius: 999px;
+  background: #dbe4ec;
+  transition: background 120ms ease;
+}
+
+.switch-track span {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 2px 7px rgba(6, 24, 51, 0.28);
+  transition: transform 120ms ease;
+}
+
+.switch-control input:checked + .switch-track {
+  background: var(--teal);
+}
+
+.switch-control input:checked + .switch-track span {
+  transform: translateX(20px);
+}
+
+.switch-control input:focus-visible + .switch-track {
+  outline: 3px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.weekday-times {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.weekday-times input:disabled {
+  color: #778397;
+  background: #edf2f5;
+  opacity: 0.75;
+}
+
+.provider-save-bar {
+  position: sticky;
+  z-index: 10;
+  bottom: 10px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 16px;
+  padding: 12px;
+  border-color: rgba(7, 109, 228, 0.24);
+  box-shadow: 0 14px 34px rgba(4, 48, 93, 0.18);
+}
+
+.provider-save-status {
+  min-height: 1.25rem;
+  margin: 0 auto 0 0;
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.provider-form-error {
+  width: 100%;
+}
+
+.scheduler-rules-form {
+  min-width: 0;
+}
+
+.setup-required-notice {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  border-color: rgba(246, 160, 0, 0.35);
+  background: #fffaf0;
+}
+
+.setup-required-notice span {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.setup-gated {
+  border-style: dashed !important;
+  opacity: 0.78;
 }
 
 .rules-overview h2 {
@@ -1181,8 +1521,13 @@ select {
   .client-screen,
   .settings-screen,
   .detail-grid,
-  .field-grid {
+  .field-grid,
+  .provider-field-grid {
     grid-template-columns: 1fr;
+  }
+
+  .provider-field-wide {
+    grid-column: auto;
   }
 }
 
@@ -1211,8 +1556,44 @@ select {
 
   .agenda-row,
   .slot-card,
-  .rule-row {
+  .rule-row,
+  .weekday-row {
     grid-template-columns: 1fr;
+  }
+
+  .setup-status-card {
+    grid-template-columns: 1fr;
+  }
+
+  .setup-status-mark {
+    justify-self: start;
+  }
+
+  .weekday-times {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .provider-form-heading,
+  .provider-form-card,
+  .setup-status-card {
+    padding: 14px;
+  }
+
+  .provider-save-bar,
+  .setup-required-notice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .provider-save-bar {
+    bottom: max(8px, env(safe-area-inset-bottom));
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
+
+  .provider-save-bar .primary-action,
+  .setup-required-notice .secondary-action {
+    width: 100%;
+    min-height: 52px;
   }
 
   .hero-panel {
@@ -1246,6 +1627,10 @@ select {
   .email-correction-form .primary-action {
     width: 100%;
     min-height: 48px;
+    padding-block: 8px;
+    line-height: 1.2;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .email-correction-form {

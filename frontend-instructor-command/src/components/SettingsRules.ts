@@ -10,11 +10,13 @@ export function renderSettingsRules(
   rules: SchedulerRules,
   showSignOut = false,
   status: SettingsRenderState = {},
+  providerSettings = "",
 ): string {
   const disabled = status.pending ? " disabled" : "";
   return `
     <section class="screen-grid settings-screen" aria-label="Settings">
-      <form data-rules-form>
+      ${providerSettings}
+      <form class="scheduler-rules-form" data-rules-form>
         <section class="rules-overview">
           <div>
             <p class="eyebrow">Constraint engine</p>

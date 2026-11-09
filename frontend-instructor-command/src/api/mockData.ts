@@ -5,6 +5,9 @@ import type {
   InstructorProfile,
   LessonRequest,
   LocationInfo,
+  ProviderConfiguration,
+  ProviderLocation,
+  ProviderWorkingHour,
   SchedulerRules,
   ScheduleItem,
   TimeSlotDTO,
@@ -15,6 +18,42 @@ export const instructorFacility: LocationInfo = {
   lat: 30.2672,
   lng: -97.7431,
   is_instructor_facility: true,
+};
+
+export const providerBase: ProviderLocation = {
+  address: "100 Main St, Austin, TX",
+  lat: 30.2615,
+  lng: -97.7481,
+};
+
+export const providerWorkingHours: ProviderWorkingHour[] = [
+  { weekday: "monday", enabled: true, start_time: "08:00", end_time: "18:00" },
+  { weekday: "tuesday", enabled: true, start_time: "08:00", end_time: "18:00" },
+  { weekday: "wednesday", enabled: true, start_time: "08:00", end_time: "18:00" },
+  { weekday: "thursday", enabled: true, start_time: "08:00", end_time: "18:00" },
+  { weekday: "friday", enabled: true, start_time: "08:00", end_time: "18:00" },
+  { weekday: "saturday", enabled: true, start_time: "09:00", end_time: "14:00" },
+  { weekday: "sunday", enabled: false, start_time: null, end_time: null },
+];
+
+export const providerConfiguration: ProviderConfiguration = {
+  id: "inst_riley_001",
+  display_name: "Riley Carter",
+  business_name: "Blue Lane Swim",
+  timezone: "America/Chicago",
+  base_location: providerBase,
+  service: {
+    name: "Private swim lesson",
+    default_duration_mins: 45,
+    location: {
+      address: instructorFacility.address,
+      lat: instructorFacility.lat,
+      lng: instructorFacility.lng,
+    },
+  },
+  working_hours: providerWorkingHours,
+  setup_complete: true,
+  setup_missing_fields: [],
 };
 
 export const lakesidePool: LocationInfo = {
@@ -42,6 +81,12 @@ export const instructor: InstructorProfile = {
   id: "inst_riley_001",
   name: "Riley Carter",
   business_name: "Blue Lane Swim",
+  timezone: providerConfiguration.timezone,
+  base_location: providerConfiguration.base_location,
+  service: providerConfiguration.service,
+  working_hours: providerWorkingHours,
+  setup_complete: true,
+  setup_missing_fields: [],
   main_address: instructorFacility.address,
   lat: instructorFacility.lat,
   lng: instructorFacility.lng,

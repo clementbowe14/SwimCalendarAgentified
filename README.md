@@ -58,6 +58,12 @@ read-only during remediation so an older process cannot recreate an invalid
 policy. Downgrading migration `20260922_0008` removes the two buffer switches and
 therefore loses their customized values.
 
+Migration `20261109_0010` separates the private shift base, public service location, service default,
+and weekday hours. Its downgrade refuses before mutation when current settings cannot fit the legacy
+single-location/single-hours model. See
+[`docs/provider-settings-runbook.md`](docs/provider-settings-runbook.md) for rollout verification and
+rollback prerequisites.
+
 ### Start The API
 
 ```bash

@@ -27,6 +27,7 @@ export type DeliverySectionUiState = {
 export function renderRequestManagement(
   snapshot: CommandCenterSnapshot,
   deliveryState: DeliverySectionUiState = defaultDeliveryState(snapshot.email_deliveries),
+  schedulingReady = true,
 ): string {
   const summary = summarizeRequests(snapshot.requests);
 
@@ -37,15 +38,21 @@ export function renderRequestManagement(
         <article><strong>${summary.atRisk}</strong><span>at risk</span></article>
         <article><strong>${summary.totalPending}</strong><span>pending</span></article>
       </section>
+      ${schedulingReady ? "" : `
+        <section class="setup-required-notice" role="status">
+          <div><strong>Complete provider setup to schedule</strong><span>You can review requests now, but confirming or offering times needs saved locations and working hours.</span></div>
+          <button class="secondary-action" type="button" data-open-provider-settings>Open settings</button>
+        </section>
+      `}
       <section class="request-list" aria-label="Lesson requests">
-        ${snapshot.requests.map(renderRequest).join("")}
+        ${snapshot.requests.map((request) => renderRequest(request, schedulingReady)).join("")}
       </section>
       ${renderEmailDeliverySection(deliveryState)}
     </section>
   `;
 }
 
-function renderRequest(request: LessonRequest): string {
+function renderRequest(request: LessonRequest, schedulingReady: boolean): string {
   const isPending = request.status === "pending";
   const selectedAlternativeId = request.alternative_slots.find(
     (slot) => slot.id === request.requested_slot.id,
@@ -68,8 +75,8 @@ function renderRequest(request: LessonRequest): string {
       ${
         isPending
           ? `<div class="request-actions">
-              <button class="primary-action" type="button" data-confirm-request="${escapeHtml(request.id)}"${selectedAlternativeActionData} data-calendar-focus="request:${escapeHtml(request.id)}">Confirm</button>
-              <button class="secondary-action" type="button" data-alternatives-request="${escapeHtml(request.id)}">Alternatives</button>
+              <button class="primary-action${schedulingReady ? "" : " setup-gated"}" type="button" ${schedulingReady ? `data-confirm-request="${escapeHtml(request.id)}"${selectedAlternativeActionData} data-calendar-focus="request:${escapeHtml(request.id)}"` : 'data-setup-required-action="confirm requests" title="Complete provider setup first"'}>Confirm</button>
+              <button class="secondary-action${schedulingReady ? "" : " setup-gated"}" type="button" ${schedulingReady ? `data-alternatives-request="${escapeHtml(request.id)}"` : 'data-setup-required-action="send alternative times" title="Complete provider setup first"'}>Alternatives</button>
             </div>`
           : ""
       }

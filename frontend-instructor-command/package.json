@@ -11,7 +11,7 @@
     "test": "tsc -p tsconfig.test.json && node --test .test-build/tests/*.test.js",
     "test:e2e": "npm run test:e2e:mock",
     "test:e2e:mock": "VITE_USE_MOCK_API=true VITE_INSTRUCTOR_API_URL= playwright test e2e/instructor-command.spec.ts",
-    "test:e2e:auth": "VITE_USE_MOCK_API=false VITE_INSTRUCTOR_API_URL=/api playwright test e2e/auth-flow.spec.ts",
+    "test:e2e:auth": "VITE_USE_MOCK_API=false VITE_INSTRUCTOR_API_URL=/api playwright test e2e/auth-flow.spec.ts e2e/provider-settings.spec.ts",
     "test:e2e:live": "VITE_USE_MOCK_API=false playwright test e2e/instructor-command.live.spec.ts"
   },
   "devDependencies": {

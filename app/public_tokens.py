@@ -7,6 +7,7 @@ from app import db, timezones
 from app.api_errors import InviteExpired, InviteNotFound, LessonRequestNotFound
 from app.config import demo_data_access_enabled_from_env
 from app.models import InviteTokenDB, LessonRequestDB
+from app.provider_settings import ProviderLocation, ProviderNotFound, load_provider_configuration
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 
@@ -17,6 +18,8 @@ class InviteContext:
     instructor_name: str
     business_name: str
     location_label: str
+    service_name: Optional[str]
+    service_location: Optional[ProviderLocation]
     preferred_duration_mins: int
     allowed_durations_mins: tuple[int, ...]
     expires_at: datetime
@@ -61,15 +64,25 @@ def resolve_invite(token: str) -> InviteContext:
             raise InviteNotFound()
         if invite.expires_at <= datetime.utcnow():
             raise InviteExpired()
-        instructor_name = invite.instructor.name if invite.instructor else "Coach"
+        try:
+            provider = load_provider_configuration(invite.instructor_id)
+        except ProviderNotFound as exc:
+            raise InviteNotFound() from exc
+        instructor_name = provider.display_name or "Provider"
+        allowed_durations = _parse_durations(invite.allowed_durations_mins)
+        preferred_duration = provider.default_duration_mins or allowed_durations[0]
+        if preferred_duration not in allowed_durations:
+            allowed_durations = (*allowed_durations, preferred_duration)
         return InviteContext(
             token=invite.token,
             instructor_id=invite.instructor_id,
             instructor_name=instructor_name,
-            business_name=invite.business_name,
-            location_label=invite.location_label,
-            preferred_duration_mins=invite.preferred_duration_mins,
-            allowed_durations_mins=_parse_durations(invite.allowed_durations_mins),
+            business_name=provider.business_name or instructor_name,
+            location_label="Client pool",
+            service_name=provider.service_name,
+            service_location=provider.service_location,
+            preferred_duration_mins=preferred_duration,
+            allowed_durations_mins=allowed_durations,
             expires_at=invite.expires_at,
         )
     finally:

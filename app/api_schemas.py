@@ -6,6 +6,8 @@ from typing import Literal, Optional
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app import timezones
+
 
 class HealthResponse(BaseModel):
     status: Literal["ok"]
@@ -45,6 +47,137 @@ class LocationResponse(BaseModel):
     is_instructor_facility: bool = False
 
 
+ProviderWeekday = Literal[
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+]
+PROVIDER_WEEKDAYS = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
+
+
+class CoachProviderLocationResponse(BaseModel):
+    address: str
+    lat: float
+    lng: float
+
+
+class CoachProviderWorkingHours(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    weekday: ProviderWeekday
+    enabled: bool
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+
+    @field_validator("start_time", "end_time", mode="before")
+    @classmethod
+    def normalize_time(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value.strip()):
+            raise ValueError("Time must use 24-hour HH:MM format.")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> "CoachProviderWorkingHours":
+        if not self.enabled:
+            if self.start_time is not None or self.end_time is not None:
+                raise ValueError("Disabled weekdays cannot include opening or closing times.")
+            return self
+        if self.start_time is None or self.end_time is None:
+            raise ValueError("Enabled weekdays require opening and closing times.")
+        if self.end_time <= self.start_time:
+            raise ValueError("Closing time must be later than opening time.")
+        return self
+
+
+class CoachProviderServiceResponse(BaseModel):
+    name: Optional[str] = None
+    default_duration_mins: Optional[int] = None
+    location: Optional[CoachProviderLocationResponse] = None
+
+
+class CoachProviderSettingsResponse(BaseModel):
+    id: str
+    display_name: str
+    business_name: Optional[str] = None
+    timezone: str
+    base_location: Optional[CoachProviderLocationResponse] = None
+    service: CoachProviderServiceResponse
+    working_hours: list[CoachProviderWorkingHours]
+    setup_complete: bool
+    setup_missing_fields: list[str]
+
+
+class CoachProviderSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(min_length=1, max_length=160)
+    business_name: Optional[str] = Field(default=None, max_length=160)
+    timezone: str = Field(min_length=1, max_length=120)
+    base_address: str = Field(min_length=1, max_length=300)
+    service_address: str = Field(min_length=1, max_length=300)
+    service_name: str = Field(min_length=1, max_length=160)
+    default_duration_mins: int = Field(ge=15, le=240, multiple_of=15)
+    working_hours: list[CoachProviderWorkingHours] = Field(min_length=7, max_length=7)
+
+    @field_validator(
+        "display_name",
+        "timezone",
+        "base_address",
+        "service_address",
+        "service_name",
+        mode="before",
+    )
+    @classmethod
+    def trim_required_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("business_name", mode="before")
+    @classmethod
+    def normalize_optional_business_name(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        try:
+            timezones.get_zone(value)
+        except timezones.InvalidTimezoneError as exc:
+            raise ValueError("Timezone must be a valid IANA identifier.") from exc
+        return value
+
+    @field_validator("working_hours")
+    @classmethod
+    def validate_complete_week(
+        cls,
+        value: list[CoachProviderWorkingHours],
+    ) -> list[CoachProviderWorkingHours]:
+        weekdays = [row.weekday for row in value]
+        if len(set(weekdays)) != len(weekdays):
+            raise ValueError("Each weekday may appear only once.")
+        if set(weekdays) != set(PROVIDER_WEEKDAYS):
+            raise ValueError("Working hours must include Monday through Sunday.")
+        return sorted(value, key=lambda row: PROVIDER_WEEKDAYS.index(row.weekday))
+
+
 class InstructorProfileResponse(BaseModel):
     id: str
     name: str
@@ -58,6 +191,11 @@ class InstructorProfileResponse(BaseModel):
 
 class CoachInstructorProfileResponse(InstructorProfileResponse):
     business_name: str
+    base_location: Optional[CoachProviderLocationResponse] = None
+    service: CoachProviderServiceResponse
+    working_hours: list[CoachProviderWorkingHours]
+    setup_complete: bool
+    setup_missing_fields: list[str]
 
 
 class AppointmentResponse(BaseModel):
@@ -338,6 +476,8 @@ class PublicInviteResponse(BaseModel):
     instructor_name: str
     business_name: str
     location_label: str
+    service_name: Optional[str] = None
+    service_location: Optional[CoachProviderLocationResponse] = None
     preferred_duration_mins: int
     allowed_durations_mins: list[int]
     expires_at: datetime
@@ -421,6 +561,8 @@ class ClientInviteEnvelopeResponse(BaseModel):
     invite_token: str
     instructor_name: str
     business_name: str
+    service_name: Optional[str] = None
+    service_location: Optional[CoachProviderLocationResponse] = None
     expires_at_iso: datetime
     intake: ClientInviteIntake
     preferred_duration_mins: int

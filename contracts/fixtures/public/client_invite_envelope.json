@@ -21,5 +21,11 @@
     "notes": "Beginner swimmer. Prefers shallow end warmup."
   },
   "invite_token": "invite_sofia_0826",
-  "preferred_duration_mins": 45
+  "preferred_duration_mins": 45,
+  "service_location": {
+    "address": "100 Main St, Austin, TX",
+    "lat": 30.2672,
+    "lng": -97.7431
+  },
+  "service_name": "Swim lesson"
 }

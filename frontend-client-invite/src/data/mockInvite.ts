@@ -9,6 +9,12 @@ export const inviteEnvelope: ClientInviteEnvelope = {
   invite_token: "invite_sofia_0826",
   instructor_name: "Riley",
   business_name: "Swim Command",
+  service_name: "Private swim lesson",
+  service_location: {
+    address: "Riverside facility, Austin, TX",
+    lat: 30.2672,
+    lng: -97.7431,
+  },
   expires_at_iso: "2026-09-05T23:59:00-05:00",
   preferred_duration_mins: 45,
   allowed_durations_mins: [30, 45, 60],

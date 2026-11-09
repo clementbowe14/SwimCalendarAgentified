@@ -1,0 +1,66 @@
+{
+  "base_location": {
+    "address": "100 Main St, Austin, TX",
+    "lat": 30.2672,
+    "lng": -97.7431
+  },
+  "business_name": "Swim Command",
+  "display_name": "Coach Sarah",
+  "id": "inst_001",
+  "service": {
+    "default_duration_mins": 45,
+    "location": {
+      "address": "100 Main St, Austin, TX",
+      "lat": 30.2672,
+      "lng": -97.7431
+    },
+    "name": "Swim lesson"
+  },
+  "setup_complete": true,
+  "setup_missing_fields": [],
+  "timezone": "America/Chicago",
+  "working_hours": [
+    {
+      "enabled": true,
+      "end_time": "17:00",
+      "start_time": "08:00",
+      "weekday": "monday"
+    },
+    {
+      "enabled": true,
+      "end_time": "17:00",
+      "start_time": "08:00",
+      "weekday": "tuesday"
+    },
+    {
+      "enabled": true,
+      "end_time": "17:00",
+      "start_time": "08:00",
+      "weekday": "wednesday"
+    },
+    {
+      "enabled": true,
+      "end_time": "17:00",
+      "start_time": "08:00",
+      "weekday": "thursday"
+    },
+    {
+      "enabled": true,
+      "end_time": "17:00",
+      "start_time": "08:00",
+      "weekday": "friday"
+    },
+    {
+      "enabled": true,
+      "end_time": "17:00",
+      "start_time": "08:00",
+      "weekday": "saturday"
+    },
+    {
+      "enabled": true,
+      "end_time": "17:00",
+      "start_time": "08:00",
+      "weekday": "sunday"
+    }
+  ]
+}

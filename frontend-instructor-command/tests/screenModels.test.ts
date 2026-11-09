@@ -61,7 +61,7 @@ test("Settings screen stays aligned to Python engine buffer rules", () => {
   assert.match(html, /name="buffers_enabled" type="checkbox" checked/);
   assert.match(html, /name="rounding_increment_mins"/);
   assert.match(html, /name="tier\.near\.buffer_mins"/);
-  assert.match(html, /<form data-rules-form>/);
+  assert.match(html, /<form class="scheduler-rules-form" data-rules-form>/);
 });
 
 test("Request management summarizes clear and at-risk pending requests", () => {

@@ -26,6 +26,8 @@ from app.api_schemas import (
     CoachLessonRequestActionResponse,
     CoachLessonRequestConfirmResponse,
     CoachLessonRequestConfirmRequest,
+    CoachProviderSettingsResponse,
+    CoachProviderSettingsUpdate,
     CoachScheduleResponse,
     CoachSchedulerRules,
     InviteNotificationResponse,
@@ -38,10 +40,12 @@ from app.api_services import (
     get_coach_command_center_snapshot,
     get_coach_calendar_ics,
     get_coach_calendar_links,
+    get_coach_provider_settings,
     get_coach_schedule,
     get_coach_scheduler_settings,
     request_alternatives_for_coach_lesson_request,
     search_coach_availability,
+    update_coach_provider_settings,
     update_coach_scheduler_settings,
 )
 from app.dependencies import CoachContext, get_current_coach, require_csrf_protection
@@ -136,6 +140,25 @@ def update_email_delivery_contact(
 @router.get("/me", response_model=CoachContextResponse)
 def read_current_coach(coach: CoachContext = Depends(get_current_coach)) -> CoachContextResponse:
     return CoachContextResponse(instructor_id=coach.instructor_id, display_name=coach.display_name)
+
+
+@router.get("/provider", response_model=CoachProviderSettingsResponse)
+def read_provider_settings(
+    response: Response,
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachProviderSettingsResponse:
+    _private_response(response)
+    return get_coach_provider_settings(coach.instructor_id)
+
+
+@router.put("/provider", response_model=CoachProviderSettingsResponse)
+def save_provider_settings(
+    settings: CoachProviderSettingsUpdate,
+    response: Response,
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachProviderSettingsResponse:
+    _private_response(response)
+    return update_coach_provider_settings(coach.instructor_id, settings)
 
 
 @router.get("/schedule", response_model=CoachScheduleResponse)

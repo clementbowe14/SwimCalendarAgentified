@@ -15,7 +15,14 @@ from app.auth import (
     SESSION_COOKIE_NAME,
     provision_provider_account,
 )
-from app.models import AppointmentDB, ClientDB, InstructorDB, InviteTokenDB, LessonRequestDB
+from app.models import (
+    AppointmentDB,
+    ClientDB,
+    InstructorDB,
+    InviteTokenDB,
+    LessonRequestDB,
+    ProviderWorkingHoursDB,
+)
 
 
 JAMIE_EMAIL = "jamie.coach@example.com"
@@ -277,7 +284,28 @@ def _seed_second_coach() -> None:
                     work_start_time="08:00",
                     work_end_time="17:00",
                     timezone="America/Chicago",
+                    business_name="Jamie Swim",
+                    base_address="200 East Ave, Austin, TX",
+                    base_lat=30.274,
+                    base_lng=-97.731,
+                    service_address="200 East Ave, Austin, TX",
+                    service_lat=30.274,
+                    service_lng=-97.731,
+                    service_name="Swim lesson",
+                    default_duration_mins=45,
                 )
+            )
+            session.add_all(
+                [
+                    ProviderWorkingHoursDB(
+                        instructor_id="inst_002",
+                        weekday=weekday,
+                        enabled=True,
+                        start_time=datetime.time(8, 0),
+                        end_time=datetime.time(17, 0),
+                    )
+                    for weekday in range(7)
+                ]
             )
         if not session.get(ClientDB, "client_jamie"):
             session.add(
