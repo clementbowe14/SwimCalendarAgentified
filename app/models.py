@@ -22,6 +22,7 @@ from sqlalchemy import (
     Time,
     UniqueConstraint,
     event,
+    select,
     text,
 )
 from sqlalchemy.orm import declarative_base, relationship
@@ -318,7 +319,54 @@ def _normalize_legacy_block_shape(_mapper, _connection, appointment: Appointment
 class ClientDB(Base):
     __tablename__ = "clients"
     __table_args__ = (
+        CheckConstraint(
+            "name ~ '[^[:space:]]'",
+            name="ck_clients_name_nonblank",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'deactivated')",
+            name="ck_clients_status",
+        ),
+        CheckConstraint(
+            "(status = 'active' AND deactivated_at IS NULL) OR "
+            "(status = 'deactivated' AND deactivated_at IS NOT NULL)",
+            name="ck_clients_deactivation_state",
+        ),
+        CheckConstraint(
+            "(default_location_address IS NULL AND default_lat IS NULL AND default_lng IS NULL) OR "
+            "(default_location_address IS NOT NULL "
+            "AND default_location_address ~ '[^[:space:]]' "
+            "AND default_lat IS NOT NULL AND default_lng IS NOT NULL)",
+            name="ck_clients_location_complete",
+        ),
+        CheckConstraint(
+            "(default_lat IS NULL OR default_lat BETWEEN -90 AND 90) AND "
+            "(default_lng IS NULL OR default_lng BETWEEN -180 AND 180)",
+            name="ck_clients_location_coordinates",
+        ),
+        CheckConstraint(
+            "location_mode IN ('client_location', 'service_location')",
+            name="ck_clients_location_mode",
+        ),
+        CheckConstraint(
+            "location_mode <> 'client_location' OR default_location_address IS NOT NULL",
+            name="ck_clients_client_location_required",
+        ),
+        CheckConstraint(
+            "default_duration_mins BETWEEN 15 AND 240 "
+            "AND default_duration_mins % 15 = 0",
+            name="ck_clients_default_duration",
+        ),
+        CheckConstraint("revision >= 1", name="ck_clients_revision_positive"),
+        UniqueConstraint("id", "instructor_id", name="uq_clients_id_instructor_id"),
         Index("ix_clients_instructor_name", "instructor_id", "name"),
+        Index(
+            "ix_clients_active_instructor_name",
+            "instructor_id",
+            text("lower(name)"),
+            "id",
+            postgresql_where=text("status = 'active'"),
+        ),
     )
 
     id = Column(String, primary_key=True)
@@ -329,11 +377,120 @@ class ClientDB(Base):
     default_location_address = Column(String, nullable=True)
     default_lat = Column(Float, nullable=True)
     default_lng = Column(Float, nullable=True)
-    status = Column(String, nullable=False, default="active")
+    notes = Column(Text, nullable=False, default="", server_default=text("''"))
+    location_mode = Column(
+        String(32),
+        nullable=False,
+        server_default=text("'service_location'"),
+    )
+    default_duration_mins = Column(
+        Integer,
+        nullable=False,
+        default=45,
+        server_default=text("45"),
+    )
+    revision = Column(BigInteger, nullable=False, default=1, server_default=text("1"))
+    status = Column(
+        String,
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+    )
+    deactivated_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     instructor = relationship("InstructorDB", back_populates="clients")
+    availability_windows = relationship(
+        "ClientAvailabilityWindowDB",
+        back_populates="client",
+        cascade="all, delete-orphan",
+        order_by="ClientAvailabilityWindowDB.position, ClientAvailabilityWindowDB.id",
+    )
+
+
+@event.listens_for(ClientDB, "before_insert")
+def _default_client_profile_fields(_mapper, connection, client: ClientDB) -> None:
+    """Keep legacy ORM callers deterministic until the client write API owns these fields."""
+
+    service_location = connection.execute(
+        select(
+            InstructorDB.service_address,
+            InstructorDB.service_lat,
+            InstructorDB.service_lng,
+            InstructorDB.default_duration_mins,
+        ).where(InstructorDB.id == client.instructor_id)
+    ).one_or_none()
+
+    if client.location_mode is None:
+        has_complete_location = (
+            client.default_location_address is not None
+            and client.default_lat is not None
+            and client.default_lng is not None
+        )
+        matches_service_location = (
+            has_complete_location
+            and service_location is not None
+            and client.default_location_address == service_location.service_address
+            and client.default_lat == service_location.service_lat
+            and client.default_lng == service_location.service_lng
+        )
+        client.location_mode = (
+            "service_location"
+            if not has_complete_location or matches_service_location
+            else "client_location"
+        )
+
+    if client.default_duration_mins is None:
+        client.default_duration_mins = (
+            service_location.default_duration_mins
+            if service_location is not None
+            and service_location.default_duration_mins is not None
+            else 45
+        )
+
+
+class ClientAvailabilityWindowDB(Base):
+    __tablename__ = "client_availability_windows"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["client_id", "instructor_id"],
+            ["clients.id", "clients.instructor_id"],
+            name="fk_client_availability_windows_client_tenant",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "day_mask BETWEEN 1 AND 127",
+            name="ck_client_availability_windows_day_mask",
+        ),
+        CheckConstraint(
+            "end_time > start_time",
+            name="ck_client_availability_windows_time_order",
+        ),
+        CheckConstraint(
+            "position >= 0",
+            name="ck_client_availability_windows_position",
+        ),
+        Index(
+            "ix_client_availability_windows_tenant_client_position",
+            "instructor_id",
+            "client_id",
+            "position",
+            "id",
+        ),
+    )
+
+    id = Column(String, primary_key=True)
+    client_id = Column(String, nullable=False)
+    instructor_id = Column(String, nullable=False)
+    day_mask = Column(Integer, nullable=False)
+    start_time = Column(Time, nullable=False)
+    end_time = Column(Time, nullable=False)
+    position = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    client = relationship("ClientDB", back_populates="availability_windows")
 
 class InviteTokenDB(Base):
     __tablename__ = "invite_tokens"
