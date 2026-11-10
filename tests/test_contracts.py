@@ -15,6 +15,8 @@ from app.api_schemas import (
     CoachEmailDeliveryResponse,
     CoachAuthResponse,
     CoachBlockerResponse,
+    CoachClientListResponse,
+    CoachClientProfileResponse,
     CoachLessonRequestConfirmResponse,
     CoachProviderSettingsResponse,
     CoachScheduleResponse,
@@ -46,6 +48,8 @@ FIXTURE_SCHEMAS = {
     "fixtures/coach/settings.json": CoachSchedulerRules,
     "fixtures/coach/scheduling_policy.json": CoachSchedulingPolicyResponse,
     "fixtures/coach/provider.json": CoachProviderSettingsResponse,
+    "fixtures/coach/client.json": CoachClientProfileResponse,
+    "fixtures/coach/clients.json": CoachClientListResponse,
     "fixtures/coach/command_center_snapshot.json": CoachCommandCenterSnapshot,
 }
 FORBIDDEN_PUBLIC_KEYS = {"instructor_id", "client_id"}
@@ -109,6 +113,8 @@ def test_openapi_contract_includes_public_and_coach_routes():
             "$ref": "#/components/schemas/ErrorResponse"
         }
     assert "/api/coach/provider" in paths
+    assert "/api/coach/clients" in paths
+    assert "/api/coach/clients/{client_id}" in paths
     assert "/api/coach/invites/{invite_token}/notifications" in paths
     assert "/api/coach/email-deliveries" in paths
     assert "/api/coach/email-deliveries/{delivery_id}/resend" in paths
@@ -116,6 +122,39 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/public/command-center/snapshot" not in paths
     assert "/api/public/settings" not in paths
     assert "/api/public/provider" not in paths
+    assert "/api/public/clients" not in paths
+    client_list = openapi["paths"]["/api/coach/clients"]["get"]
+    client_detail = openapi["paths"]["/api/coach/clients/{client_id}"]["get"]
+    assert client_list["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/CoachClientListResponse"
+    }
+    assert client_detail["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/CoachClientProfileResponse"
+    }
+    for operation in (client_list, client_detail):
+        assert operation["responses"]["404"]["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/ErrorResponse"
+        }
+    client_profile = openapi["components"]["schemas"]["CoachClientProfileResponse"]
+    assert {
+        "id",
+        "name",
+        "phone",
+        "email",
+        "notes",
+        "location_mode",
+        "client_location",
+        "effective_location",
+        "default_duration_mins",
+        "revision",
+    }.issubset(client_profile["required"])
+    assert client_profile["properties"]["location_mode"]["enum"] == [
+        "client_location",
+        "service_location",
+    ]
+    assert client_profile["properties"]["revision"]["minimum"] == 1
+    for field in ("phone", "email", "client_location", "effective_location"):
+        assert {"type": "null"} in client_profile["properties"][field]["anyOf"]
     blocker_create = openapi["paths"]["/api/coach/blockers"]["post"]
     assert blocker_create["responses"]["201"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/CoachBlockerResponse"

@@ -43,6 +43,10 @@ from app.api_schemas import (
     CoachBlockerMutation,
     CoachBlockerResponse,
     CoachBlockerUpdate,
+    CoachClientAvailabilityWindowResponse,
+    CoachClientListResponse,
+    CoachClientLocationResponse,
+    CoachClientProfileResponse,
     CoachClientResponse,
     CoachCommandCenterSnapshot,
     CoachEmailDeliveryResponse,
@@ -90,6 +94,7 @@ from app.provider_settings import (
     ProviderLocation,
     ProviderNotFound,
     ProviderSetupIncomplete,
+    WEEKDAY_NAMES,
     load_provider_configuration,
     require_provider_setup,
     save_provider_configuration,
@@ -149,6 +154,109 @@ def get_coach_provider_settings(instructor_id: str) -> CoachProviderSettingsResp
         return _provider_settings_response(load_provider_configuration(instructor_id))
     except ProviderNotFound as exc:
         raise ResourceNotFound("The instructor could not be found.") from exc
+
+
+def list_coach_clients(instructor_id: str) -> CoachClientListResponse:
+    configuration = _client_read_provider_configuration(instructor_id)
+    clients = db.list_client_profiles_for_instructor(instructor_id)
+    return CoachClientListResponse(
+        clients=[
+            _client_profile_response(client, configuration)
+            for client in clients
+        ]
+    )
+
+
+def get_coach_client(
+    instructor_id: str,
+    client_id: str,
+) -> CoachClientProfileResponse:
+    configuration = _client_read_provider_configuration(instructor_id)
+    client = db.get_client_profile_for_instructor(instructor_id, client_id)
+    if client is None:
+        raise ResourceNotFound("The client could not be found.")
+    return _client_profile_response(client, configuration)
+
+
+def _client_read_provider_configuration(
+    instructor_id: str,
+) -> ProviderConfiguration:
+    try:
+        return load_provider_configuration(instructor_id)
+    except ProviderNotFound as exc:
+        raise ResourceNotFound("The instructor could not be found.") from exc
+
+
+def _client_profile_response(
+    client: dict,
+    configuration: ProviderConfiguration,
+) -> CoachClientProfileResponse:
+    client_location = _client_profile_location_response(client)
+    effective_location = client_location
+    if client["location_mode"] == "service_location":
+        effective_location = _client_service_location_response(
+            configuration.service_location
+        )
+    return CoachClientProfileResponse(
+        id=client["id"],
+        name=client["name"],
+        phone=_optional_contact(client["phone"]),
+        email=_optional_contact(client["email"]),
+        notes=client["notes"],
+        location_mode=client["location_mode"],
+        client_location=client_location,
+        effective_location=effective_location,
+        default_duration_mins=client["default_duration_mins"],
+        availability=[
+            CoachClientAvailabilityWindowResponse(
+                id=window["id"],
+                days=[
+                    weekday
+                    for index, weekday in enumerate(WEEKDAY_NAMES)
+                    if window["day_mask"] & (1 << index)
+                ],
+                start_time=window["start_time"].strftime("%H:%M"),
+                end_time=window["end_time"].strftime("%H:%M"),
+            )
+            for window in client["availability"]
+        ],
+        revision=client["revision"],
+    )
+
+
+def _client_profile_location_response(
+    client: dict,
+) -> Optional[CoachClientLocationResponse]:
+    if (
+        client["default_location_address"] is None
+        or client["default_lat"] is None
+        or client["default_lng"] is None
+    ):
+        return None
+    return CoachClientLocationResponse(
+        address=client["default_location_address"],
+        lat=client["default_lat"],
+        lng=client["default_lng"],
+    )
+
+
+def _client_service_location_response(
+    location: Optional[ProviderLocation],
+) -> Optional[CoachClientLocationResponse]:
+    if location is None:
+        return None
+    return CoachClientLocationResponse(
+        address=location.address,
+        lat=location.lat,
+        lng=location.lng,
+    )
+
+
+def _optional_contact(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
 
 
 def update_coach_provider_settings(

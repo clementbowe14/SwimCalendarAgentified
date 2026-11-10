@@ -293,6 +293,39 @@ class CoachScheduleResponse(BaseModel):
     appointments: list[AppointmentResponse]
 
 
+class CoachClientLocationResponse(BaseModel):
+    address: str
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
+
+
+class CoachClientAvailabilityWindowResponse(BaseModel):
+    id: str
+    days: list[ProviderWeekday] = Field(min_length=1, max_length=7)
+    start_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    end_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+
+
+class CoachClientProfileResponse(BaseModel):
+    id: str
+    name: str
+    phone: Optional[str]
+    email: Optional[str]
+    notes: str
+    location_mode: Literal["client_location", "service_location"]
+    client_location: Optional[CoachClientLocationResponse]
+    effective_location: Optional[CoachClientLocationResponse]
+    default_duration_mins: int = Field(ge=15, le=240, multiple_of=15)
+    availability: list[CoachClientAvailabilityWindowResponse] = Field(
+        default_factory=list
+    )
+    revision: int = Field(ge=1)
+
+
+class CoachClientListResponse(BaseModel):
+    clients: list[CoachClientProfileResponse]
+
+
 class CoachAvailabilityWindow(BaseModel):
     id: str
     days: list[str]

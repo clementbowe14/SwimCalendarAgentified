@@ -15,6 +15,8 @@ from app.api_schemas import (
     BookLessonResponse,
     CoachAuthResponse,
     CoachBlockerResponse,
+    CoachClientListResponse,
+    CoachClientProfileResponse,
     CoachCommandCenterSnapshot,
     CoachEmailDeliveryResponse,
     CoachLessonRequestConfirmResponse,
@@ -29,6 +31,39 @@ def build_contract_artifacts() -> dict[str, Any]:
     coach_settings_fixture = _coach_settings_fixture()
     coach_scheduling_policy_fixture = _coach_scheduling_policy_fixture()
     coach_provider_fixture = _coach_provider_fixture()
+    coach_client_fixture = CoachClientProfileResponse.model_validate(
+        {
+            "id": "client_sofia",
+            "name": "Sofia Martinez",
+            "phone": "(512) 555-0194",
+            "email": "ana.martinez@example.com",
+            "notes": "Prefers weekday afternoons.",
+            "location_mode": "client_location",
+            "client_location": {
+                "address": "820 Lakeview Dr, Austin, TX",
+                "lat": 30.289,
+                "lng": -97.739,
+            },
+            "effective_location": {
+                "address": "820 Lakeview Dr, Austin, TX",
+                "lat": 30.289,
+                "lng": -97.739,
+            },
+            "default_duration_mins": 45,
+            "availability": [
+                {
+                    "id": "availability_weekday",
+                    "days": ["monday", "wednesday", "friday"],
+                    "start_time": "16:00",
+                    "end_time": "19:00",
+                }
+            ],
+            "revision": 1,
+        }
+    ).model_dump(mode="json")
+    coach_clients_fixture = CoachClientListResponse.model_validate(
+        {"clients": [coach_client_fixture]}
+    ).model_dump(mode="json")
     coach_email_delivery = CoachEmailDeliveryResponse.model_validate(
         {
             "id": "delivery_contract_confirmation_email",
@@ -328,6 +363,8 @@ def build_contract_artifacts() -> dict[str, Any]:
         "fixtures/coach/settings.json": coach_settings_fixture,
         "fixtures/coach/scheduling_policy.json": coach_scheduling_policy_fixture,
         "fixtures/coach/provider.json": coach_provider_fixture,
+        "fixtures/coach/client.json": coach_client_fixture,
+        "fixtures/coach/clients.json": coach_clients_fixture,
         "fixtures/coach/command_center_snapshot.json": _coach_command_center_snapshot_fixture(
             coach_settings_fixture,
             coach_scheduling_policy_fixture,
@@ -594,6 +631,12 @@ default duration, and weekly hours use authenticated `GET /api/coach/provider` a
 `PUT /api/coach/scheduling-policy`. The deprecated `GET /api/coach/settings` response remains for
 read compatibility, while its legacy `PUT` returns 410 and cannot mutate policy or payment data.
 Public invite payloads expose only the service location, never the private base.
+
+Canonical active client profiles use authenticated `GET /api/coach/clients` and
+`GET /api/coach/clients/{client_id}`. These reads expose persisted contact details, notes, generic
+location mode, client availability, duration, and revision without changing the legacy
+command-center client projection. Unknown, deactivated, and cross-provider IDs share one generic
+not-found response.
 
 Provider-managed breaks, personal events, and unavailable windows use authenticated
 `GET /api/coach/blockers`, `POST /api/coach/blockers`, and
