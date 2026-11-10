@@ -59,6 +59,7 @@ def test_openapi_contract_includes_public_and_coach_routes():
     openapi = _load_json(CONTRACT_ROOT / "openapi.json")
     paths = set(openapi["paths"].keys())
 
+    assert "/ready" in paths
     assert "/api/public/client-invites/{token}" in paths
     assert "/api/public/client-invites/{token}/slots" in paths
     assert "/api/public/lesson-requests/{request_token}/calendar-links" in paths
@@ -111,6 +112,8 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/public/command-center/snapshot" not in paths
     assert "/api/public/settings" not in paths
     assert "/api/public/provider" not in paths
+    routing_readiness = openapi["components"]["schemas"]["RoutingReadinessResponse"]
+    assert set(routing_readiness["required"]) == {"provider", "mode", "configured"}
 
     sign_in = openapi["paths"]["/api/auth/coach/sign-in"]["post"]
     login_alias = openapi["paths"]["/api/auth/coach/login"]["post"]
@@ -146,7 +149,7 @@ def test_openapi_uses_cookie_security_only_for_provider_routes():
                 continue
             if path.startswith("/api/coach/") or path == "/api/auth/coach/session":
                 assert {cookie_scheme: []} in operation.get("security", []), (method, path)
-            if path.startswith("/api/public/") or path in {"/health", "/openapi.json"}:
+            if path.startswith("/api/public/") or path in {"/health", "/ready", "/openapi.json"}:
                 assert not operation.get("security"), (method, path)
 
 

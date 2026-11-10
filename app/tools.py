@@ -1,4 +1,5 @@
 import datetime
+import threading
 from typing import List, Optional
 
 from app import db, timezones
@@ -36,16 +37,32 @@ def _build_default_routing_provider():
         return UnconfiguredRoutingProvider(exc)
 
 
-routing_provider = _build_default_routing_provider()
+_routing_provider_lock = threading.RLock()
+_default_routing_provider = _build_default_routing_provider()
+routing_provider = _default_routing_provider
+_routing_provider_overridden = False
 
 
 def configure_routing_provider(provider):
-    global routing_provider
-    routing_provider = provider
+    global routing_provider, _routing_provider_overridden
+    with _routing_provider_lock:
+        routing_provider = provider
+        _routing_provider_overridden = True
+
+
+def configure_default_routing_provider(provider):
+    global routing_provider, _default_routing_provider
+    with _routing_provider_lock:
+        _default_routing_provider = provider
+        if not _routing_provider_overridden:
+            routing_provider = provider
 
 
 def reset_routing_provider():
-    configure_routing_provider(_build_default_routing_provider())
+    global routing_provider, _routing_provider_overridden
+    with _routing_provider_lock:
+        _routing_provider_overridden = False
+        routing_provider = _default_routing_provider
 
 
 def find_available_swim_slots(

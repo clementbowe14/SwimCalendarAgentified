@@ -25,6 +25,20 @@ def test_health_endpoint(client):
     assert response.json() == {"status": "ok"}
 
 
+def test_readiness_exposes_credential_safe_routing_state(client):
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ready",
+        "routing": {
+            "provider": "haversine",
+            "mode": "synthetic",
+            "configured": True,
+        },
+    }
+
+
 def test_coach_can_search_availability(client):
     response = client.post(
         "/api/coach/availability",

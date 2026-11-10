@@ -7,7 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 
-from app import db
+from app import db, tools
 from app.api_errors import (
     ApiException,
     AuthenticationRequired,
@@ -21,9 +21,10 @@ from app.auth import (
     SESSION_COOKIE_NAME,
     validate_coach_session,
 )
-from app.config import application_settings_from_env
+from app.config import application_settings_from_env, routing_settings_from_env
 from app.dependencies import require_csrf_protection
 from app.routes import auth, coach, health, public
+from app.routing_service import build_routing_provider
 
 
 UNSAFE_PROVIDER_METHODS = {"post", "put", "patch", "delete"}
@@ -50,6 +51,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = application_settings_from_env()
+    routing_settings = routing_settings_from_env(settings.environment)
+    routing_provider = build_routing_provider(routing_settings)
+    tools.configure_default_routing_provider(routing_provider)
     app = FastAPI(
         title="Swim Command Local API",
         version="0.1.0",
@@ -57,6 +61,11 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
+    app.state.routing_readiness = {
+        "provider": routing_provider.provider_name,
+        "mode": "external" if routing_provider.provider_name == "mapbox" else "synthetic",
+        "configured": True,
+    }
 
     app.add_exception_handler(ApiException, api_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)

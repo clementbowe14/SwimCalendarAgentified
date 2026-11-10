@@ -107,6 +107,8 @@ def test_production_cookie_is_secure_and_cannot_be_disabled(
     monkeypatch.setenv("SWIM_ENABLE_DEMO_DATA", "false")
     monkeypatch.setenv("SWIM_ENABLE_DEMO_AUTH", "false")
     monkeypatch.setenv("SWIM_API_CORS_ORIGINS", "https://command.example.com")
+    monkeypatch.setenv("SWIM_ROUTING_PROVIDER", "mapbox")
+    monkeypatch.setenv("SWIM_MAPBOX_ACCESS_TOKEN", "production-test-token")
     monkeypatch.delenv("SWIM_COACH_COOKIE_SECURE", raising=False)
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         response = _sign_in(
@@ -800,6 +802,8 @@ def test_deployed_startup_rejects_persisted_demo_artifacts(
     monkeypatch.setenv("SWIM_API_CORS_ORIGINS", "https://command.example.com")
     monkeypatch.setenv("SWIM_ENABLE_DEMO_DATA", "false")
     monkeypatch.setenv("SWIM_ENABLE_DEMO_AUTH", "false")
+    monkeypatch.setenv("SWIM_ROUTING_PROVIDER", "mapbox")
+    monkeypatch.setenv("SWIM_MAPBOX_ACCESS_TOKEN", "deployed-test-token")
     with pytest.raises(RuntimeError, match="Demo authentication or invite artifacts"):
         with TestClient(create_app(), raise_server_exceptions=False):
             pass

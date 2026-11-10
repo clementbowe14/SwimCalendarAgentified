@@ -13,6 +13,17 @@ class HealthResponse(BaseModel):
     status: Literal["ok"]
 
 
+class RoutingReadinessResponse(BaseModel):
+    provider: Literal["haversine", "mapbox"]
+    mode: Literal["synthetic", "external"]
+    configured: Literal[True]
+
+
+class ReadinessResponse(BaseModel):
+    status: Literal["ready"]
+    routing: RoutingReadinessResponse
+
+
 class CoachContext(BaseModel):
     instructor_id: str
     display_name: str
