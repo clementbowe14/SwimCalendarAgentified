@@ -15,9 +15,15 @@ PREVIOUS_REVISION = "20261110_0012"
 CLIENT_PROFILE_REVISION = "20261110_0013"
 
 
-@pytest.fixture()
-def database_at_previous_revision(monkeypatch):
+@pytest.fixture(autouse=True)
+def use_test_database_for_alembic(monkeypatch):
+    # migrations/env.py intentionally prioritizes SWIM_DATABASE_URL over the
+    # Alembic config value. Pin it here because CI exports the application DB URL.
     monkeypatch.setenv("SWIM_DATABASE_URL", TEST_DATABASE_URL)
+
+
+@pytest.fixture()
+def database_at_previous_revision():
     reset_postgres_database(seed=False)
     command.downgrade(_config(), PREVIOUS_REVISION)
     db.configure_database(TEST_DATABASE_URL)
