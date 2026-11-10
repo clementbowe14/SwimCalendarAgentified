@@ -32,9 +32,13 @@ const serverEnvelope: ClientInviteEnvelope = {
 
 test("delayed HTTP bootstrap remains neutral and fixture-free until server data arrives", async ({ page }) => {
   let releaseResponse: () => void = () => undefined;
+  const submittedIntakes: ClientInviteEnvelope["intake"][] = [];
   const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
   await page.route(apiPattern, async (route) => {
     await responseGate;
+    if (route.request().method() === "POST") {
+      submittedIntakes.push(route.request().postDataJSON() as ClientInviteEnvelope["intake"]);
+    }
     await route.fulfill({ json: serverEnvelope });
   });
 
@@ -52,7 +56,38 @@ test("delayed HTTP bootstrap remains neutral and fixture-free until server data 
   await page.getByRole("button", { name: "Facility" }).click();
   await expect(page.getByLabel("Preferred facility")).toHaveValue("500 Provider Plaza");
   await expect(page.getByLabel("Preferred facility")).toHaveAttribute("readonly", "");
+  await page.getByRole("button", { name: "Home pool" }).click();
+  await expect(page.getByLabel("Home pool address")).toHaveValue("42 Server Lane");
+  await page.getByRole("button", { name: "Continue to availability" }).click();
+  await expect(page.getByRole("heading", { name: "Choose your open windows" })).toBeVisible();
+  expect(submittedIntakes.at(-1)?.location).toEqual({
+    address: "42 Server Lane",
+    lat: 30.2,
+    lng: -97.7,
+    is_instructor_facility: false,
+  });
   await expectNoMockFixtureText(page);
+});
+
+test("facility selection submits the configured facility coordinates and flag", async ({ page }) => {
+  const submittedIntakes: ClientInviteEnvelope["intake"][] = [];
+  await page.route(apiPattern, async (route) => {
+    if (route.request().method() === "POST") {
+      submittedIntakes.push(route.request().postDataJSON() as ClientInviteEnvelope["intake"]);
+    }
+    await route.fulfill({ json: serverEnvelope });
+  });
+
+  await page.goto("/?invite_token=server-invite-token");
+  await page.getByRole("button", { name: "Facility" }).click();
+  await page.getByRole("button", { name: "Continue to availability" }).click();
+  await expect(page.getByRole("heading", { name: "Choose your open windows" })).toBeVisible();
+  expect(submittedIntakes.at(-1)?.location).toEqual({
+    address: "500 Provider Plaza",
+    lat: 30.25,
+    lng: -97.75,
+    is_instructor_facility: true,
+  });
 });
 
 test("missing HTTP invite token shows an invalid-link state without making a request", async ({ page }) => {

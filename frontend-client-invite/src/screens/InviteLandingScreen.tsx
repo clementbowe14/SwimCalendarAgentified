@@ -1,4 +1,5 @@
 import { DrawingPinIcon, EnvelopeClosedIcon, HomeIcon } from "@radix-ui/react-icons";
+import { useRef } from "react";
 import type { ClientIntake, LessonLocationType } from "../api/types";
 import { SectionCard } from "../components/SectionCard";
 import { ToggleButton } from "../components/ToggleButton";
@@ -24,6 +25,12 @@ export function InviteLandingScreen({
   onContinue,
   saving,
 }: InviteLandingScreenProps) {
+  const homeLocationDraft = useRef({
+    ...(intake.location_type === "home"
+      ? intake.location
+      : { address: "", lat: null, lng: null, is_instructor_facility: false }),
+    is_instructor_facility: false,
+  });
   const needsHomePoolAddress =
     intake.location_type === "home" && intake.location.address === HOME_POOL_ADDRESS_PROMPT;
 
@@ -32,21 +39,24 @@ export function InviteLandingScreen({
   };
 
   const updateLocationType = (type: LessonLocationType) => {
+    if (type === intake.location_type) return;
+
+    if (intake.location_type === "home") {
+      homeLocationDraft.current = { ...intake.location, is_instructor_facility: false };
+    }
+
     onChange({
       ...intake,
       location_type: type,
-      location: {
-        ...intake.location,
-        address:
-          type === "facility"
-            ? serviceLocation?.address ?? "Facility unavailable"
-            : type === intake.location_type
-              ? intake.location.address
-              : "",
-        lat: type === "facility" ? serviceLocation?.lat ?? null : null,
-        lng: type === "facility" ? serviceLocation?.lng ?? null : null,
-        is_instructor_facility: type === "facility",
-      },
+      location:
+        type === "facility"
+          ? {
+              address: serviceLocation?.address ?? "Facility unavailable",
+              lat: serviceLocation?.lat ?? null,
+              lng: serviceLocation?.lng ?? null,
+              is_instructor_facility: true,
+            }
+          : { ...homeLocationDraft.current, is_instructor_facility: false },
     });
   };
 
@@ -96,15 +106,18 @@ export function InviteLandingScreen({
             placeholder={intake.location_type === "home" ? HOME_POOL_ADDRESS_PROMPT : undefined}
             required={intake.location_type === "home"}
             readOnly={intake.location_type === "facility"}
-            onChange={(event) =>
+            onChange={(event) => {
+              const location = {
+                ...intake.location,
+                address: event.target.value,
+                is_instructor_facility: false,
+              };
+              homeLocationDraft.current = location;
               onChange({
                 ...intake,
-                location: {
-                  ...intake.location,
-                  address: event.target.value,
-                },
-              })
-            }
+                location,
+              });
+            }}
           />
           {intake.location_type === "facility" && serviceName ? <small>{serviceName}</small> : null}
         </label>
