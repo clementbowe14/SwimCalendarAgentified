@@ -1,6 +1,6 @@
 import pytest
 
-from app.config import routing_settings_from_env
+from app.config import RoutingSettings, routing_settings_from_env
 from app.routing import HaversineRoutingProvider, RoutingProviderNotConfigured
 from app.routing_cache import CachingRoutingProvider
 from app.routing_providers import MapboxRoutingProvider
@@ -46,6 +46,104 @@ def test_mapbox_provider_can_be_selected_by_configuration(monkeypatch):
     provider = build_routing_provider(routing_settings_from_env())
 
     assert isinstance(provider, MapboxRoutingProvider)
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+@pytest.mark.parametrize("provider_name", ["haversine", "mock", "local"])
+def test_deployed_environments_reject_synthetic_routing(monkeypatch, environment, provider_name):
+    monkeypatch.setenv("SWIM_ENV", environment)
+    monkeypatch.setenv("SWIM_ROUTING_PROVIDER", provider_name)
+
+    with pytest.raises(RoutingProviderNotConfigured, match="external routing provider"):
+        routing_settings_from_env()
+
+
+def test_production_rejects_implicit_haversine_default(monkeypatch):
+    monkeypatch.setenv("SWIM_ENV", "production")
+    monkeypatch.delenv("SWIM_ROUTING_PROVIDER", raising=False)
+
+    with pytest.raises(RoutingProviderNotConfigured, match="external routing provider"):
+        routing_settings_from_env()
+
+
+def test_production_mapbox_requires_non_whitespace_credentials(monkeypatch):
+    monkeypatch.setenv("SWIM_ENV", "production")
+    monkeypatch.setenv("SWIM_ROUTING_PROVIDER", "mapbox")
+    monkeypatch.setenv("SWIM_MAPBOX_ACCESS_TOKEN", "   ")
+
+    with pytest.raises(RoutingProviderNotConfigured, match="SWIM_MAPBOX_ACCESS_TOKEN"):
+        build_routing_provider(routing_settings_from_env())
+
+
+def test_production_mapbox_builds_with_configured_credentials(monkeypatch):
+    monkeypatch.setenv("SWIM_ENV", "production")
+    monkeypatch.setenv("SWIM_ROUTING_PROVIDER", "mapbox")
+    monkeypatch.setenv("SWIM_MAPBOX_ACCESS_TOKEN", "configured-token")
+
+    provider = build_routing_provider(routing_settings_from_env())
+
+    assert isinstance(provider, MapboxRoutingProvider)
+
+
+def test_provider_builder_defends_against_synthetic_deployed_settings():
+    settings = RoutingSettings(environment="production", provider="haversine")
+
+    with pytest.raises(RoutingProviderNotConfigured, match="external routing provider"):
+        build_routing_provider(settings)
+
+
+def test_routing_settings_preserve_existing_positional_provider_construction():
+    settings = RoutingSettings("mapbox", mapbox_access_token="configured-token")
+
+    provider = build_routing_provider(settings)
+
+    assert isinstance(provider, MapboxRoutingProvider)
+
+
+def test_explicit_mapbox_settings_reject_whitespace_credentials():
+    settings = RoutingSettings(provider="mapbox", mapbox_access_token="   ")
+
+    with pytest.raises(RoutingProviderNotConfigured, match="SWIM_MAPBOX_ACCESS_TOKEN"):
+        build_routing_provider(settings)
+
+
+@pytest.mark.parametrize("value", ["not-a-timeout", float("nan"), float("inf")])
+def test_explicit_routing_settings_reject_malformed_timeout(value):
+    settings = RoutingSettings(timeout_seconds=value)
+
+    with pytest.raises(RoutingProviderNotConfigured, match="timeout"):
+        build_routing_provider(settings)
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_non_finite_routing_timeout_fails_closed(monkeypatch, value):
+    monkeypatch.setenv("SWIM_ROUTING_TIMEOUT_SECONDS", value)
+
+    with pytest.raises(RoutingProviderNotConfigured, match="timeout"):
+        routing_settings_from_env()
+
+
+@pytest.mark.parametrize("value", ["sometimes", "enabled", "2"])
+def test_invalid_route_cache_boolean_fails_closed(monkeypatch, value):
+    monkeypatch.setenv("SWIM_ROUTE_CACHE_ENABLED", value)
+
+    with pytest.raises(RoutingProviderNotConfigured, match="boolean"):
+        routing_settings_from_env()
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("SWIM_ROUTING_TIMEOUT_SECONDS", "soon", "timeout"),
+        ("SWIM_ROUTE_CACHE_TTL_HOURS", "tomorrow", "integer"),
+        ("SWIM_ROUTE_DEPARTURE_BUCKET_MINUTES", "quarter-hour", "integer"),
+    ],
+)
+def test_malformed_numeric_routing_settings_use_configuration_error(monkeypatch, name, value, message):
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(RoutingProviderNotConfigured, match=message):
+        routing_settings_from_env()
 
 
 def test_configured_cache_wraps_selected_provider(monkeypatch):

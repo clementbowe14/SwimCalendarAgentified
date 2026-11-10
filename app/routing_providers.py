@@ -33,9 +33,9 @@ class MapboxRoutingProvider(BaseRoutingProvider):
         timeout_seconds: float = 3.0,
         fetch_json: Optional[JsonFetcher] = None,
     ):
-        if not access_token:
+        if not access_token or not access_token.strip():
             raise RoutingProviderNotConfigured("SWIM_MAPBOX_ACCESS_TOKEN is required for Mapbox routing.")
-        self.access_token = access_token
+        self.access_token = access_token.strip()
         self.timeout_seconds = timeout_seconds
         self._fetch_json = fetch_json or self._urllib_fetch_json
 

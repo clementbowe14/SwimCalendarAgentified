@@ -1,3 +1,4 @@
+import math
 import os
 from dataclasses import dataclass
 from typing import Optional
@@ -39,6 +40,7 @@ class RoutingSettings:
     route_cache_ttl_hours: int = 24
     departure_bucket_minutes: int = 15
     mapbox_access_token: Optional[str] = None
+    environment: str = "local"
 
 
 @dataclass(frozen=True)
@@ -130,41 +132,77 @@ def application_settings_from_env() -> ApplicationSettings:
     )
 
 
-def routing_settings_from_env() -> RoutingSettings:
+def routing_settings_from_env(environment: Optional[str] = None) -> RoutingSettings:
+    resolved_environment = (
+        environment if environment is not None else os.getenv("SWIM_ENV", "local")
+    ).strip().lower()
     provider = os.getenv("SWIM_ROUTING_PROVIDER", "haversine").strip().lower()
     traffic_mode = os.getenv("SWIM_ROUTING_TRAFFIC_MODE", "none").strip().lower()
-    timeout_seconds = _float_env("SWIM_ROUTING_TIMEOUT_SECONDS", 3.0)
-    route_cache_enabled = _bool_env("SWIM_ROUTE_CACHE_ENABLED", False)
-    route_cache_ttl_hours = _int_env("SWIM_ROUTE_CACHE_TTL_HOURS", 24)
-    departure_bucket_minutes = _int_env("SWIM_ROUTE_DEPARTURE_BUCKET_MINUTES", 15)
+    timeout_seconds = _routing_float_env("SWIM_ROUTING_TIMEOUT_SECONDS", 3.0)
+    route_cache_enabled = _routing_bool_env("SWIM_ROUTE_CACHE_ENABLED", False)
+    route_cache_ttl_hours = _routing_int_env("SWIM_ROUTE_CACHE_TTL_HOURS", 24)
+    departure_bucket_minutes = _routing_int_env("SWIM_ROUTE_DEPARTURE_BUCKET_MINUTES", 15)
 
+    if resolved_environment not in SUPPORTED_ENVIRONMENTS:
+        raise RoutingProviderNotConfigured("Unsupported routing environment.")
     if provider not in SUPPORTED_ROUTING_PROVIDERS:
         raise RoutingProviderNotConfigured("Unsupported routing provider.")
+    if resolved_environment in DEPLOYED_ENVIRONMENTS and provider != "mapbox":
+        raise RoutingProviderNotConfigured(
+            "Staging and production require an external routing provider."
+        )
     if traffic_mode not in SUPPORTED_TRAFFIC_MODES:
         raise RoutingProviderNotConfigured("Unsupported routing traffic mode.")
-    if timeout_seconds <= 0:
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise RoutingProviderNotConfigured("Routing timeout must be positive.")
     if route_cache_enabled and route_cache_ttl_hours <= 0:
         raise RoutingProviderNotConfigured("Route cache TTL must be positive.")
     if route_cache_enabled and departure_bucket_minutes <= 0:
         raise RoutingProviderNotConfigured("Route cache departure bucket must be positive.")
 
+    configured_mapbox_token = os.getenv("SWIM_MAPBOX_ACCESS_TOKEN")
+    mapbox_access_token = (
+        configured_mapbox_token.strip()
+        if configured_mapbox_token and configured_mapbox_token.strip()
+        else None
+    )
+
     return RoutingSettings(
+        environment=resolved_environment,
         provider=provider,
         traffic_mode=traffic_mode,
         timeout_seconds=timeout_seconds,
         route_cache_enabled=route_cache_enabled,
         route_cache_ttl_hours=route_cache_ttl_hours,
         departure_bucket_minutes=departure_bucket_minutes,
-        mapbox_access_token=os.getenv("SWIM_MAPBOX_ACCESS_TOKEN"),
+        mapbox_access_token=mapbox_access_token,
     )
 
 
-def _bool_env(name: str, default: bool) -> bool:
+def _routing_bool_env(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RoutingProviderNotConfigured("Route cache enabled must be a boolean.")
+
+
+def _routing_int_env(name: str, default: int) -> int:
+    try:
+        return _int_env(name, default)
+    except ValueError as exc:
+        raise RoutingProviderNotConfigured("Routing integer setting is invalid.") from exc
+
+
+def _routing_float_env(name: str, default: float) -> float:
+    try:
+        return _float_env(name, default)
+    except ValueError as exc:
+        raise RoutingProviderNotConfigured("Routing timeout is invalid.") from exc
 
 
 def _strict_bool_env(name: str, default: bool) -> bool:

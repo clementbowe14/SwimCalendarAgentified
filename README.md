@@ -204,6 +204,16 @@ Local development uses the deterministic Haversine routing provider by default:
 SWIM_ROUTING_PROVIDER=haversine
 ```
 
+Staging and production fail startup unless Mapbox is selected with a non-empty
+access token. Synthetic `haversine`, `mock`, and `local` providers are restricted
+to local, development, and test environments:
+
+```bash
+SWIM_ENV=production SWIM_ROUTING_PROVIDER=mapbox SWIM_MAPBOX_ACCESS_TOKEN=... \
+  SWIM_API_CORS_ORIGINS=https://scheduler.example.com \
+  ./venv/bin/uvicorn app.api:app --host 127.0.0.1 --port 8000
+```
+
 To use Mapbox for geocoding and route estimates, set:
 
 ```bash
@@ -223,6 +233,11 @@ Routing configuration values are validated at startup/request time. Unsupported
 providers or traffic modes, missing Mapbox credentials, and non-positive
 timeouts/cache windows return a stable `ROUTING_CONFIGURATION_ERROR` from API
 availability endpoints.
+
+`GET /ready` reports the validated routing provider and whether it is synthetic
+or external without exposing credentials. It is a configuration-readiness
+check, not an outbound Mapbox availability probe. `GET /health` remains the
+backward-compatible process health endpoint.
 
 When route caching is enabled, route estimates are cached by provider, rounded
 origin/destination coordinates, UTC departure bucket, and traffic mode.

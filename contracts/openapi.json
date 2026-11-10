@@ -2745,6 +2745,56 @@
         "title": "PublicRequestStatusResponse",
         "type": "object"
       },
+      "ReadinessResponse": {
+        "properties": {
+          "routing": {
+            "$ref": "#/components/schemas/RoutingReadinessResponse"
+          },
+          "status": {
+            "const": "ready",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "routing"
+        ],
+        "title": "ReadinessResponse",
+        "type": "object"
+      },
+      "RoutingReadinessResponse": {
+        "properties": {
+          "configured": {
+            "const": true,
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "mode": {
+            "enum": [
+              "synthetic",
+              "external"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "provider": {
+            "enum": [
+              "haversine",
+              "mapbox"
+            ],
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "mode",
+          "configured"
+        ],
+        "title": "RoutingReadinessResponse",
+        "type": "object"
+      },
       "TimeSlotResponse": {
         "properties": {
           "buffer_mins": {
@@ -4729,6 +4779,27 @@
           }
         },
         "summary": "Health",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/ready": {
+      "get": {
+        "operationId": "readiness_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readiness",
         "tags": [
           "health"
         ]
