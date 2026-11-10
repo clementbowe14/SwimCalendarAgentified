@@ -16,10 +16,12 @@ ISSUE_47_REVISION = "20261109_0011"
 @pytest.fixture()
 def database_at_issue55(monkeypatch):
     monkeypatch.setenv("SWIM_DATABASE_URL", TEST_DATABASE_URL)
-    reset_postgres_database(seed=False)
+    # Seed while the database matches the current ORM, then exercise the historical
+    # migration boundary. Current models intentionally include columns unavailable at
+    # the older revision under test.
+    reset_postgres_database(seed=True)
     command.downgrade(_alembic_config(), ISSUE_55_REVISION)
     db.configure_database(TEST_DATABASE_URL)
-    db.init_db()
     try:
         yield
     finally:
