@@ -3,7 +3,7 @@ import json
 import os
 import uuid
 from typing import Optional, List
-from sqlalchemy import create_engine, or_, text
+from sqlalchemy import create_engine, inspect, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from app import timezones
@@ -85,71 +85,7 @@ def seed_data():
         session.add(instructor)
         session.commit()
 
-        # Seed existing appointments & breaks for a sample date (e.g. today / 2026-08-20)
-        sample_date = datetime.date(2026, 8, 20)
-
-        # 1. Morning Lesson at North Pool (30.3300, -97.7200) -> ~5 miles
-        app1_start = timezones.to_utc_storage(
-            timezones.validate_local_datetime(
-                datetime.datetime.combine(sample_date, datetime.time(9, 0)),
-                instructor.timezone,
-            )
-        )
-        app1 = AppointmentDB(
-            id="app_101",
-            instructor_id="inst_001",
-            client_id="client_alice",
-            title="Lesson with Alice",
-            start_time=app1_start,
-            end_time=app1_start + datetime.timedelta(hours=1),
-            location_address="450 North Blvd, Austin, TX",
-            lat=30.3300,
-            lng=-97.7200,
-            is_break=False
-        )
-
-        # 2. Scheduled Lunch Break (12:00 PM - 1:00 PM) at Main Base
-        app2_start = timezones.to_utc_storage(
-            timezones.validate_local_datetime(
-                datetime.datetime.combine(sample_date, datetime.time(12, 0)),
-                instructor.timezone,
-            )
-        )
-        app2 = AppointmentDB(
-            id="app_break_1",
-            instructor_id="inst_001",
-            client_id="instructor_break",
-            title="Lunch Break",
-            start_time=app2_start,
-            end_time=app2_start + datetime.timedelta(hours=1),
-            location_address="100 Main St, Austin, TX",
-            lat=30.2672,
-            lng=-97.7431,
-            is_break=True
-        )
-
-        # 3. Afternoon Lesson at West Pool (30.2700, -97.8200) -> ~8 miles
-        app3_start = timezones.to_utc_storage(
-            timezones.validate_local_datetime(
-                datetime.datetime.combine(sample_date, datetime.time(14, 30)),
-                instructor.timezone,
-            )
-        )
-        app3 = AppointmentDB(
-            id="app_102",
-            instructor_id="inst_001",
-            client_id="client_bob",
-            title="Lesson with Bob",
-            start_time=app3_start,
-            end_time=app3_start + datetime.timedelta(hours=1),
-            location_address="800 West Lake Dr, Austin, TX",
-            lat=30.2700,
-            lng=-97.8200,
-            is_break=False
-        )
-
-        session.add_all([app1, app2, app3])
-        session.commit()
+        _seed_sample_appointments(session, instructor)
 
     if not session.query(ProviderWorkingHoursDB).filter_by(instructor_id="inst_001").first():
         session.add_all(
@@ -296,6 +232,129 @@ def seed_data():
         )
     session.commit()
     session.close()
+
+
+def _seed_sample_appointments(session, instructor: InstructorDB) -> None:
+    """Seed both current and historical schemas used by migration tests."""
+
+    sample_date = datetime.date(2026, 8, 20)
+    app1_start = timezones.to_utc_storage(
+        timezones.validate_local_datetime(
+            datetime.datetime.combine(sample_date, datetime.time(9, 0)),
+            instructor.timezone,
+        )
+    )
+    app2_start = timezones.to_utc_storage(
+        timezones.validate_local_datetime(
+            datetime.datetime.combine(sample_date, datetime.time(12, 0)),
+            instructor.timezone,
+        )
+    )
+    app3_start = timezones.to_utc_storage(
+        timezones.validate_local_datetime(
+            datetime.datetime.combine(sample_date, datetime.time(14, 30)),
+            instructor.timezone,
+        )
+    )
+    appointment_columns = {
+        column["name"] for column in inspect(session.get_bind()).get_columns("appointments")
+    }
+    if {"blocker_kind", "revision"}.issubset(appointment_columns):
+        session.add_all(
+            [
+                AppointmentDB(
+                    id="app_101",
+                    instructor_id="inst_001",
+                    client_id="client_alice",
+                    title="Lesson with Alice",
+                    start_time=app1_start,
+                    end_time=app1_start + datetime.timedelta(hours=1),
+                    location_address="450 North Blvd, Austin, TX",
+                    lat=30.3300,
+                    lng=-97.7200,
+                    is_break=False,
+                ),
+                AppointmentDB(
+                    id="app_break_1",
+                    instructor_id="inst_001",
+                    client_id=None,
+                    title="Lunch Break",
+                    start_time=app2_start,
+                    end_time=app2_start + datetime.timedelta(hours=1),
+                    location_address="100 Main St, Austin, TX",
+                    lat=30.2672,
+                    lng=-97.7431,
+                    is_break=True,
+                    event_type="block",
+                    blocker_kind="break",
+                ),
+                AppointmentDB(
+                    id="app_102",
+                    instructor_id="inst_001",
+                    client_id="client_bob",
+                    title="Lesson with Bob",
+                    start_time=app3_start,
+                    end_time=app3_start + datetime.timedelta(hours=1),
+                    location_address="800 West Lake Dr, Austin, TX",
+                    lat=30.2700,
+                    lng=-97.8200,
+                    is_break=False,
+                ),
+            ]
+        )
+    else:
+        session.execute(
+            text(
+                """
+                INSERT INTO appointments (
+                    id, instructor_id, client_id, title, start_time, end_time,
+                    location_address, lat, lng, is_break, event_type, status
+                ) VALUES (
+                    :id, 'inst_001', :client_id, :title, :start_time, :end_time,
+                    :location_address, :lat, :lng, :is_break, :event_type, 'scheduled'
+                )
+                """
+            ),
+            [
+                {
+                    "id": "app_101",
+                    "client_id": "client_alice",
+                    "title": "Lesson with Alice",
+                    "start_time": app1_start,
+                    "end_time": app1_start + datetime.timedelta(hours=1),
+                    "location_address": "450 North Blvd, Austin, TX",
+                    "lat": 30.3300,
+                    "lng": -97.7200,
+                    "is_break": False,
+                    "event_type": "lesson",
+                },
+                {
+                    "id": "app_break_1",
+                    "client_id": "instructor_break",
+                    "title": "Lunch Break",
+                    "start_time": app2_start,
+                    "end_time": app2_start + datetime.timedelta(hours=1),
+                    "location_address": "100 Main St, Austin, TX",
+                    "lat": 30.2672,
+                    "lng": -97.7431,
+                    "is_break": True,
+                    "event_type": "block",
+                },
+                {
+                    "id": "app_102",
+                    "client_id": "client_bob",
+                    "title": "Lesson with Bob",
+                    "start_time": app3_start,
+                    "end_time": app3_start + datetime.timedelta(hours=1),
+                    "location_address": "800 West Lake Dr, Austin, TX",
+                    "lat": 30.2700,
+                    "lng": -97.8200,
+                    "is_break": False,
+                    "event_type": "lesson",
+                },
+            ],
+        )
+    session.commit()
 
 
 def _reject_deployed_demo_artifacts() -> None:
@@ -673,6 +732,14 @@ class ScheduleConflictError(Exception):
 class IdempotencyKeyConflictError(Exception):
     pass
 
+
+class BlockerNotFoundError(Exception):
+    pass
+
+
+class BlockerStaleError(Exception):
+    pass
+
 def get_appointment_by_idempotency_key(
     instructor_id: str,
     idempotency_key: Optional[str],
@@ -755,8 +822,11 @@ def _appointment_to_dict(
         "lng": appointment.lng,
         "is_break": appointment.is_break,
         "event_type": appointment.event_type,
+        "blocker_kind": appointment.blocker_kind,
+        "revision": appointment.revision,
         "status": appointment.status,
         "idempotency_key": appointment.idempotency_key,
+        "blocker_create_payload": appointment.blocker_create_payload,
         "request_id": appointment.request_id,
     }
 
@@ -834,8 +904,8 @@ def save_appointment(
         new_app = AppointmentDB(
             id=app_id,
             instructor_id=instructor_id,
-            client_id=client_id,
-            request_id=request_id,
+            client_id=None if event_type == "block" else client_id,
+            request_id=None if event_type == "block" else request_id,
             title=title,
             start_time=start_time,
             end_time=end_time,
@@ -844,6 +914,7 @@ def save_appointment(
             lng=lng,
             is_break=event_type == "block",
             event_type=event_type,
+            blocker_kind="break" if event_type == "block" else None,
             status=status,
             idempotency_key=idempotency_key,
         )
@@ -873,3 +944,340 @@ def save_appointment(
         raise
     finally:
         session.close()
+
+
+def list_blockers_for_date(
+    instructor_id: str,
+    date_str: str,
+    timezone_name: str,
+) -> List[dict]:
+    rows = _get_appointment_rows_for_local_date(
+        instructor_id,
+        date_str,
+        timezone_name,
+    )
+    return [
+        _appointment_to_dict(row, timezone_name=timezone_name)
+        for row in rows
+        if row.event_type == "block"
+    ]
+
+
+def get_active_blocker(
+    instructor_id: str,
+    blocker_id: str,
+) -> Optional[dict]:
+    session = SessionLocal()
+    try:
+        blocker = (
+            session.query(AppointmentDB)
+            .filter(
+                AppointmentDB.id == blocker_id,
+                AppointmentDB.instructor_id == instructor_id,
+                AppointmentDB.event_type == "block",
+                AppointmentDB.status.in_(ACTIVE_APPOINTMENT_STATUSES),
+                AppointmentDB.cancelled_at.is_(None),
+            )
+            .one_or_none()
+        )
+        return _appointment_to_dict(blocker)
+    finally:
+        session.close()
+
+
+def get_blocker_creation_by_idempotency_key(
+    instructor_id: str,
+    idempotency_key: str,
+) -> Optional[dict]:
+    session = SessionLocal()
+    try:
+        appointment = _idempotent_appointment_or_conflict(
+            session,
+            instructor_id,
+            idempotency_key,
+        )
+        if appointment is None:
+            return None
+        replay = _blocker_creation_to_dict(appointment)
+        if replay is None:
+            raise IdempotencyKeyConflictError(
+                "The idempotency key was already used for a different mutation."
+            )
+        return replay
+    finally:
+        session.close()
+
+
+def create_blocker(
+    instructor_id: str,
+    *,
+    kind: str,
+    title: str,
+    start_time: datetime.datetime,
+    end_time: datetime.datetime,
+    location_address: Optional[str],
+    lat: Optional[float],
+    lng: Optional[float],
+    idempotency_key: str,
+    timezone_name: str,
+) -> dict:
+    start_storage = timezones.to_utc_storage(start_time)
+    end_storage = timezones.to_utc_storage(end_time)
+    session = SessionLocal()
+    try:
+        existing = (
+            session.query(AppointmentDB)
+            .filter_by(instructor_id=instructor_id, idempotency_key=idempotency_key)
+            .one_or_none()
+        )
+        if existing is not None:
+            replay = _blocker_creation_to_dict(existing)
+            if replay is None or not _blocker_creation_matches(
+                replay,
+                kind=kind,
+                title=title,
+                start_time=start_storage,
+                end_time=end_storage,
+                location_address=location_address,
+            ):
+                raise IdempotencyKeyConflictError(
+                    "Idempotency key was already used for a different mutation."
+                )
+            return replay
+
+        blocker = AppointmentDB(
+            id=f"app_{uuid.uuid4().hex[:8]}",
+            instructor_id=instructor_id,
+            client_id=None,
+            request_id=None,
+            title=title,
+            start_time=start_storage,
+            end_time=end_storage,
+            location_address=location_address,
+            lat=lat,
+            lng=lng,
+            is_break=kind == "break",
+            event_type="block",
+            blocker_kind=kind,
+            revision=1,
+            status="scheduled",
+            idempotency_key=idempotency_key,
+            blocker_create_payload=_blocker_creation_payload(
+                kind=kind,
+                title=title,
+                start_time=start_storage,
+                end_time=end_storage,
+                location_address=location_address,
+                lat=lat,
+                lng=lng,
+                timezone_name=timezone_name,
+            ),
+        )
+        session.add(blocker)
+        session.commit()
+        session.refresh(blocker)
+        return _appointment_to_dict(blocker, timezone_name=timezone_name)
+    except IntegrityError as exc:
+        session.rollback()
+        existing = (
+            session.query(AppointmentDB)
+            .filter_by(instructor_id=instructor_id, idempotency_key=idempotency_key)
+            .one_or_none()
+        )
+        if existing is not None:
+            replay = _blocker_creation_to_dict(existing)
+            if replay is not None and _blocker_creation_matches(
+                replay,
+                kind=kind,
+                title=title,
+                start_time=start_storage,
+                end_time=end_storage,
+                location_address=location_address,
+            ):
+                return replay
+            raise IdempotencyKeyConflictError(
+                "Idempotency key was already used for a different mutation."
+            ) from exc
+        if "exclude_appointments_active_overlap" in str(exc):
+            raise ScheduleConflictError(
+                "An active schedule item already occupies that time."
+            ) from exc
+        raise
+    finally:
+        session.close()
+
+
+def update_blocker(
+    instructor_id: str,
+    blocker_id: str,
+    *,
+    expected_revision: int,
+    kind: str,
+    title: str,
+    start_time: datetime.datetime,
+    end_time: datetime.datetime,
+    location_address: Optional[str],
+    lat: Optional[float],
+    lng: Optional[float],
+    timezone_name: str,
+) -> dict:
+    session = SessionLocal()
+    try:
+        blocker = (
+            session.query(AppointmentDB)
+            .filter(
+                AppointmentDB.id == blocker_id,
+                AppointmentDB.instructor_id == instructor_id,
+                AppointmentDB.event_type == "block",
+                AppointmentDB.status.in_(ACTIVE_APPOINTMENT_STATUSES),
+                AppointmentDB.cancelled_at.is_(None),
+            )
+            .with_for_update()
+            .one_or_none()
+        )
+        if blocker is None:
+            raise BlockerNotFoundError()
+        if blocker.revision != expected_revision:
+            raise BlockerStaleError()
+
+        blocker.blocker_kind = kind
+        blocker.title = title
+        blocker.start_time = timezones.to_utc_storage(start_time)
+        blocker.end_time = timezones.to_utc_storage(end_time)
+        blocker.location_address = location_address
+        blocker.lat = lat
+        blocker.lng = lng
+        blocker.is_break = kind == "break"
+        blocker.revision += 1
+        blocker.updated_at = datetime.datetime.utcnow()
+        session.flush()
+        session.commit()
+        session.refresh(blocker)
+        return _appointment_to_dict(blocker, timezone_name=timezone_name)
+    except IntegrityError as exc:
+        session.rollback()
+        if "exclude_appointments_active_overlap" in str(exc):
+            raise ScheduleConflictError(
+                "An active schedule item already occupies that time."
+            ) from exc
+        raise
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def delete_blocker(
+    instructor_id: str,
+    blocker_id: str,
+    *,
+    expected_revision: int,
+) -> None:
+    session = SessionLocal()
+    try:
+        blocker = (
+            session.query(AppointmentDB)
+            .filter(
+                AppointmentDB.id == blocker_id,
+                AppointmentDB.instructor_id == instructor_id,
+                AppointmentDB.event_type == "block",
+                AppointmentDB.status.in_(ACTIVE_APPOINTMENT_STATUSES),
+                AppointmentDB.cancelled_at.is_(None),
+            )
+            .with_for_update()
+            .one_or_none()
+        )
+        if blocker is None:
+            raise BlockerNotFoundError()
+        if blocker.revision != expected_revision:
+            raise BlockerStaleError()
+        now = datetime.datetime.utcnow()
+        blocker.status = "cancelled"
+        blocker.cancelled_at = now
+        blocker.updated_at = now
+        blocker.revision += 1
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _blocker_creation_payload(
+    *,
+    kind: str,
+    title: str,
+    start_time: datetime.datetime,
+    end_time: datetime.datetime,
+    location_address: Optional[str],
+    lat: Optional[float],
+    lng: Optional[float],
+    timezone_name: str,
+) -> dict:
+    return {
+        "kind": kind,
+        "title": title,
+        "start_time": start_time.isoformat(),
+        "end_time": end_time.isoformat(),
+        "location_address": location_address,
+        "lat": lat,
+        "lng": lng,
+        "timezone": timezone_name,
+    }
+
+
+def _blocker_creation_to_dict(appointment: AppointmentDB) -> Optional[dict]:
+    payload = appointment.blocker_create_payload
+    if appointment.event_type != "block" or not isinstance(payload, dict):
+        return None
+    try:
+        timezone_name = str(payload["timezone"])
+        start_storage = datetime.datetime.fromisoformat(str(payload["start_time"]))
+        end_storage = datetime.datetime.fromisoformat(str(payload["end_time"]))
+        start_time = timezones.storage_to_local(start_storage, timezone_name)
+        end_time = timezones.storage_to_local(end_storage, timezone_name)
+        kind = str(payload["kind"])
+        title = str(payload["title"])
+    except (KeyError, TypeError, ValueError, timezones.InvalidTimezoneError):
+        return None
+    return {
+        "id": appointment.id,
+        "instructor_id": appointment.instructor_id,
+        "client_id": None,
+        "title": title,
+        "start_time": start_time,
+        "end_time": end_time,
+        "location_address": payload.get("location_address"),
+        "lat": payload.get("lat"),
+        "lng": payload.get("lng"),
+        "is_break": kind == "break",
+        "event_type": "block",
+        "blocker_kind": kind,
+        "revision": 1,
+        "status": "scheduled",
+        "idempotency_key": appointment.idempotency_key,
+        "blocker_create_payload": payload,
+        "request_id": None,
+        "creation_timezone": timezone_name,
+    }
+
+
+def _blocker_creation_matches(
+    creation: dict,
+    *,
+    kind: str,
+    title: str,
+    start_time: datetime.datetime,
+    end_time: datetime.datetime,
+    location_address: Optional[str],
+) -> bool:
+    return (
+        creation["event_type"] == "block"
+        and creation["blocker_kind"] == kind
+        and creation["title"] == title
+        and timezones.to_utc_storage(creation["start_time"]) == start_time
+        and timezones.to_utc_storage(creation["end_time"]) == end_time
+        and creation["location_address"] == location_address
+    )

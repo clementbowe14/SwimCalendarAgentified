@@ -419,7 +419,7 @@ button {
 
 .agenda-row {
   display: grid;
-  grid-template-columns: 138px minmax(0, 1fr);
+  grid-template-columns: 138px minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
   min-height: 74px;
@@ -439,6 +439,16 @@ button {
 .agenda-row.break {
   border-left-color: var(--sun);
   background: #fff9eb;
+}
+
+.agenda-row.personal {
+  border-left-color: var(--teal);
+  background: #effcfa;
+}
+
+.agenda-row.unavailable {
+  border-left-color: #c34a5f;
+  background: #fff4f6;
 }
 
 .agenda-row.open {
@@ -472,6 +482,244 @@ button {
   background: #e8f4ff;
   font-size: 11px;
   font-weight: 900;
+}
+
+.schedule-hero-actions {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.agenda-edit-button {
+  align-self: center;
+  min-width: 64px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid rgba(7, 109, 228, 0.28);
+  border-radius: 8px;
+  color: var(--water);
+  background: #ffffff;
+  font-weight: 900;
+}
+
+.blocker-modal-backdrop {
+  display: flex;
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  align-items: end;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(2, 17, 39, 0.62);
+  backdrop-filter: blur(8px);
+}
+
+.blocker-editor-sheet {
+  width: min(100%, 720px);
+  max-height: calc(100dvh - 48px);
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid rgba(7, 109, 228, 0.18);
+  border-radius: 20px 20px 12px 12px;
+  background: #ffffff;
+  box-shadow: 0 28px 80px rgba(0, 27, 72, 0.3);
+  overscroll-behavior: contain;
+}
+
+.blocker-editor-heading {
+  display: flex;
+  gap: 18px;
+  align-items: start;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.blocker-editor-heading h2,
+.blocker-delete-confirmation h2 {
+  margin: 3px 0 8px;
+  color: var(--ink);
+  font-size: clamp(26px, 6vw, 38px);
+  line-height: 1;
+}
+
+.blocker-editor-heading p,
+.blocker-delete-confirmation p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.blocker-modal-close {
+  flex: 0 0 48px;
+  width: 48px;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--ink);
+  background: #f6fbff;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.blocker-editor-form,
+.blocker-delete-confirmation {
+  display: grid;
+  gap: 18px;
+}
+
+.blocker-kind-picker {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.blocker-kind-picker legend {
+  width: 100%;
+  margin-bottom: 8px;
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.blocker-kind-option {
+  display: grid;
+  position: relative;
+  gap: 4px;
+  min-height: 78px;
+  padding: 13px;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  background: #f8fbfe;
+}
+
+.blocker-kind-option.selected {
+  border-color: var(--water);
+  background: #eaf5ff;
+  box-shadow: 0 0 0 3px rgba(7, 109, 228, 0.1);
+}
+
+.blocker-kind-option input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.blocker-kind-option strong {
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.blocker-kind-option span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.blocker-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.blocker-field small {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.blocker-field input {
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  padding: 0 13px;
+  border: 1px solid rgba(17, 54, 88, 0.24);
+  border-radius: 9px;
+  color: var(--ink);
+  background: #ffffff;
+}
+
+.blocker-date-time-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr;
+  gap: 10px;
+}
+
+.blocker-editor-status {
+  min-height: 22px;
+  margin: 0;
+  color: #42627d;
+  font-weight: 800;
+}
+
+.blocker-editor-status.error {
+  color: #a5262d;
+}
+
+.blocker-editor-actions,
+.blocker-confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+.blocker-remove-action {
+  min-height: 48px;
+  padding: 0 16px;
+  border: 1px solid rgba(181, 31, 31, 0.34);
+  border-radius: 8px;
+  color: #a5262d;
+  background: #fff7f7;
+  font-weight: 900;
+}
+
+.blocker-editor-actions .primary-action {
+  min-width: 190px;
+  min-height: 48px;
+}
+
+.blocker-delete-confirmation {
+  justify-items: start;
+  padding: 8px 0;
+}
+
+.blocker-delete-mark,
+.blocker-discard-mark {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  color: #ffffff;
+  background: #c73542;
+  font-size: 32px;
+  font-weight: 900;
+}
+
+.blocker-discard-mark {
+  background: #b85f00;
+}
+
+.blocker-confirm-actions {
+  width: 100%;
+}
+
+.blocker-confirm-actions > * {
+  flex: 1;
+  min-height: 52px;
+}
+
+.blocker-editor-sheet :focus-visible,
+.agenda-edit-button:focus-visible {
+  outline: 3px solid rgba(7, 109, 228, 0.42);
+  outline-offset: 2px;
 }
 
 .finder-form,
@@ -1762,7 +2010,8 @@ select {
 
   .topbar,
   .hero-panel,
-  .rules-overview {
+  .rules-overview,
+  .schedule-hero-actions {
     align-items: stretch;
     flex-direction: column;
   }
@@ -1810,6 +2059,10 @@ select {
   .rule-row,
   .weekday-row {
     grid-template-columns: 1fr;
+  }
+
+  .agenda-edit-button {
+    width: 100%;
   }
 
   .setup-status-card {
@@ -1875,6 +2128,38 @@ select {
   .calendar-modal-backdrop {
     align-items: end;
     padding: 12px 8px max(8px, env(safe-area-inset-bottom));
+  }
+
+  .blocker-modal-backdrop {
+    padding: 8px 6px max(6px, env(safe-area-inset-bottom));
+  }
+
+  .blocker-editor-sheet {
+    width: 100%;
+    max-height: calc(100dvh - 12px);
+    padding: 20px 14px calc(16px + env(safe-area-inset-bottom));
+    border-radius: 18px 18px 8px 8px;
+  }
+
+  .blocker-kind-picker,
+  .blocker-date-time-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .blocker-kind-option {
+    min-height: 64px;
+  }
+
+  .blocker-editor-actions,
+  .blocker-confirm-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .blocker-editor-actions > *,
+  .blocker-confirm-actions > * {
+    width: 100%;
+    min-height: 52px;
   }
 
   .calendar-handoff-modal {

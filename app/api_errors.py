@@ -124,6 +124,15 @@ class SchedulingPolicyStale(ApiException):
         )
 
 
+class BlockerStale(ApiException):
+    def __init__(self):
+        super().__init__(
+            "BLOCKER_STALE",
+            "This schedule event changed. Reload it before saving again.",
+            status_code=409,
+        )
+
+
 class SchedulingPolicyEndpointMoved(ApiException):
     def __init__(self):
         super().__init__(

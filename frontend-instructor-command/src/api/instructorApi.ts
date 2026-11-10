@@ -7,6 +7,9 @@ import {
 import type {
   BookLessonPayload,
   BookLessonResponse,
+  BlockerScheduleItem,
+  BlockerMutation,
+  BlockerUpdate,
   BookingRequestDTO,
   CalendarLinks,
   CoachEmailDelivery,
@@ -20,14 +23,17 @@ import type {
   LessonRequest,
   ProviderConfiguration,
   ProviderConfigurationUpdate,
+  ProviderBlocker,
   SchedulingPolicy,
   SchedulingPolicyUpdate,
+  ScheduleItem,
   TimeSlotDTO,
 } from "./types.js";
 
 const LEGACY_AUTH_STORAGE_KEY = "swim-command:coach-session:v1";
 const CSRF_HEADER_NAME = "X-CSRF-Protection";
 const CSRF_HEADER_VALUE = "1";
+const mockLocalDayBoundaryCache = new Map<string, number>();
 
 function clone<T>(value: T): T {
   return structuredClone(value);
@@ -55,8 +61,12 @@ function mockPolicyStartShiftMinutes(previousBuffer: number, currentBuffer: numb
 export class MockInstructorCommandApi implements InstructorCommandApi {
   readonly authMode = "mock" as const;
 
-  private currentSnapshot: CommandCenterSnapshot = clone(snapshot);
   private currentProvider: ProviderConfiguration = clone(providerConfiguration);
+  private currentSnapshot: CommandCenterSnapshot = canonicalMockSnapshot(
+    snapshot,
+    providerConfiguration.timezone,
+  );
+  private readonly blockerCreations = new Map<string, ProviderBlocker>();
   private readonly calendarHandoffs = new Map<Id, CalendarLinks>();
   private readonly confirmations = new Map<Id, {
     slotId: Id | null;
@@ -178,14 +188,93 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
 
   async getSnapshot(instructor_id: Id, date: string): Promise<CommandCenterSnapshot> {
     const fullSnapshot = clone(this.currentSnapshot);
+    const projectedSchedule = mockScheduleInTimezone(
+      fullSnapshot.schedule,
+      this.currentProvider.timezone,
+    );
     return {
       ...fullSnapshot,
       date,
-      schedule: fullSnapshot.schedule.filter((item) => sameDate(item.start_time, date)),
+      schedule: projectedSchedule.filter((item) => (
+        mockScheduleOverlapsLocalDate(item, date, this.currentProvider.timezone)
+      )),
       instructor:
         fullSnapshot.instructor.id === instructor_id
           ? fullSnapshot.instructor
           : { ...fullSnapshot.instructor, id: instructor_id },
+    };
+  }
+
+  async getBlockers(date: string): Promise<ProviderBlocker[]> {
+    return mockScheduleInTimezone(
+      this.currentSnapshot.schedule,
+      this.currentProvider.timezone,
+    )
+      .filter((item): item is BlockerScheduleItem => (
+        isBlockerScheduleItem(item)
+        && mockScheduleOverlapsLocalDate(item, date, this.currentProvider.timezone)
+      ))
+      .map((item) => scheduleItemToBlocker(item, this.currentProvider.timezone));
+  }
+
+  async createBlocker(
+    blocker: BlockerMutation,
+    idempotencyKey: string,
+  ): Promise<ProviderBlocker> {
+    const existing = this.blockerCreations.get(idempotencyKey);
+    if (existing) {
+      const candidate = mockBlocker("pending", blocker, 1, existing.timezone);
+      if (!sameMockBlocker(existing, candidate)) {
+        throw new InstructorCommandApiError(
+          409,
+          "IDEMPOTENCY_KEY_CONFLICT",
+          "The idempotency key was already used for a different mutation.",
+        );
+      }
+      return clone(existing);
+    }
+    const created: ProviderBlocker = mockBlocker(
+      `blocker_${idempotencyKey.replace(/[^a-z0-9]/gi, "").slice(-12)}`,
+      blocker,
+      1,
+      this.currentProvider.timezone,
+    );
+    this.assertMockBlockerDoesNotOverlap(created);
+    this.upsertMockBlocker(created, `idempotency:${idempotencyKey}`);
+    this.blockerCreations.set(idempotencyKey, clone(created));
+    return clone(created);
+  }
+
+  async updateBlocker(blocker_id: Id, blocker: BlockerUpdate): Promise<ProviderBlocker> {
+    const existing = this.currentSnapshot.schedule.find((item) => item.id === blocker_id);
+    if (!existing || !isBlockerScheduleItem(existing)) {
+      throw new InstructorCommandApiError(404, "RESOURCE_NOT_FOUND", "The schedule event could not be found.");
+    }
+    if (existing.revision !== blocker.expected_revision) {
+      throw new InstructorCommandApiError(409, "BLOCKER_STALE", "This schedule event changed. Reload it before saving again.");
+    }
+    const updated = mockBlocker(
+      blocker_id,
+      blocker,
+      blocker.expected_revision + 1,
+      this.currentProvider.timezone,
+    );
+    this.assertMockBlockerDoesNotOverlap(updated, blocker_id);
+    this.upsertMockBlocker(updated, existing.note ?? null);
+    return clone(updated);
+  }
+
+  async deleteBlocker(blocker_id: Id, expected_revision: number): Promise<void> {
+    const existing = this.currentSnapshot.schedule.find((item) => item.id === blocker_id);
+    if (!existing || !isBlockerScheduleItem(existing)) {
+      throw new InstructorCommandApiError(404, "RESOURCE_NOT_FOUND", "The schedule event could not be found.");
+    }
+    if (existing.revision !== expected_revision) {
+      throw new InstructorCommandApiError(409, "BLOCKER_STALE", "This schedule event changed. Reload it before removing it.");
+    }
+    this.currentSnapshot = {
+      ...this.currentSnapshot,
+      schedule: this.currentSnapshot.schedule.filter((item) => item.id !== blocker_id),
     };
   }
 
@@ -209,7 +298,8 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
           buffer_mins,
           target_location: request.location,
         };
-      });
+      })
+      .filter((slot) => !this.mockScheduleOverlaps(slot.start_time, slot.end_time));
   }
 
   async bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse> {
@@ -436,6 +526,57 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
     }
     return clone(updated);
   }
+
+  private upsertMockBlocker(blocker: ProviderBlocker, note: string | null): void {
+    const scheduleItem = {
+      id: blocker.id,
+      kind: blocker.kind,
+      title: blocker.title,
+      start_time: blocker.start_time,
+      end_time: blocker.end_time,
+      location: blocker.location,
+      revision: blocker.revision,
+      note,
+    };
+    this.currentSnapshot = {
+      ...this.currentSnapshot,
+      schedule: [
+        ...this.currentSnapshot.schedule.filter((item) => item.id !== blocker.id),
+        scheduleItem,
+      ].sort((left, right) => (
+        mockScheduleInstant(left.start_time, this.currentProvider.timezone)
+        - mockScheduleInstant(right.start_time, this.currentProvider.timezone)
+      )),
+    };
+  }
+
+  private assertMockBlockerDoesNotOverlap(blocker: ProviderBlocker, excludeId?: Id): void {
+    const blockerStart = mockScheduleInstant(blocker.start_time, this.currentProvider.timezone);
+    const blockerEnd = mockScheduleInstant(blocker.end_time, this.currentProvider.timezone);
+    const overlaps = this.currentSnapshot.schedule.some((item) => (
+      item.id !== excludeId
+      && (item.kind === "lesson" || isBlockerKind(item.kind))
+      && mockScheduleInstant(item.start_time, this.currentProvider.timezone) < blockerEnd
+      && mockScheduleInstant(item.end_time, this.currentProvider.timezone) > blockerStart
+    ));
+    if (overlaps) {
+      throw new InstructorCommandApiError(
+        409,
+        "SCHEDULING_CONFLICT",
+        "That event overlaps another active schedule item.",
+      );
+    }
+  }
+
+  private mockScheduleOverlaps(startTime: string, endTime: string): boolean {
+    const start = mockScheduleInstant(startTime, this.currentProvider.timezone);
+    const end = mockScheduleInstant(endTime, this.currentProvider.timezone);
+    return this.currentSnapshot.schedule.some((item) => (
+      (item.kind === "lesson" || isBlockerKind(item.kind))
+      && mockScheduleInstant(item.start_time, this.currentProvider.timezone) < end
+      && mockScheduleInstant(item.end_time, this.currentProvider.timezone) > start
+    ));
+  }
 }
 
 export class HttpInstructorCommandApi implements InstructorCommandApi {
@@ -486,6 +627,33 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
 
   async getSnapshot(_instructor_id: Id, date: string): Promise<CommandCenterSnapshot> {
     return this.get<CommandCenterSnapshot>(`/coach/command-center/snapshot?date=${encodeURIComponent(date)}`);
+  }
+
+  getBlockers(date: string): Promise<ProviderBlocker[]> {
+    return this.get(`/coach/blockers?date=${encodeURIComponent(date)}`);
+  }
+
+  async createBlocker(
+    blocker: BlockerMutation,
+    idempotencyKey: string,
+  ): Promise<ProviderBlocker> {
+    const response = await fetch(
+      `${this.baseUrl}/coach/blockers`,
+      unsafeJsonInit("POST", blocker, { "Idempotency-Key": idempotencyKey }),
+    );
+    return parseResponse<ProviderBlocker>(response);
+  }
+
+  updateBlocker(blocker_id: Id, blocker: BlockerUpdate): Promise<ProviderBlocker> {
+    return this.put(`/coach/blockers/${encodeURIComponent(blocker_id)}`, blocker);
+  }
+
+  async deleteBlocker(blocker_id: Id, expected_revision: number): Promise<void> {
+    const response = await fetch(
+      `${this.baseUrl}/coach/blockers/${encodeURIComponent(blocker_id)}?expected_revision=${encodeURIComponent(expected_revision)}`,
+      unsafeNoBodyInit("DELETE"),
+    );
+    if (!response.ok) throw await toApiError(response);
   }
 
   async findAvailableSlots(request: BookingRequestDTO): Promise<TimeSlotDTO[]> {
@@ -639,13 +807,18 @@ type CoachAvailabilityResponse = {
   }>;
 };
 
-function unsafeJsonInit(method: "POST" | "PUT", body: unknown): RequestInit {
+function unsafeJsonInit(
+  method: "POST" | "PUT",
+  body: unknown,
+  extraHeaders: Record<string, string> = {},
+): RequestInit {
   return {
     method,
     credentials: "include",
     headers: {
       "content-type": "application/json",
       [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE,
+      ...extraHeaders,
     },
     body: JSON.stringify(body),
   };
@@ -659,12 +832,375 @@ function credentialedGetInit(): RequestInit {
   };
 }
 
-function unsafeNoBodyInit(method: "POST"): RequestInit {
+function unsafeNoBodyInit(method: "POST" | "DELETE"): RequestInit {
   return {
     method,
     credentials: "include",
     headers: { [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
   };
+}
+
+function isBlockerKind(value: string): value is ProviderBlocker["kind"] {
+  return value === "break" || value === "personal" || value === "unavailable";
+}
+
+function isBlockerScheduleItem(item: ScheduleItem): item is BlockerScheduleItem {
+  return isBlockerKind(item.kind);
+}
+
+function canonicalMockSnapshot(
+  source: CommandCenterSnapshot,
+  timezone: string,
+): CommandCenterSnapshot {
+  const canonical = clone(source);
+  return {
+    ...canonical,
+    schedule: canonical.schedule.map((item) => ({
+      ...item,
+      start_time: mockCanonicalScheduleDateTime(item.start_time, timezone, "start_time"),
+      end_time: mockCanonicalScheduleDateTime(item.end_time, timezone, "end_time"),
+    })) as ScheduleItem[],
+  };
+}
+
+function mockScheduleInTimezone(
+  schedule: ScheduleItem[],
+  timezone: string,
+): ScheduleItem[] {
+  return schedule.map((item) => ({
+    ...item,
+    start_time: mockScheduleDateTimeInTimezone(item.start_time, timezone),
+    end_time: mockScheduleDateTimeInTimezone(item.end_time, timezone),
+  })) as ScheduleItem[];
+}
+
+function mockScheduleOverlapsLocalDate(
+  item: ScheduleItem,
+  date: string,
+  timezone: string,
+): boolean {
+  const nextDate = mockShiftIsoDate(date, 1);
+  const dayStart = mockLocalDayBoundaryInstant(date, timezone);
+  const dayEnd = mockLocalDayBoundaryInstant(nextDate, timezone);
+  return mockScheduleInstant(item.start_time, timezone) < dayEnd
+    && mockScheduleInstant(item.end_time, timezone) > dayStart;
+}
+
+function mockLocalDayBoundaryInstant(date: string, timezone: string): number {
+  const cacheKey = `${timezone}|${date}`;
+  const cached = mockLocalDayBoundaryCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match || mockShiftIsoDate(date, 0) !== date) {
+    throw mockLocalTimeError("start_time", "invalid_local_time", "Choose a valid date.");
+  }
+  const targetKey = Number(`${match[1]}${match[2]}${match[3]}`);
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = new Intl.DateTimeFormat("en-CA-u-ca-iso8601-nu-latn", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+  } catch {
+    throw mockLocalTimeError("start_time", "invalid_timezone", "The provider timezone is invalid.");
+  }
+  const dateKeyAt = (instant: number): number => {
+    const parts = Object.fromEntries(
+      formatter.formatToParts(new Date(instant))
+        .filter((part) => part.type !== "literal")
+        .map((part) => [part.type, part.value]),
+    );
+    return Number(`${parts.year}${parts.month}${parts.day}`);
+  };
+  const utcMidnight = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  const searchStart = utcMidnight - 36 * 60 * 60_000;
+  const searchEnd = utcMidnight + 36 * 60 * 60_000;
+  const step = 60_000;
+  let previous = searchStart;
+  let firstGreater: { low: number; high: number } | null = null;
+  for (let instant = searchStart + step; instant <= searchEnd; instant += step) {
+    const key = dateKeyAt(instant);
+    if (key === targetKey) {
+      const boundary = mockRefineLocalDayBoundary(previous, instant, targetKey, dateKeyAt);
+      mockLocalDayBoundaryCache.set(cacheKey, boundary);
+      return boundary;
+    }
+    if (key > targetKey && firstGreater === null) {
+      firstGreater = { low: previous, high: instant };
+    }
+    previous = instant;
+  }
+  if (firstGreater !== null) {
+    const boundary = mockRefineLocalDayBoundary(
+      firstGreater.low,
+      firstGreater.high,
+      targetKey,
+      dateKeyAt,
+    );
+    mockLocalDayBoundaryCache.set(cacheKey, boundary);
+    return boundary;
+  }
+  throw mockLocalTimeError("start_time", "invalid_local_time", "Choose a valid date.");
+}
+
+function mockRefineLocalDayBoundary(
+  lowValue: number,
+  highValue: number,
+  targetKey: number,
+  dateKeyAt: (instant: number) => number,
+): number {
+  let low = lowValue;
+  let high = highValue;
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2);
+    if (dateKeyAt(middle) >= targetKey) high = middle;
+    else low = middle;
+  }
+  return high;
+}
+
+function mockShiftIsoDate(date: string, days: number): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) {
+    throw mockLocalTimeError("start_time", "invalid_local_time", "Choose a valid date.");
+  }
+  const shifted = new Date(Date.UTC(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]) + days,
+  ));
+  return shifted.toISOString().slice(0, 10);
+}
+
+function scheduleItemToBlocker(
+  item: ScheduleItem,
+  timezone: string,
+): ProviderBlocker {
+  if (!isBlockerScheduleItem(item)) throw new Error("Schedule item is not a blocker.");
+  const start_time = mockCanonicalScheduleDateTime(item.start_time, timezone, "start_time");
+  const end_time = mockCanonicalScheduleDateTime(item.end_time, timezone, "end_time");
+  return {
+    id: item.id,
+    kind: item.kind,
+    title: item.title,
+    start_time,
+    end_time,
+    local_date: start_time.slice(0, 10),
+    local_start_time: start_time.slice(11, 16),
+    local_end_time: end_time.slice(11, 16),
+    timezone,
+    revision: item.revision,
+    location: item.location,
+  };
+}
+
+function mockBlocker(
+  id: string,
+  blocker: BlockerMutation,
+  revision: number,
+  timezone: string,
+): ProviderBlocker {
+  const start_time = mockLocalDateTimeWithOffset(
+    blocker.date,
+    blocker.start_time,
+    timezone,
+    "start_time",
+  );
+  const end_time = mockLocalDateTimeWithOffset(
+    blocker.date,
+    blocker.end_time,
+    timezone,
+    "end_time",
+  );
+  const location = blocker.kind === "personal" && blocker.location_address
+    ? {
+        ...mockGeocodedLocation(blocker.location_address, null, revision),
+        is_instructor_facility: false,
+      }
+    : null;
+  return {
+    id,
+    kind: blocker.kind,
+    title: blocker.title,
+    start_time,
+    end_time,
+    local_date: blocker.date,
+    local_start_time: blocker.start_time,
+    local_end_time: blocker.end_time,
+    timezone,
+    revision,
+    location,
+  };
+}
+
+function mockLocalDateTimeWithOffset(
+  date: string,
+  time: string,
+  timezone: string,
+  field: "start_time" | "end_time",
+): string {
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  const timeMatch = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!dateMatch || !timeMatch) {
+    throw mockLocalTimeError(field, "invalid_local_time", "Choose a valid date and time.");
+  }
+
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+  const hour = Number(timeMatch[1]);
+  const minute = Number(timeMatch[2]);
+  const localEpoch = Date.UTC(year, month - 1, day, hour, minute);
+  const localDate = new Date(localEpoch);
+  if (
+    month < 1 || month > 12
+    || day < 1 || day > 31
+    || hour > 23
+    || minute > 59
+    || localDate.getUTCFullYear() !== year
+    || localDate.getUTCMonth() !== month - 1
+    || localDate.getUTCDate() !== day
+  ) {
+    throw mockLocalTimeError(field, "invalid_local_time", "Choose a valid date and time.");
+  }
+
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = new Intl.DateTimeFormat("en-CA-u-ca-iso8601-nu-latn", {
+      timeZone: timezone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    throw mockLocalTimeError(field, "invalid_timezone", "The provider timezone is invalid.");
+  }
+
+  const matches: Array<{ instant: number; offsetMinutes: number }> = [];
+  for (let offsetMinutes = -14 * 60; offsetMinutes <= 14 * 60; offsetMinutes += 15) {
+    const instant = localEpoch - offsetMinutes * 60_000;
+    const parts = Object.fromEntries(
+      formatter.formatToParts(new Date(instant))
+        .filter((part) => part.type !== "literal")
+        .map((part) => [part.type, part.value]),
+    );
+    if (
+      Number(parts.year) === year
+      && Number(parts.month) === month
+      && Number(parts.day) === day
+      && Number(parts.hour) === hour
+      && Number(parts.minute) === minute
+    ) {
+      matches.push({ instant, offsetMinutes });
+    }
+  }
+
+  if (matches.length === 0) {
+    throw mockLocalTimeError(
+      field,
+      "nonexistent_local_time",
+      "That local time does not exist because of daylight saving time.",
+    );
+  }
+  if (matches.length > 1) {
+    throw mockLocalTimeError(
+      field,
+      "ambiguous_local_time",
+      "That local time occurs twice because of daylight saving time. Choose another time.",
+    );
+  }
+
+  const offsetMinutes = matches[0].offsetMinutes;
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const offsetHours = Math.floor(Math.abs(offsetMinutes) / 60).toString().padStart(2, "0");
+  const offsetRemainder = (Math.abs(offsetMinutes) % 60).toString().padStart(2, "0");
+  return `${date}T${time}:00${sign}${offsetHours}:${offsetRemainder}`;
+}
+
+function mockScheduleInstant(value: string, timezone: string): number {
+  const canonical = mockCanonicalScheduleDateTime(value, timezone, "start_time");
+  const instant = Date.parse(canonical);
+  if (Number.isNaN(instant)) {
+    throw mockLocalTimeError("start_time", "invalid_local_time", "Choose a valid date and time.");
+  }
+  return instant;
+}
+
+function mockCanonicalScheduleDateTime(
+  value: string,
+  timezone: string,
+  field: "start_time" | "end_time",
+): string {
+  return /(?:Z|[+-]\d{2}:\d{2})$/i.test(value)
+    ? value
+    : mockLocalDateTimeWithOffset(value.slice(0, 10), value.slice(11, 16), timezone, field);
+}
+
+function mockScheduleDateTimeInTimezone(value: string, timezone: string): string {
+  const instant = Date.parse(value);
+  if (Number.isNaN(instant)) {
+    throw mockLocalTimeError("start_time", "invalid_local_time", "Choose a valid date and time.");
+  }
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = new Intl.DateTimeFormat("en-CA-u-ca-iso8601-nu-latn", {
+      timeZone: timezone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    throw mockLocalTimeError("start_time", "invalid_timezone", "The provider timezone is invalid.");
+  }
+  const parts = Object.fromEntries(
+    formatter.formatToParts(new Date(instant))
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+  const year = Number(parts.year);
+  const month = Number(parts.month);
+  const day = Number(parts.day);
+  const hour = Number(parts.hour);
+  const minute = Number(parts.minute);
+  const second = Number(parts.second);
+  const localEpoch = Date.UTC(year, month - 1, day, hour, minute, second);
+  const offsetMinutes = Math.round((localEpoch - instant) / 60_000);
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const offsetHours = Math.floor(Math.abs(offsetMinutes) / 60).toString().padStart(2, "0");
+  const offsetRemainder = (Math.abs(offsetMinutes) % 60).toString().padStart(2, "0");
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`
+    + `${sign}${offsetHours}:${offsetRemainder}`;
+}
+
+function mockLocalTimeError(
+  field: "start_time" | "end_time",
+  reason: string,
+  message: string,
+): InstructorCommandApiError {
+  return new InstructorCommandApiError(
+    422,
+    "VALIDATION_ERROR",
+    message,
+    { field, reason },
+  );
+}
+
+function sameMockBlocker(left: ProviderBlocker, right: ProviderBlocker): boolean {
+  return left.kind === right.kind
+    && left.title === right.title
+    && left.start_time === right.start_time
+    && left.end_time === right.end_time
+    && (left.location?.address ?? null) === (right.location?.address ?? null);
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {

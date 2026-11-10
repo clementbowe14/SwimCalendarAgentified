@@ -11,7 +11,8 @@ import { formatShortDate, formatTimeRange, minutesBetween } from "../lib/format.
 
 export type AgendaRow = {
   id: string;
-  tone: "lesson" | "travel" | "buffer" | "break" | "open";
+  tone: "lesson" | "travel" | "buffer" | "break" | "personal" | "unavailable" | "open";
+  kind: ScheduleItem["kind"];
   time: string;
   title: string;
   detail: string;
@@ -35,6 +36,7 @@ export function buildAgendaRows(schedule: ScheduleItem[]): AgendaRow[] {
   return schedule.map((item) => ({
     id: item.id,
     tone: agendaTone(item.kind),
+    kind: item.kind,
     time: formatTimeRange(item.start_time, item.end_time),
     title: item.title,
     detail: itemDetail(item),
@@ -144,14 +146,19 @@ function agendaTone(kind: ScheduleItem["kind"]): AgendaRow["tone"] {
   if (kind === "travel") return "travel";
   if (kind === "buffer") return "buffer";
   if (kind === "break") return "break";
+  if (kind === "personal") return "personal";
+  if (kind === "unavailable") return "unavailable";
   return "open";
 }
 
 function itemDetail(item: ScheduleItem): string {
-  if (item.kind === "travel") return `${item.travel_time_mins ?? 0} min drive | ${item.note ?? item.location.address}`;
+  if (item.kind === "travel") return `${item.travel_time_mins ?? 0} min drive | ${item.note ?? item.location?.address ?? "Travel"}`;
   if (item.kind === "buffer") return `${item.buffer_mins ?? 0} min reset | ${item.note ?? "Protected transition"}`;
   if (item.kind === "open_gap") return item.note ?? "Safe booking space";
-  return `${item.location.address}${item.note ? ` | ${item.note}` : ""}`;
+  if (item.kind === "break") return `Break${item.location ? ` | ${item.location.address}` : ""}`;
+  if (item.kind === "personal") return `Personal event${item.location ? ` | ${item.location.address}` : ""}`;
+  if (item.kind === "unavailable") return "Unavailable";
+  return `${item.location?.address ?? "Location unavailable"}${item.note ? ` | ${item.note}` : ""}`;
 }
 
 function fallbackClient(snapshot: CommandCenterSnapshot): Client {

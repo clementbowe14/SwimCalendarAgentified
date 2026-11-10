@@ -3,6 +3,22 @@
     "schemas": {
       "AppointmentResponse": {
         "properties": {
+          "blocker_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "break",
+                  "personal",
+                  "unavailable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocker Kind"
+          },
           "end_time": {
             "format": "date-time",
             "title": "End Time",
@@ -17,16 +33,43 @@
             "type": "boolean"
           },
           "lat": {
-            "title": "Lat",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lat"
           },
           "lng": {
-            "title": "Lng",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lng"
           },
           "location_address": {
-            "title": "Location Address",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Address"
+          },
+          "revision": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
           },
           "start_time": {
             "format": "date-time",
@@ -43,9 +86,6 @@
           "title",
           "start_time",
           "end_time",
-          "location_address",
-          "lat",
-          "lng",
           "is_break"
         ],
         "title": "AppointmentResponse",
@@ -822,6 +862,296 @@
         "title": "CoachAvailabilityWindow",
         "type": "object"
       },
+      "CoachBlockerMutation": {
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "end_time": {
+            "title": "End Time",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "break",
+              "personal",
+              "unavailable"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "location_address": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Address"
+          },
+          "start_time": {
+            "title": "Start Time",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "date",
+          "start_time",
+          "end_time"
+        ],
+        "title": "CoachBlockerMutation",
+        "type": "object"
+      },
+      "CoachBlockerResponse": {
+        "properties": {
+          "end_time": {
+            "format": "date-time",
+            "title": "End Time",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "break",
+              "personal",
+              "unavailable"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "local_date": {
+            "format": "date",
+            "title": "Local Date",
+            "type": "string"
+          },
+          "local_end_time": {
+            "title": "Local End Time",
+            "type": "string"
+          },
+          "local_start_time": {
+            "title": "Local Start Time",
+            "type": "string"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "start_time": {
+            "format": "date-time",
+            "title": "Start Time",
+            "type": "string"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "start_time",
+          "end_time",
+          "local_date",
+          "local_start_time",
+          "local_end_time",
+          "timezone",
+          "revision",
+          "location"
+        ],
+        "title": "CoachBlockerResponse",
+        "type": "object"
+      },
+      "CoachBlockerScheduleItemResponse": {
+        "properties": {
+          "buffer_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buffer Mins"
+          },
+          "client_id": {
+            "title": "Client Id",
+            "type": "null"
+          },
+          "end_time": {
+            "format": "date-time",
+            "title": "End Time",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "break",
+              "personal",
+              "unavailable"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "revision": {
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "start_time": {
+            "format": "date-time",
+            "title": "Start Time",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "null"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "travel_time_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Travel Time Mins"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "start_time",
+          "end_time",
+          "revision",
+          "kind",
+          "location"
+        ],
+        "title": "CoachBlockerScheduleItemResponse",
+        "type": "object"
+      },
+      "CoachBlockerUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "end_time": {
+            "title": "End Time",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "break",
+              "personal",
+              "unavailable"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "location_address": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Address"
+          },
+          "start_time": {
+            "title": "Start Time",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "date",
+          "start_time",
+          "end_time",
+          "expected_revision"
+        ],
+        "title": "CoachBlockerUpdate",
+        "type": "object"
+      },
       "CoachBookLessonRequest": {
         "properties": {
           "client_address": {
@@ -994,7 +1324,29 @@
           },
           "schedule": {
             "items": {
-              "$ref": "#/components/schemas/CoachScheduleItemResponse"
+              "discriminator": {
+                "mapping": {
+                  "break": "#/components/schemas/CoachBlockerScheduleItemResponse",
+                  "buffer": "#/components/schemas/CoachUtilityScheduleItemResponse",
+                  "lesson": "#/components/schemas/CoachLessonScheduleItemResponse",
+                  "open_gap": "#/components/schemas/CoachUtilityScheduleItemResponse",
+                  "personal": "#/components/schemas/CoachBlockerScheduleItemResponse",
+                  "travel": "#/components/schemas/CoachUtilityScheduleItemResponse",
+                  "unavailable": "#/components/schemas/CoachBlockerScheduleItemResponse"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/CoachLessonScheduleItemResponse"
+                },
+                {
+                  "$ref": "#/components/schemas/CoachBlockerScheduleItemResponse"
+                },
+                {
+                  "$ref": "#/components/schemas/CoachUtilityScheduleItemResponse"
+                }
+              ]
             },
             "title": "Schedule",
             "type": "array"
@@ -1526,6 +1878,106 @@
         "title": "CoachLessonRequestResponse",
         "type": "object"
       },
+      "CoachLessonScheduleItemResponse": {
+        "properties": {
+          "buffer_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buffer Mins"
+          },
+          "client_id": {
+            "title": "Client Id",
+            "type": "string"
+          },
+          "end_time": {
+            "format": "date-time",
+            "title": "End Time",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "lesson",
+            "title": "Kind",
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/LocationResponse"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "start_time": {
+            "format": "date-time",
+            "title": "Start Time",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "scheduled",
+              "rescheduled",
+              "canceled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "travel_time_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Travel Time Mins"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "start_time",
+          "end_time",
+          "kind",
+          "client_id",
+          "location",
+          "status"
+        ],
+        "title": "CoachLessonScheduleItemResponse",
+        "type": "object"
+      },
       "CoachLoginRequest": {
         "properties": {
           "email": {
@@ -1820,112 +2272,6 @@
         "title": "CoachProviderWorkingHours",
         "type": "object"
       },
-      "CoachScheduleItemResponse": {
-        "properties": {
-          "buffer_mins": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Buffer Mins"
-          },
-          "client_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Client Id"
-          },
-          "end_time": {
-            "format": "date-time",
-            "title": "End Time",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "kind": {
-            "enum": [
-              "lesson",
-              "travel",
-              "buffer",
-              "break",
-              "open_gap"
-            ],
-            "title": "Kind",
-            "type": "string"
-          },
-          "location": {
-            "$ref": "#/components/schemas/LocationResponse"
-          },
-          "note": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Note"
-          },
-          "start_time": {
-            "format": "date-time",
-            "title": "Start Time",
-            "type": "string"
-          },
-          "status": {
-            "anyOf": [
-              {
-                "enum": [
-                  "scheduled",
-                  "rescheduled",
-                  "canceled"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Status"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          },
-          "travel_time_mins": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Travel Time Mins"
-          }
-        },
-        "required": [
-          "id",
-          "kind",
-          "title",
-          "start_time",
-          "end_time",
-          "location"
-        ],
-        "title": "CoachScheduleItemResponse",
-        "type": "object"
-      },
       "CoachScheduleResponse": {
         "properties": {
           "appointments": {
@@ -2216,6 +2562,128 @@
           "target_location"
         ],
         "title": "CoachTimeSlotResponse",
+        "type": "object"
+      },
+      "CoachUtilityScheduleItemResponse": {
+        "properties": {
+          "buffer_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buffer Mins"
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "end_time": {
+            "format": "date-time",
+            "title": "End Time",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "travel",
+              "buffer",
+              "open_gap"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "start_time": {
+            "format": "date-time",
+            "title": "Start Time",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "scheduled",
+                  "rescheduled",
+                  "canceled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "travel_time_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Travel Time Mins"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "start_time",
+          "end_time",
+          "kind"
+        ],
+        "title": "CoachUtilityScheduleItemResponse",
         "type": "object"
       },
       "ErrorBody": {
@@ -3259,6 +3727,342 @@
           }
         ],
         "summary": "Find Availability",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/blockers": {
+      "get": {
+        "operationId": "read_blockers_api_coach_blockers_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "date",
+            "required": true,
+            "schema": {
+              "format": "date",
+              "title": "Date",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CoachBlockerResponse"
+                  },
+                  "title": "Response Read Blockers Api Coach Blockers Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The provider or schedule event could not be found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The schedule, revision, setup, or idempotency key conflicts."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The blocker input, local time, or location is invalid."
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Read Blockers",
+        "tags": [
+          "coach"
+        ]
+      },
+      "post": {
+        "operationId": "create_blocker_api_coach_blockers_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 160,
+              "minLength": 8,
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoachBlockerMutation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachBlockerResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The provider or schedule event could not be found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The schedule, revision, setup, or idempotency key conflicts."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The blocker input, local time, or location is invalid."
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Create Blocker",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/blockers/{blocker_id}": {
+      "delete": {
+        "operationId": "remove_blocker_api_coach_blockers__blocker_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "blocker_id",
+            "required": true,
+            "schema": {
+              "title": "Blocker Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_revision",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Expected Revision",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The provider or schedule event could not be found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The schedule, revision, setup, or idempotency key conflicts."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The blocker input, local time, or location is invalid."
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Remove Blocker",
+        "tags": [
+          "coach"
+        ]
+      },
+      "put": {
+        "operationId": "update_blocker_api_coach_blockers__blocker_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "blocker_id",
+            "required": true,
+            "schema": {
+              "title": "Blocker Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoachBlockerUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachBlockerResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The provider or schedule event could not be found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The schedule, revision, setup, or idempotency key conflicts."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The blocker input, local time, or location is invalid."
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Update Blocker",
         "tags": [
           "coach"
         ]

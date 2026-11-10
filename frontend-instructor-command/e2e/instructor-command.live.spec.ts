@@ -10,6 +10,7 @@ import {
 import type {
   CalendarLinks,
   CoachLessonRequestConfirmResponse,
+  ProviderBlocker,
   ProviderConfiguration,
   SchedulingPolicy,
 } from "../src/api/types";
@@ -124,6 +125,155 @@ test.describe("instructor command real-backend integration", () => {
     await expect(page.locator("main")).toContainText(/safe options|No safe starts/i);
   });
 
+  test("creates, persists, edits, and removes a provider schedule blocker", async ({ page }) => {
+    await signIn(page);
+    const commandDate = process.env.VITE_INSTRUCTOR_COMMAND_DATE?.trim() || "2026-08-27";
+    const blockerDate = shiftIsoDate(commandDate, 1);
+    const coachRequest = page.context().request;
+    const schedule = await getJson<{
+      appointments: Array<{ start_time: string; end_time: string }>;
+    }>(
+      coachRequest,
+      `${liveApiBase}/coach/schedule?date=${encodeURIComponent(blockerDate)}`,
+      "schedule before blocker create",
+    );
+    const window = firstOpenWindow(schedule.appointments, blockerDate, 30);
+    const originalTitle = `Live protected time ${Date.now().toString(36)}`;
+    const updatedTitle = `${originalTitle} updated`;
+    let persisted: ProviderBlocker | null = null;
+    const blockerCollectionRoutePattern = "**/api/coach/blockers";
+    const snapshotRoutePattern = "**/api/coach/command-center/snapshot**";
+
+    try {
+      await page.getByRole("button", { name: "Add schedule event" }).click();
+      let dialog = page.getByRole("dialog", { name: "Add schedule event" });
+      await dialog.getByRole("radio", { name: /Unavailable/ }).check();
+      await dialog.getByLabel("Title").fill(originalTitle);
+      await dialog.getByLabel("Date").fill(blockerDate);
+      await dialog.getByLabel("Starts").fill(window.start);
+      await dialog.getByLabel("Ends").fill(window.end);
+      await page.route(blockerCollectionRoutePattern, async (route) => {
+        if (route.request().method() === "POST") {
+          await route.fulfill({
+            status: 409,
+            json: {
+              error: {
+                code: "SCHEDULE_CONFLICT",
+                message: "This time is no longer available.",
+                details: {},
+              },
+            },
+          });
+          return;
+        }
+        await route.continue();
+      });
+      await dialog.getByRole("button", { name: "Add to schedule" }).click();
+      const createError = page.locator("[data-blocker-status]");
+      await expect(createError).toContainText("This time is no longer available");
+      await expect(createError).toBeFocused();
+      await expect(dialog.getByLabel("Title")).toHaveValue(originalTitle);
+      await page.unroute(blockerCollectionRoutePattern);
+
+      let failedSavedDateRefresh = false;
+      await page.route(snapshotRoutePattern, async (route) => {
+        const url = new URL(route.request().url());
+        if (!failedSavedDateRefresh && url.searchParams.get("date") === blockerDate) {
+          failedSavedDateRefresh = true;
+          await route.abort("failed");
+          return;
+        }
+        await route.continue();
+      });
+      const createResponsePromise = page.waitForResponse((response) =>
+        response.request().method() === "POST"
+        && new URL(response.url()).pathname === "/api/coach/blockers",
+      );
+      await dialog.getByRole("button", { name: "Add to schedule" }).click();
+      persisted = await jsonResponse<ProviderBlocker>(await createResponsePromise, "blocker create");
+      expect(persisted).toMatchObject({
+        kind: "unavailable",
+        title: originalTitle,
+        local_date: blockerDate,
+        local_start_time: window.start,
+        local_end_time: window.end,
+        revision: 1,
+      });
+      await expect(page.getByRole("alert")).toContainText(
+        "saved, but the agenda could not refresh",
+      );
+      await expect.poll(() => new URL(page.url()).searchParams.get("date")).toBe(blockerDate);
+      await page.unroute(snapshotRoutePattern);
+      await page.reload();
+      await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
+
+      let row = page.locator("[data-agenda-row]").filter({ hasText: originalTitle });
+      await expect(row).toContainText("Unavailable");
+      await row.getByRole("button", { name: `Edit ${originalTitle}` }).click();
+      dialog = page.getByRole("dialog", { name: `Edit ${originalTitle}` });
+      await dialog.getByLabel("Title").fill(updatedTitle);
+      const updateResponsePromise = page.waitForResponse((response) =>
+        response.request().method() === "PUT"
+        && new URL(response.url()).pathname === `/api/coach/blockers/${persisted!.id}`,
+      );
+      await dialog.getByRole("button", { name: "Save changes" }).click();
+      persisted = await jsonResponse<ProviderBlocker>(await updateResponsePromise, "blocker update");
+      expect(persisted.title).toBe(updatedTitle);
+      expect(persisted.revision).toBe(2);
+
+      await page.reload();
+      await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
+      row = page.locator("[data-agenda-row]").filter({ hasText: updatedTitle });
+      await expect(row).toHaveCount(1);
+      await row.getByRole("button", { name: `Edit ${updatedTitle}` }).click();
+      dialog = page.getByRole("dialog", { name: `Edit ${updatedTitle}` });
+      await dialog.getByRole("button", { name: "Remove event" }).click();
+      let confirmation = page.getByRole("dialog", { name: `Remove ${updatedTitle}?` });
+      await expect(confirmation).toContainText("will become available for scheduling again");
+      const blockerItemRoutePattern = `**/api/coach/blockers/${persisted.id}*`;
+      await page.route(blockerItemRoutePattern, async (route) => {
+        if (route.request().method() === "DELETE") {
+          await route.fulfill({
+            status: 409,
+            json: {
+              error: {
+                code: "REVISION_CONFLICT",
+                message: "This schedule event changed before it could be removed.",
+                details: {},
+              },
+            },
+          });
+          return;
+        }
+        await route.continue();
+      });
+      await confirmation.getByRole("button", { name: "Remove event" }).click();
+      const deleteError = page.locator("[data-blocker-status]");
+      await expect(deleteError).toContainText("changed before it could be removed");
+      await expect(deleteError).toBeFocused();
+      confirmation = page.getByRole("dialog", { name: `Remove ${updatedTitle}?` });
+      await page.unroute(blockerItemRoutePattern);
+
+      const deleteResponsePromise = page.waitForResponse((response) =>
+        response.request().method() === "DELETE"
+        && new URL(response.url()).pathname === `/api/coach/blockers/${persisted!.id}`,
+      );
+      await confirmation.getByRole("button", { name: "Remove event" }).click();
+      expect((await deleteResponsePromise).status()).toBe(204);
+      persisted = null;
+      await expect(row).toHaveCount(0);
+    } finally {
+      if (persisted) {
+        const cleanup = await coachRequest.delete(
+          `${liveApiBase}/coach/blockers/${encodeURIComponent(persisted.id)}`
+          + `?expected_revision=${persisted.revision}`,
+          { headers: { "X-CSRF-Protection": "1" } },
+        );
+        expect([204, 404]).toContain(cleanup.status());
+      }
+    }
+  });
+
   test("saves and reloads provider configuration without mobile overflow", async ({ page }) => {
     await signIn(page);
     await page.getByRole("button", { name: "Settings" }).click();
@@ -164,10 +314,32 @@ test.describe("instructor command real-backend integration", () => {
       `${liveApiBase}/coach/scheduling-policy`,
       "original scheduling policy",
     );
+    const provider = await getJson<ProviderConfiguration>(
+      coachRequest,
+      `${liveApiBase}/coach/provider`,
+      "provider configuration for policy verification",
+    );
+    const requestedDate = nextEnabledWorkingDate(provider.working_hours);
+    const anchorWindow = policyAnchorWindow(provider, requestedDate);
+    const anchorResponse = await coachRequest.post(`${liveApiBase}/coach/blockers`, {
+      headers: {
+        "X-CSRF-Protection": "1",
+        "Idempotency-Key": `live-policy-anchor-${Date.now().toString(36)}`,
+      },
+      data: {
+        kind: "personal",
+        title: "Live policy route anchor",
+        date: requestedDate,
+        start_time: anchorWindow.start,
+        end_time: anchorWindow.end,
+        location_address: "100 Main St, Austin, TX",
+      },
+    });
+    const anchor = await jsonResponse<ProviderBlocker>(anchorResponse, "policy route anchor create");
     const searchPayload = {
       client_name: "Policy browser verification",
       client_address: "450 North Blvd, Austin, TX",
-      requested_date: "2026-08-20",
+      requested_date: requestedDate,
       duration_mins: 60,
       is_instructor_facility: false,
     };
@@ -177,11 +349,15 @@ test.describe("instructor command real-backend integration", () => {
       searchPayload,
       "availability before policy save",
     );
+    expect(before.available_slots.length, "route anchor needs at least one baseline slot").toBeGreaterThan(0);
     const targetDistanceBuffersEnabled = true;
-    const targetTierMinutes = new Map(original.distance_buffer_tiers.map((tier) => {
-      const effectiveMinutes = original.distance_buffers_enabled ? tier.buffer_mins : 0;
-      return [tier.id, effectiveMinutes <= 120 ? 240 : 0];
-    }));
+    const targetMinutes = original.distance_buffers_enabled
+      && original.distance_buffer_tiers.every(({ buffer_mins }) => buffer_mins === 240)
+      ? 0
+      : 240;
+    const targetTierMinutes = new Map(
+      original.distance_buffer_tiers.map((tier) => [tier.id, targetMinutes]),
+    );
 
     try {
       await page.getByRole("button", { name: "Settings" }).click();
@@ -218,24 +394,33 @@ test.describe("instructor command real-backend integration", () => {
         );
       }
     } finally {
-      const latest = await getJson<SchedulingPolicy>(
-        coachRequest,
-        `${liveApiBase}/coach/scheduling-policy`,
-        "latest scheduling policy before restore",
-      );
-      const restore = await coachRequest.put(`${liveApiBase}/coach/scheduling-policy`, {
-        headers: { "X-CSRF-Protection": "1" },
-        data: {
-          expected_revision: latest.revision,
-          distance_buffers_enabled: original.distance_buffers_enabled,
-          post_break_recovery_mins: original.post_break_recovery_mins,
-          distance_buffer_tiers: original.distance_buffer_tiers.map(({ id, buffer_mins }) => ({ id, buffer_mins })),
-        },
-      });
-      const restored = await jsonResponse<SchedulingPolicy>(restore, "scheduling policy restore");
-      expect(restored.distance_buffers_enabled).toBe(original.distance_buffers_enabled);
-      expect(restored.post_break_recovery_mins).toBe(original.post_break_recovery_mins);
-      expect(restored.distance_buffer_tiers).toEqual(original.distance_buffer_tiers);
+      try {
+        const latest = await getJson<SchedulingPolicy>(
+          coachRequest,
+          `${liveApiBase}/coach/scheduling-policy`,
+          "latest scheduling policy before restore",
+        );
+        const restore = await coachRequest.put(`${liveApiBase}/coach/scheduling-policy`, {
+          headers: { "X-CSRF-Protection": "1" },
+          data: {
+            expected_revision: latest.revision,
+            distance_buffers_enabled: original.distance_buffers_enabled,
+            post_break_recovery_mins: original.post_break_recovery_mins,
+            distance_buffer_tiers: original.distance_buffer_tiers.map(({ id, buffer_mins }) => ({ id, buffer_mins })),
+          },
+        });
+        const restored = await jsonResponse<SchedulingPolicy>(restore, "scheduling policy restore");
+        expect(restored.distance_buffers_enabled).toBe(original.distance_buffers_enabled);
+        expect(restored.post_break_recovery_mins).toBe(original.post_break_recovery_mins);
+        expect(restored.distance_buffer_tiers).toEqual(original.distance_buffer_tiers);
+      } finally {
+        const cleanup = await coachRequest.delete(
+          `${liveApiBase}/coach/blockers/${encodeURIComponent(anchor.id)}`
+          + `?expected_revision=${anchor.revision}`,
+          { headers: { "X-CSRF-Protection": "1" } },
+        );
+        expect([204, 404]).toContain(cleanup.status());
+      }
     }
   });
 
@@ -511,6 +696,107 @@ function isolatedDateForProject(projectName: string): { requestedDate: string; d
   base.setUTCDate(base.getUTCDate() + projectOffset);
   const day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][base.getUTCDay()];
   return { requestedDate: base.toISOString().slice(0, 10), day };
+}
+
+function nextEnabledWorkingDate(
+  workingHours: ProviderConfiguration["working_hours"],
+): string {
+  const enabledDays = new Set(
+    workingHours.filter(({ enabled }) => enabled).map(({ weekday }) => weekday),
+  );
+  const weekdays = [
+    "sunday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+  ] as const;
+  const candidate = new Date();
+  candidate.setUTCHours(12, 0, 0, 0);
+  candidate.setUTCDate(candidate.getUTCDate() + 14);
+  for (let offset = 0; offset < 14; offset += 1) {
+    if (enabledDays.has(weekdays[candidate.getUTCDay()])) {
+      return candidate.toISOString().slice(0, 10);
+    }
+    candidate.setUTCDate(candidate.getUTCDate() + 1);
+  }
+  throw new Error("Provider has no enabled working day for live policy verification.");
+}
+
+function policyAnchorWindow(
+  provider: ProviderConfiguration,
+  date: string,
+): { start: string; end: string } {
+  const weekdays = [
+    "sunday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+  ] as const;
+  const day = weekdays[new Date(`${date}T12:00:00Z`).getUTCDay()];
+  const hours = provider.working_hours.find((row) => row.weekday === day);
+  if (!hours?.enabled || !hours.start_time || !hours.end_time) {
+    throw new Error(`No working hours are configured for ${date}.`);
+  }
+  const opening = timeLabelToMinute(hours.start_time);
+  const closing = timeLabelToMinute(hours.end_time);
+  const start = opening + 60;
+  if (start + 90 > closing) {
+    throw new Error(`Working hours on ${date} are too short for policy verification.`);
+  }
+  return { start: minuteLabel(start), end: minuteLabel(start + 30) };
+}
+
+function timeLabelToMinute(value: string): number {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function firstOpenWindow(
+  appointments: Array<{ start_time: string; end_time: string }>,
+  date: string,
+  durationMinutes: number,
+): { start: string; end: string } {
+  const occupied = appointments.map((appointment) => ({
+    start: localMinuteOnDate(appointment.start_time, date, "start"),
+    end: localMinuteOnDate(appointment.end_time, date, "end"),
+  }));
+  for (let start = 0; start + durationMinutes < 24 * 60; start += 15) {
+    const end = start + durationMinutes;
+    if (occupied.every((item) => end <= item.start || start >= item.end)) {
+      return { start: minuteLabel(start), end: minuteLabel(end) };
+    }
+  }
+  throw new Error(`No ${durationMinutes}-minute blocker window is open on ${date}.`);
+}
+
+function localMinuteOnDate(
+  value: string,
+  date: string,
+  boundary: "start" | "end",
+): number {
+  const localDate = value.slice(0, 10);
+  if (localDate < date) return 0;
+  if (localDate > date) return 24 * 60;
+  const [hours, minutes] = value.slice(11, 16).split(":").map(Number);
+  const result = hours * 60 + minutes;
+  return boundary === "end" && result === 0 && value.slice(0, 10) > date ? 24 * 60 : result;
+}
+
+function minuteLabel(minutes: number): string {
+  return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+function shiftIsoDate(value: string, days: number): string {
+  const date = new Date(`${value}T12:00:00Z`);
+  if (Number.isNaN(date.getTime())) throw new Error(`Invalid ISO date: ${value}`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 async function signIn(page: Page): Promise<{ cookie: SessionCookie }> {

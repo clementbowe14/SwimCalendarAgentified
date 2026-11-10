@@ -20,6 +20,111 @@ test("navigates the instructor command screens with the local adapter", async ({
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
 });
 
+test("creates, edits, and confirmation-gates removal of schedule events", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Add schedule event" }).click();
+
+  let dialog = page.getByRole("dialog", { name: "Add schedule event" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toBeFocused();
+  await dialog.getByRole("radio", { name: /Personal/ }).check();
+  await dialog.getByLabel("Title").fill("School pickup");
+  await dialog.getByLabel("Date").fill("2026-08-28");
+  await dialog.getByLabel("Starts").fill("13:15");
+  await dialog.getByLabel("Ends").fill("14:00");
+  await dialog.getByLabel("Location Optional").fill("500 North Ave, Austin, TX");
+  await dialog.getByRole("button", { name: "Add to schedule" }).click();
+
+  const createdRow = page.locator("[data-agenda-row]").filter({ hasText: "School pickup" });
+  await expect(createdRow).toContainText("Personal event");
+  await expect(createdRow).toContainText("500 North Ave, Austin, TX");
+  await expect(createdRow.getByRole("button", { name: "Edit School pickup" })).toBeFocused();
+
+  await createdRow.getByRole("button", { name: "Edit School pickup" }).click();
+  dialog = page.getByRole("dialog", { name: "Edit School pickup" });
+  await dialog.getByRole("radio", { name: /Unavailable/ }).check();
+  await expect(dialog.getByLabel("Location Optional")).toHaveCount(0);
+  await dialog.getByLabel("Title").fill("Family commitment");
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+
+  const updatedRow = page.locator("[data-agenda-row]").filter({ hasText: "Family commitment" });
+  await expect(updatedRow).toContainText("Unavailable");
+  await expect(updatedRow).not.toContainText("500 North Ave");
+
+  await updatedRow.getByRole("button", { name: "Edit Family commitment" }).click();
+  dialog = page.getByRole("dialog", { name: "Edit Family commitment" });
+  await dialog.getByLabel("Title").fill("Unsaved removal title");
+  await dialog.getByLabel("Date").fill("2026-09-04");
+  await dialog.getByRole("button", { name: "Remove event" }).click();
+  await expect(page.getByRole("dialog", { name: "Remove Family commitment?" })).toContainText(
+    "2026-08-28",
+  );
+  await expect(page.getByRole("dialog", { name: "Remove Family commitment?" })).not.toContainText(
+    "2026-09-04",
+  );
+  await page.getByRole("button", { name: "Keep event" }).click();
+  dialog = page.getByRole("dialog", { name: "Edit Unsaved removal title" });
+  await expect(dialog.getByLabel("Title")).toHaveValue("Unsaved removal title");
+  await expect(dialog.getByLabel("Date")).toHaveValue("2026-09-04");
+
+  await dialog.getByRole("button", { name: "Remove event" }).click();
+  await page.getByRole("button", { name: "Remove event" }).click();
+  await expect(updatedRow).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add schedule event" })).toBeFocused();
+});
+
+test("requires explicit confirmation before discarding schedule-event edits", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Add schedule event" }).click();
+  let dialog = page.getByRole("dialog", { name: "Add schedule event" });
+  await dialog.getByLabel("Title").fill("Do not lose this");
+
+  await page.keyboard.press("Escape");
+  let confirmation = page.getByRole("dialog", { name: "Discard changes to Do not lose this?" });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole("button", { name: "Keep editing" }).click();
+
+  dialog = page.getByRole("dialog", { name: "Add schedule event" });
+  await expect(dialog.getByLabel("Title")).toHaveValue("Do not lose this");
+  await page.locator("[data-blocker-backdrop]").click({ position: { x: 3, y: 3 } });
+  confirmation = page.getByRole("dialog", { name: "Discard changes to Do not lose this?" });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole("button", { name: "Keep editing" }).click();
+
+  dialog = page.getByRole("dialog", { name: "Add schedule event" });
+  await expect(dialog.getByLabel("Title")).toHaveValue("Do not lose this");
+  await dialog.getByRole("button", { name: "Close schedule event editor" }).click();
+  confirmation = page.getByRole("dialog", { name: "Discard changes to Do not lose this?" });
+  await confirmation.getByRole("button", { name: "Discard changes" }).click();
+
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add schedule event" })).toBeFocused();
+});
+
+test("keeps the schedule-event editor one-handed at 320px", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Add schedule event" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add schedule event" });
+
+  for (const control of await dialog.locator("button, input").all()) {
+    const bounds = await control.boundingBox();
+    expect(bounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+  }
+  const overflow = await dialog.evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+    viewportBottom: window.innerHeight,
+    bounds: element.getBoundingClientRect().toJSON(),
+  }));
+  expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
+  expect(overflow.bounds.x).toBeGreaterThanOrEqual(0);
+  expect(overflow.bounds.right).toBeLessThanOrEqual(320);
+
+  await dialog.getByRole("button", { name: "Add to schedule" }).scrollIntoViewIfNeeded();
+  await expect(dialog.getByRole("button", { name: "Add to schedule" })).toBeVisible();
+});
+
 test("saves one canonical provider configuration while keeping scheduler rules separate", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Settings" }).click();

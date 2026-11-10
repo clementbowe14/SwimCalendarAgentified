@@ -6,7 +6,9 @@ export type RequestStatus = "pending" | "approved" | "needs_alternatives" | "dec
 
 export type RequestRisk = "clear" | "at_risk";
 
-export type AppointmentKind = "lesson" | "travel" | "buffer" | "break" | "open_gap";
+export type BlockerKind = "break" | "personal" | "unavailable";
+
+export type AppointmentKind = "lesson" | "travel" | "buffer" | BlockerKind | "open_gap";
 
 export type LessonStatus = "scheduled" | "rescheduled" | "canceled";
 
@@ -220,18 +222,66 @@ export type Client = {
   progress_focus: string;
 };
 
-export type ScheduleItem = {
+type ScheduleItemBase = {
   id: Id;
-  kind: AppointmentKind;
-  client_id?: Id | null;
   title: string;
   start_time: string;
   end_time: string;
-  location: LocationInfo;
   travel_time_mins?: number | null;
   buffer_mins?: number | null;
-  status?: LessonStatus | null;
   note?: string | null;
+  revision?: number | null;
+};
+
+export type LessonScheduleItem = ScheduleItemBase & {
+  kind: "lesson";
+  client_id: Id;
+  location: LocationInfo;
+  status: LessonStatus;
+};
+
+export type BlockerScheduleItem = ScheduleItemBase & {
+  kind: BlockerKind;
+  revision: number;
+  client_id?: null;
+  location: LocationInfo | null;
+  status?: null;
+};
+
+export type UtilityScheduleItem = ScheduleItemBase & {
+  kind: Exclude<AppointmentKind, "lesson" | BlockerKind>;
+  client_id?: Id | null;
+  location: LocationInfo | null;
+  status?: LessonStatus | null;
+};
+
+export type ScheduleItem = LessonScheduleItem | BlockerScheduleItem | UtilityScheduleItem;
+
+export type ProviderBlocker = {
+  id: Id;
+  kind: BlockerKind;
+  title: string;
+  start_time: string;
+  end_time: string;
+  local_date: string;
+  local_start_time: string;
+  local_end_time: string;
+  timezone: string;
+  revision: number;
+  location: LocationInfo | null;
+};
+
+export type BlockerMutation = {
+  kind: BlockerKind;
+  title: string;
+  date: string;
+  start_time: string;
+  end_time: string;
+  location_address: string | null;
+};
+
+export type BlockerUpdate = BlockerMutation & {
+  expected_revision: number;
 };
 
 export type LessonRequest = {
@@ -325,6 +375,10 @@ export type InstructorCommandApi = {
   getSchedulingPolicy(): Promise<SchedulingPolicy>;
   saveSchedulingPolicy(policy: SchedulingPolicyUpdate): Promise<SchedulingPolicy>;
   getSnapshot(instructor_id: Id, date: string): Promise<CommandCenterSnapshot>;
+  getBlockers(date: string): Promise<ProviderBlocker[]>;
+  createBlocker(blocker: BlockerMutation, idempotencyKey: string): Promise<ProviderBlocker>;
+  updateBlocker(blocker_id: Id, blocker: BlockerUpdate): Promise<ProviderBlocker>;
+  deleteBlocker(blocker_id: Id, expected_revision: number): Promise<void>;
   findAvailableSlots(request: BookingRequestDTO): Promise<TimeSlotDTO[]>;
   bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse>;
   confirmRequest(requestId: Id, slotId?: Id): Promise<CoachLessonRequestConfirmResponse>;

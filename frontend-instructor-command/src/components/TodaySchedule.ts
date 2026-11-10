@@ -15,9 +15,12 @@ export function renderTodaySchedule(snapshot: CommandCenterSnapshot): string {
         <div>
           <p class="eyebrow">Next lesson</p>
           <h2>${escapeHtml(nextLesson ? `${nextLesson.title} at ${formatTimeRange(nextLesson.start_time, nextLesson.end_time).split("-")[0]}` : "No lessons scheduled")}</h2>
-          <span>${escapeHtml(nextLesson ? `${nextLesson.location.address} | ${nextLesson.note ?? "Schedule loaded from backend"}` : "Use the finder to create the next safe start.")}</span>
+          <span>${escapeHtml(nextLesson ? `${nextLesson.location?.address ?? "Location unavailable"} | ${nextLesson.note ?? "Schedule loaded from backend"}` : "Use the finder to create the next safe start.")}</span>
         </div>
-        <button class="primary-action" type="button" data-screen="requests">Review requests</button>
+        <div class="schedule-hero-actions">
+          <button class="secondary-action" type="button" data-screen="requests">Review requests</button>
+          <button class="primary-action" type="button" data-add-blocker>Add schedule event</button>
+        </div>
       </section>
       <section class="stats-grid" aria-label="Schedule summary">
         <article><strong>${lessonCount}</strong><span>lessons</span></article>
@@ -28,13 +31,16 @@ export function renderTodaySchedule(snapshot: CommandCenterSnapshot): string {
         ${rows
           .map(
             (row) => `
-              <article class="agenda-row ${row.tone}">
+              <article class="agenda-row ${row.tone}" data-agenda-row="${escapeHtml(row.id)}">
                 <time>${escapeHtml(row.time)}</time>
                 <div>
                   <strong>${escapeHtml(row.title)}</strong>
                   <span>${escapeHtml(row.detail)}</span>
                   ${row.status ? `<small>${escapeHtml(row.status)}</small>` : ""}
                 </div>
+                ${["break", "personal", "unavailable"].includes(row.kind)
+                  ? `<button class="agenda-edit-button" type="button" data-edit-blocker="${escapeHtml(row.id)}" aria-label="Edit ${escapeHtml(row.title)}">Edit</button>`
+                  : ""}
               </article>
             `,
           )
