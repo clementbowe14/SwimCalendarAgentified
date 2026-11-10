@@ -21,6 +21,7 @@ from sqlalchemy import (
     Text,
     Time,
     UniqueConstraint,
+    event,
     text,
 )
 from sqlalchemy.orm import declarative_base, relationship
@@ -227,6 +228,42 @@ class AppointmentDB(Base):
             "status in ('scheduled', 'hold', 'cancelled', 'completed')",
             name="ck_appointments_status",
         ),
+        CheckConstraint(
+            "blocker_kind IS NULL OR blocker_kind IN ('break', 'personal', 'unavailable')",
+            name="ck_appointments_blocker_kind",
+        ),
+        CheckConstraint("revision >= 1", name="ck_appointments_revision_positive"),
+        CheckConstraint(
+            "(location_address IS NULL AND lat IS NULL AND lng IS NULL) OR "
+            "(location_address IS NOT NULL AND btrim(location_address) <> '' "
+            "AND lat IS NOT NULL AND lng IS NOT NULL)",
+            name="ck_appointments_location_complete",
+        ),
+        CheckConstraint(
+            "(lat IS NULL OR lat BETWEEN -90 AND 90) AND "
+            "(lng IS NULL OR lng BETWEEN -180 AND 180)",
+            name="ck_appointments_location_coordinates",
+        ),
+        CheckConstraint(
+            "(event_type = 'block' AND blocker_kind IS NOT NULL "
+            "AND client_id IS NULL AND request_id IS NULL) OR "
+            "(event_type <> 'block' AND blocker_kind IS NULL "
+            "AND (client_id IS NOT NULL OR status = 'cancelled') "
+            "AND location_address IS NOT NULL)",
+            name="ck_appointments_blocker_shape",
+        ),
+        CheckConstraint(
+            "is_break = (event_type = 'block' AND blocker_kind = 'break')",
+            name="ck_appointments_break_consistency",
+        ),
+        CheckConstraint(
+            "blocker_kind IS DISTINCT FROM 'unavailable' OR location_address IS NULL",
+            name="ck_appointments_unavailable_locationless",
+        ),
+        CheckConstraint(
+            "blocker_create_payload IS NULL OR event_type = 'block'",
+            name="ck_appointments_blocker_create_payload",
+        ),
         Index("ix_appointments_instructor_window", "instructor_id", "start_time", "end_time"),
         Index(
             "uq_appointments_instructor_idempotency_key",
@@ -240,24 +277,43 @@ class AppointmentDB(Base):
     id = Column(String, primary_key=True)
     calendar_uid = Column(String, nullable=False, unique=True, default=lambda: str(uuid4()), server_default=text("gen_random_uuid()::text"))
     instructor_id = Column(String, ForeignKey('instructors.id'), nullable=False)
-    client_id = Column(String, nullable=False) # 'client' or 'instructor_break'
+    client_id = Column(String, nullable=True)
     request_id = Column(String, ForeignKey("lesson_requests.id"), nullable=True)
     title = Column(String, nullable=False)
     start_time = Column(DateTime, nullable=False)
     end_time = Column(DateTime, nullable=False)
-    location_address = Column(String, nullable=False)
-    lat = Column(Float, nullable=False)
-    lng = Column(Float, nullable=False)
-    is_break = Column(Boolean, default=False)
+    location_address = Column(String, nullable=True)
+    lat = Column(Float, nullable=True)
+    lng = Column(Float, nullable=True)
+    is_break = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     event_type = Column(String, nullable=False, default="lesson")
+    blocker_kind = Column(String(20), nullable=True)
+    revision = Column(BigInteger, nullable=False, default=1, server_default=text("1"))
     status = Column(String, nullable=False, default="scheduled")
     idempotency_key = Column(String, nullable=True)
+    blocker_create_payload = Column(JSON, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     cancelled_at = Column(DateTime, nullable=True)
 
     instructor = relationship("InstructorDB", back_populates="appointments")
     lesson_request = relationship("LessonRequestDB", back_populates="appointments")
+
+
+@event.listens_for(AppointmentDB, "before_insert")
+@event.listens_for(AppointmentDB, "before_update")
+def _normalize_legacy_block_shape(_mapper, _connection, appointment: AppointmentDB) -> None:
+    """Keep pre-issue callers compatible while the database enforces the new shape."""
+
+    if appointment.event_type == "block" or appointment.is_break is True:
+        appointment.event_type = "block"
+        appointment.blocker_kind = appointment.blocker_kind or "break"
+        appointment.client_id = None
+        appointment.request_id = None
+        appointment.is_break = appointment.blocker_kind == "break"
+    else:
+        appointment.blocker_kind = None
+        appointment.is_break = False
 
 class ClientDB(Base):
     __tablename__ = "clients"

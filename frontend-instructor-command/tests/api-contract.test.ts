@@ -4,7 +4,9 @@ import {
   clearLegacyInstructorAuthState,
   HttpInstructorCommandApi,
   InstructorCommandApiError,
+  MockInstructorCommandApi,
 } from "../src/api/instructorApi.js";
+import { providerDraftFromConfiguration } from "../src/domain/providerSettings.js";
 import type {
   BookingRequestDTO,
   CoachEmailDelivery,
@@ -164,6 +166,309 @@ test("HTTP instructor adapter reads the coach command-center snapshot without ra
       assert.equal(snapshot.rules.rounding_increment_mins, 15);
     },
   );
+});
+
+test("HTTP instructor adapter uses provider-scoped blocker CRUD with CSRF and idempotency", async () => {
+  const calls: FetchCall[] = [];
+  const api = new HttpInstructorCommandApi("http://api.test/api");
+  const blocker = {
+    id: "app/blocker one",
+    kind: "personal" as const,
+    title: "School pickup",
+    start_time: "2026-08-21T14:00:00-05:00",
+    end_time: "2026-08-21T14:45:00-05:00",
+    local_date: "2026-08-21",
+    local_start_time: "14:00",
+    local_end_time: "14:45",
+    timezone: "America/Chicago",
+    revision: 1,
+    location: {
+      address: "500 North Ave, Austin, TX",
+      lat: 30.3,
+      lng: -97.7,
+      is_instructor_facility: false,
+    },
+  };
+  const mutation = {
+    kind: "personal" as const,
+    title: "School pickup",
+    date: "2026-08-21",
+    start_time: "14:00",
+    end_time: "14:45",
+    location_address: "500 North Ave, Austin, TX",
+  };
+
+  await withMockFetch(calls, async (_url, init) => {
+    if (init?.method === "DELETE") return new Response(null, { status: 204 });
+    return jsonResponse(blocker);
+  }, async () => {
+    await api.createBlocker(mutation, "blocker-idempotency-001");
+    await api.updateBlocker(blocker.id, { ...mutation, expected_revision: 1 });
+    await api.deleteBlocker(blocker.id, 1);
+  });
+
+  assert.equal(calls[0].url, "http://api.test/api/coach/blockers");
+  assert.equal(calls[0].init?.method, "POST");
+  assert.equal(calls[0].init?.credentials, "include");
+  assert.equal(headerValue(calls[0].init?.headers, "x-csrf-protection"), "1");
+  assert.equal(headerValue(calls[0].init?.headers, "idempotency-key"), "blocker-idempotency-001");
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), mutation);
+
+  assert.equal(calls[1].url, "http://api.test/api/coach/blockers/app%2Fblocker%20one");
+  assert.equal(calls[1].init?.method, "PUT");
+  assert.equal(headerValue(calls[1].init?.headers, "x-csrf-protection"), "1");
+  assert.deepEqual(JSON.parse(String(calls[1].init?.body)), { ...mutation, expected_revision: 1 });
+
+  assert.equal(
+    calls[2].url,
+    "http://api.test/api/coach/blockers/app%2Fblocker%20one?expected_revision=1",
+  );
+  assert.equal(calls[2].init?.method, "DELETE");
+  assert.equal(calls[2].init?.credentials, "include");
+  assert.equal(headerValue(calls[2].init?.headers, "x-csrf-protection"), "1");
+  assert.equal(calls[2].init?.body, undefined);
+});
+
+test("HTTP instructor adapter encodes the provider-local blocker date", async () => {
+  const calls: FetchCall[] = [];
+  const api = new HttpInstructorCommandApi("http://api.test/api");
+  await withMockFetch(calls, async () => jsonResponse([]), async () => {
+    await api.getBlockers("2026-08-21&provider=other");
+  });
+  assert.equal(
+    calls[0].url,
+    "http://api.test/api/coach/blockers?date=2026-08-21%26provider%3Dother",
+  );
+  assert.equal(calls[0].init?.credentials, "include");
+});
+
+test("mock blocker timestamps use the provider timezone winter offset", async () => {
+  const api = new MockInstructorCommandApi();
+  const blocker = await api.createBlocker({
+    kind: "break",
+    title: "Winter break",
+    date: "2026-12-15",
+    start_time: "12:00",
+    end_time: "12:30",
+    location_address: null,
+  }, "mock-winter-offset");
+
+  assert.equal(blocker.start_time, "2026-12-15T12:00:00-06:00");
+  assert.equal(blocker.end_time, "2026-12-15T12:30:00-06:00");
+  assert.equal(blocker.timezone, "America/Chicago");
+});
+
+test("mock blocker overlap treats naive seeded times and offset times as instants", async () => {
+  const api = new MockInstructorCommandApi();
+  const [seeded] = await api.getBlockers("2026-08-27");
+  assert.equal(seeded.start_time, "2026-08-27T12:15:00-05:00");
+  assert.equal(seeded.end_time, "2026-08-27T12:45:00-05:00");
+
+  const blocker = await api.createBlocker({
+    kind: "unavailable",
+    title: "Ends at lunch",
+    date: "2026-08-27",
+    start_time: "11:45",
+    end_time: "12:15",
+    location_address: null,
+  }, "mock-adjacent-seeded-blocker");
+
+  assert.equal(blocker.end_time, "2026-08-27T12:15:00-05:00");
+});
+
+test("mock blocker timestamps reject nonexistent and ambiguous local times", async () => {
+  const api = new MockInstructorCommandApi();
+  await assert.rejects(
+    () => api.createBlocker({
+      kind: "break",
+      title: "Spring transition",
+      date: "2026-03-08",
+      start_time: "02:15",
+      end_time: "03:15",
+      location_address: null,
+    }, "mock-spring-transition"),
+    (error: unknown) => (
+      error instanceof InstructorCommandApiError
+      && error.code === "VALIDATION_ERROR"
+      && (error.details as { field?: string; reason?: string }).field === "start_time"
+      && (error.details as { field?: string; reason?: string }).reason === "nonexistent_local_time"
+    ),
+  );
+  await assert.rejects(
+    () => api.createBlocker({
+      kind: "break",
+      title: "Fall transition",
+      date: "2026-11-01",
+      start_time: "01:15",
+      end_time: "01:45",
+      location_address: null,
+    }, "mock-fall-transition"),
+    (error: unknown) => (
+      error instanceof InstructorCommandApiError
+      && error.code === "VALIDATION_ERROR"
+      && (error.details as { field?: string; reason?: string }).field === "start_time"
+      && (error.details as { field?: string; reason?: string }).reason === "ambiguous_local_time"
+    ),
+  );
+});
+
+test("mock blocker idempotency replays the immutable create after edit and delete", async () => {
+  const api = new MockInstructorCommandApi();
+  const originalMutation = {
+    kind: "personal" as const,
+    title: "School pickup",
+    date: "2026-12-16",
+    start_time: "13:00",
+    end_time: "13:45",
+    location_address: "500 North Ave, Austin, TX",
+  };
+  const created = await api.createBlocker(originalMutation, "mock-immutable-create");
+
+  await api.updateBlocker(created.id, {
+    kind: "unavailable",
+    title: "Family commitment",
+    date: "2026-12-16",
+    start_time: "15:00",
+    end_time: "15:45",
+    location_address: null,
+    expected_revision: 1,
+  });
+  await api.saveProvider({
+    ...providerDraftFromConfiguration(await api.getProvider()),
+    timezone: "America/New_York",
+  });
+  assert.deepEqual(
+    await api.createBlocker(originalMutation, "mock-immutable-create"),
+    created,
+  );
+
+  await api.deleteBlocker(created.id, 2);
+  assert.deepEqual(
+    await api.createBlocker(originalMutation, "mock-immutable-create"),
+    created,
+  );
+});
+
+test("mock schedule reads reproject canonical blocker instants after a timezone change", async () => {
+  const api = new MockInstructorCommandApi();
+  const mutation = {
+    kind: "unavailable" as const,
+    title: "Late admin",
+    date: "2026-12-16",
+    start_time: "23:00",
+    end_time: "23:30",
+    location_address: null,
+  };
+  const created = await api.createBlocker(mutation, "mock-timezone-reprojection");
+  assert.equal(created.start_time, "2026-12-16T23:00:00-06:00");
+
+  await api.saveProvider({
+    ...providerDraftFromConfiguration(await api.getProvider()),
+    timezone: "America/New_York",
+  });
+
+  assert.equal(
+    (await api.getBlockers("2026-12-16")).some(({ id }) => id === created.id),
+    false,
+  );
+  const [projected] = (await api.getBlockers("2026-12-17"))
+    .filter(({ id }) => id === created.id);
+  assert.equal(projected.start_time, "2026-12-17T00:00:00-05:00");
+  assert.equal(projected.end_time, "2026-12-17T00:30:00-05:00");
+  assert.equal(projected.local_date, "2026-12-17");
+  assert.equal(projected.timezone, "America/New_York");
+  assert.equal(
+    (await api.getSnapshot("inst_riley_001", "2026-12-17")).schedule
+      .some(({ id }) => id === created.id),
+    true,
+  );
+  assert.deepEqual(
+    await api.createBlocker(mutation, "mock-timezone-reprojection"),
+    created,
+  );
+});
+
+test("mock date reads include a reprojected blocker that began on the prior local day", async () => {
+  const api = new MockInstructorCommandApi();
+  const created = await api.createBlocker({
+    kind: "break",
+    title: "Early paperwork",
+    date: "2026-12-16",
+    start_time: "00:30",
+    end_time: "02:30",
+    location_address: null,
+  }, "mock-timezone-day-overlap");
+
+  await api.saveProvider({
+    ...providerDraftFromConfiguration(await api.getProvider()),
+    timezone: "America/Los_Angeles",
+  });
+
+  const projected = (await api.getBlockers("2026-12-16"))
+    .find(({ id }) => id === created.id);
+  assert.equal(projected?.start_time, "2026-12-15T22:30:00-08:00");
+  assert.equal(projected?.end_time, "2026-12-16T00:30:00-08:00");
+  assert.equal(
+    (await api.getSnapshot("inst_riley_001", "2026-12-16")).schedule
+      .some(({ id }) => id === created.id),
+    true,
+  );
+});
+
+test("mock date reads tolerate IANA zones whose local day does not begin at midnight", async () => {
+  const api = new MockInstructorCommandApi();
+  await api.saveProvider({
+    ...providerDraftFromConfiguration(await api.getProvider()),
+    timezone: "America/Santiago",
+  });
+  const blocker = await api.createBlocker({
+    kind: "unavailable",
+    title: "Transition-day event",
+    date: "2026-09-06",
+    start_time: "04:00",
+    end_time: "04:30",
+    location_address: null,
+  }, "mock-midnight-transition-day");
+
+  assert.equal((await api.getSnapshot("inst_riley_001", "2026-09-06")).date, "2026-09-06");
+  assert.equal(
+    (await api.getBlockers("2026-09-06")).some(({ id }) => id === blocker.id),
+    true,
+  );
+});
+
+test("mock availability excludes slots occupied by provider blockers", async () => {
+  const api = new MockInstructorCommandApi();
+  const request: BookingRequestDTO = {
+    instructor_id: "inst_riley_001",
+    client_id: "client_sofia",
+    client_name: "Sofia Martinez",
+    location: {
+      address: "450 North Blvd, Austin, TX",
+      lat: 30.33,
+      lng: -97.72,
+      is_instructor_facility: false,
+    },
+    requested_date: "2026-08-27",
+    duration_mins: 45,
+  };
+  assert.equal(
+    (await api.findAvailableSlots(request)).some((slot) => slot.id === "slot_sofia_0827_1800"),
+    true,
+  );
+
+  await api.createBlocker({
+    kind: "unavailable",
+    title: "Evening commitment",
+    date: "2026-08-27",
+    start_time: "18:00",
+    end_time: "18:45",
+    location_address: null,
+  }, "mock-blocked-availability");
+  const after = await api.findAvailableSlots(request);
+
+  assert.equal(after.some((slot) => slot.id === "slot_sofia_0827_1800"), false);
+  assert.equal(after.some((slot) => slot.id === "slot_sofia_0827_1845"), true);
 });
 
 test("HTTP instructor adapter maps prototype availability requests onto the coach availability contract", async () => {

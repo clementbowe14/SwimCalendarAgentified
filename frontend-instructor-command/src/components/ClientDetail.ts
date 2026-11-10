@@ -21,7 +21,7 @@ export function renderClientDetail(snapshot: CommandCenterSnapshot, clientId: st
         <article>
           <p class="eyebrow">Next lesson</p>
           <h3>${nextLesson ? `${formatShortDate(nextLesson.start_time)} ${formatTimeRange(nextLesson.start_time, nextLesson.end_time)}` : "No lesson scheduled"}</h3>
-          <span>${nextLesson ? escapeHtml(nextLesson.location.address) : "Use Find to recommend safe times."}</span>
+          <span>${nextLesson ? escapeHtml(nextLesson.location?.address ?? "Location unavailable") : "Use Find to recommend safe times."}</span>
         </article>
         <article>
           <p class="eyebrow">Progress focus</p>

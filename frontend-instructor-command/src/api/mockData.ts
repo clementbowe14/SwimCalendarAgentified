@@ -251,6 +251,7 @@ export const schedule: ScheduleItem[] = [
     start_time: "2026-08-27T12:15:00",
     end_time: "2026-08-27T12:45:00",
     location: instructorFacility,
+    revision: 1,
     note: "Protected recovery break",
   },
 ];

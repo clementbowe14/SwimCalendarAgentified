@@ -14,6 +14,7 @@ from app.api import create_app
 from app.api_schemas import (
     BookLessonResponse,
     CoachAuthResponse,
+    CoachBlockerResponse,
     CoachCommandCenterSnapshot,
     CoachEmailDeliveryResponse,
     CoachLessonRequestConfirmResponse,
@@ -309,6 +310,21 @@ def build_contract_artifacts() -> dict[str, Any]:
                 }
             ],
         },
+        "fixtures/coach/blocker_response.json": CoachBlockerResponse.model_validate(
+            {
+                "id": "block_contract_lunch",
+                "kind": "break",
+                "title": "Lunch",
+                "start_time": "2026-08-20T12:00:00-05:00",
+                "end_time": "2026-08-20T12:30:00-05:00",
+                "local_date": "2026-08-20",
+                "local_start_time": "12:00",
+                "local_end_time": "12:30",
+                "timezone": "America/Chicago",
+                "revision": 1,
+                "location": None,
+            }
+        ).model_dump(mode="json"),
         "fixtures/coach/settings.json": coach_settings_fixture,
         "fixtures/coach/scheduling_policy.json": coach_scheduling_policy_fixture,
         "fixtures/coach/provider.json": coach_provider_fixture,
@@ -578,6 +594,11 @@ default duration, and weekly hours use authenticated `GET /api/coach/provider` a
 `PUT /api/coach/scheduling-policy`. The deprecated `GET /api/coach/settings` response remains for
 read compatibility, while its legacy `PUT` returns 410 and cannot mutate policy or payment data.
 Public invite payloads expose only the service location, never the private base.
+
+Provider-managed breaks, personal events, and unavailable windows use authenticated
+`GET /api/coach/blockers`, `POST /api/coach/blockers`, and
+`PUT`/`DELETE /api/coach/blockers/{blocker_id}`. Mutations use optimistic revisions; creates also
+require an `Idempotency-Key` header so a retry cannot duplicate a schedule event.
 
 Instructor calendar handoffs use authenticated
 `GET /api/coach/appointments/{appointment_id}/calendar-links` and

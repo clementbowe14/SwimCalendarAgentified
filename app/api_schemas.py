@@ -2,7 +2,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 import math
 import re
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -214,10 +214,77 @@ class AppointmentResponse(BaseModel):
     title: str
     start_time: datetime
     end_time: datetime
-    location_address: str
-    lat: float
-    lng: float
+    location_address: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
     is_break: bool
+    blocker_kind: Optional[Literal["break", "personal", "unavailable"]] = None
+    revision: int = Field(default=1, ge=1)
+
+
+CoachBlockerKind = Literal["break", "personal", "unavailable"]
+
+
+class CoachBlockerMutation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: CoachBlockerKind
+    title: str = Field(min_length=1, max_length=160)
+    date: date
+    start_time: str
+    end_time: str
+    location_address: Optional[str] = Field(default=None, max_length=300)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def trim_title(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("start_time", "end_time", mode="before")
+    @classmethod
+    def normalize_time(cls, value: object) -> object:
+        if not isinstance(value, str) or not re.fullmatch(
+            r"(?:[01]\d|2[0-3]):[0-5]\d",
+            value.strip(),
+        ):
+            raise ValueError("Time must use 24-hour HH:MM format.")
+        return value.strip()
+
+    @field_validator("location_address", mode="before")
+    @classmethod
+    def normalize_location(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_blocker(self) -> "CoachBlockerMutation":
+        if self.end_time <= self.start_time:
+            raise ValueError("End time must be later than start time on the same date.")
+        if self.kind != "personal" and self.location_address is not None:
+            raise ValueError("Only personal events may include a location.")
+        return self
+
+
+class CoachBlockerUpdate(CoachBlockerMutation):
+    expected_revision: int = Field(ge=1, strict=True)
+
+
+class CoachBlockerResponse(BaseModel):
+    id: str
+    kind: CoachBlockerKind
+    title: str
+    start_time: datetime
+    end_time: datetime
+    local_date: date
+    local_start_time: str
+    local_end_time: str
+    timezone: str
+    revision: int = Field(ge=1)
+    location: Optional[LocationResponse]
 
 
 class CoachScheduleResponse(BaseModel):
@@ -260,18 +327,45 @@ class CoachTimeSlotResponse(BaseModel):
     next_event_id: Optional[str] = None
 
 
-class CoachScheduleItemResponse(BaseModel):
+class CoachScheduleItemBase(BaseModel):
     id: str
-    kind: Literal["lesson", "travel", "buffer", "break", "open_gap"]
-    client_id: Optional[str] = None
     title: str
     start_time: datetime
     end_time: datetime
-    location: LocationResponse
     travel_time_mins: Optional[int] = None
     buffer_mins: Optional[int] = None
-    status: Optional[Literal["scheduled", "rescheduled", "canceled"]] = None
     note: Optional[str] = None
+    revision: Optional[int] = Field(default=None, ge=1)
+
+
+class CoachLessonScheduleItemResponse(CoachScheduleItemBase):
+    kind: Literal["lesson"]
+    client_id: str
+    location: LocationResponse
+    status: Literal["scheduled", "rescheduled", "canceled"]
+
+
+class CoachBlockerScheduleItemResponse(CoachScheduleItemBase):
+    kind: Literal["break", "personal", "unavailable"]
+    revision: int = Field(ge=1)
+    client_id: None = None
+    location: Optional[LocationResponse]
+    status: None = None
+
+
+class CoachUtilityScheduleItemResponse(CoachScheduleItemBase):
+    kind: Literal["travel", "buffer", "open_gap"]
+    client_id: Optional[str] = None
+    location: Optional[LocationResponse] = None
+    status: Optional[Literal["scheduled", "rescheduled", "canceled"]] = None
+
+
+CoachScheduleItemResponse = Annotated[
+    CoachLessonScheduleItemResponse
+    | CoachBlockerScheduleItemResponse
+    | CoachUtilityScheduleItemResponse,
+    Field(discriminator="kind"),
+]
 
 
 class CoachLessonRequestResponse(BaseModel):

@@ -17,6 +17,9 @@ from app.api_schemas import (
     AvailabilitySearchResponse,
     BookLessonResponse,
     ClientInviteCalendarLinks,
+    CoachBlockerMutation,
+    CoachBlockerResponse,
+    CoachBlockerUpdate,
     CoachBookLessonRequest,
     CoachCommandCenterSnapshot,
     CoachContext as CoachContextResponse,
@@ -38,11 +41,14 @@ from app.api_schemas import (
 from app.api_services import (
     approve_coach_lesson_request,
     book_coach_lesson,
+    create_coach_blocker,
     confirm_coach_lesson_request,
     decline_coach_lesson_request,
+    delete_coach_blocker,
     get_coach_command_center_snapshot,
     get_coach_calendar_ics,
     get_coach_calendar_links,
+    get_coach_blockers,
     get_coach_provider_settings,
     get_coach_schedule,
     get_coach_scheduler_settings,
@@ -50,6 +56,7 @@ from app.api_services import (
     request_alternatives_for_coach_lesson_request,
     search_coach_availability,
     update_coach_provider_settings,
+    update_coach_blocker,
     update_coach_scheduling_policy,
 )
 from app.dependencies import CoachContext, get_current_coach, require_csrf_protection
@@ -60,6 +67,21 @@ router = APIRouter(
     tags=["coach"],
     dependencies=[Depends(get_current_coach), Depends(require_csrf_protection)],
 )
+
+BLOCKER_ERROR_RESPONSES = {
+    404: {
+        "model": ErrorResponse,
+        "description": "The provider or schedule event could not be found.",
+    },
+    409: {
+        "model": ErrorResponse,
+        "description": "The schedule, revision, setup, or idempotency key conflicts.",
+    },
+    422: {
+        "model": ErrorResponse,
+        "description": "The blocker input, local time, or location is invalid.",
+    },
+}
 
 
 class CalendarTextResponse(PlainTextResponse):
@@ -171,6 +193,59 @@ def read_schedule(
     coach: CoachContext = Depends(get_current_coach),
 ) -> CoachScheduleResponse:
     return get_coach_schedule(coach.instructor_id, date_)
+
+
+@router.get(
+    "/blockers",
+    response_model=list[CoachBlockerResponse],
+    responses=BLOCKER_ERROR_RESPONSES,
+)
+def read_blockers(
+    date_: date = Query(alias="date"),
+    coach: CoachContext = Depends(get_current_coach),
+) -> list[CoachBlockerResponse]:
+    return get_coach_blockers(coach.instructor_id, date_)
+
+
+@router.post(
+    "/blockers",
+    response_model=CoachBlockerResponse,
+    status_code=201,
+    responses=BLOCKER_ERROR_RESPONSES,
+)
+def create_blocker(
+    blocker: CoachBlockerMutation,
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=8, max_length=160),
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachBlockerResponse:
+    return create_coach_blocker(coach.instructor_id, blocker, idempotency_key)
+
+
+@router.put(
+    "/blockers/{blocker_id}",
+    response_model=CoachBlockerResponse,
+    responses=BLOCKER_ERROR_RESPONSES,
+)
+def update_blocker(
+    blocker_id: str,
+    blocker: CoachBlockerUpdate,
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachBlockerResponse:
+    return update_coach_blocker(coach.instructor_id, blocker_id, blocker)
+
+
+@router.delete(
+    "/blockers/{blocker_id}",
+    status_code=204,
+    responses=BLOCKER_ERROR_RESPONSES,
+)
+def remove_blocker(
+    blocker_id: str,
+    expected_revision: int = Query(ge=1),
+    coach: CoachContext = Depends(get_current_coach),
+) -> Response:
+    delete_coach_blocker(coach.instructor_id, blocker_id, expected_revision)
+    return Response(status_code=204)
 
 
 @router.get(

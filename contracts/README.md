@@ -42,6 +42,11 @@ default duration, and weekly hours use authenticated `GET /api/coach/provider` a
 read compatibility, while its legacy `PUT` returns 410 and cannot mutate policy or payment data.
 Public invite payloads expose only the service location, never the private base.
 
+Provider-managed breaks, personal events, and unavailable windows use authenticated
+`GET /api/coach/blockers`, `POST /api/coach/blockers`, and
+`PUT`/`DELETE /api/coach/blockers/{blocker_id}`. Mutations use optimistic revisions; creates also
+require an `Idempotency-Key` header so a retry cannot duplicate a schedule event.
+
 Instructor calendar handoffs use authenticated
 `GET /api/coach/appointments/{appointment_id}/calendar-links` and
 `GET /api/coach/appointments/{appointment_id}/calendar.ics` routes. The `.ics` download requires the

@@ -6,6 +6,8 @@ import {
 } from "./api/instructorApi.js";
 import type {
   BookingRequestDTO,
+  BlockerScheduleItem,
+  BlockerMutation,
   CalendarLinks,
   CoachEmailDelivery,
   CommandCenterSnapshot,
@@ -17,6 +19,10 @@ import type {
 } from "./api/types.js";
 import { resolveInstructorDataMode } from "./config/dataMode.js";
 import { renderAvailabilityFinder } from "./components/AvailabilityFinder.js";
+import {
+  renderBlockerEditor,
+  type BlockerEditorModel,
+} from "./components/BlockerEditor.js";
 import {
   renderCalendarHandoffModal,
   type CalendarHandoffModalModel,
@@ -98,6 +104,9 @@ type AppState = {
   availabilityContext: BookingRequestDTO | null;
   availability: AvailabilityUiState;
   calendarHandoff: CalendarHandoffModalModel | null;
+  blockerEditor: BlockerEditorModel | null;
+  blockerReturnFocus: { kind: "add" | "edit"; id?: string } | null;
+  blockerFocusPending: { kind: "add" | "edit"; id?: string } | null;
   toast: string;
   error: string;
   schedulingPolicy: SchedulingPolicy | null;
@@ -132,6 +141,9 @@ const state: AppState = {
   availabilityContext: null,
   availability: { status: "idle", message: "" },
   calendarHandoff: null,
+  blockerEditor: null,
+  blockerReturnFocus: null,
+  blockerFocusPending: null,
   toast: "",
   error: "",
   schedulingPolicy: null,
@@ -151,7 +163,7 @@ const state: AppState = {
 };
 
 const instructorId = import.meta.env?.VITE_INSTRUCTOR_ID || "inst_riley_001";
-const commandDate = import.meta.env?.VITE_INSTRUCTOR_COMMAND_DATE || "2026-08-27";
+const configuredCommandDate = import.meta.env?.VITE_INSTRUCTOR_COMMAND_DATE || "2026-08-27";
 const instructorApiBaseUrl = instructorRuntimeConfig.mode === "http"
   ? instructorRuntimeConfig.apiBaseUrl
   : "";
@@ -221,7 +233,10 @@ async function loadCommandCenter(generation: number): Promise<void> {
     if (!isCurrentSignedInGeneration(generation)) return;
     state.provider = provider;
     state.providerDraft = providerDraftFromConfiguration(provider);
-    const snapshot = await instructorCommandApi.getSnapshot(instructorId, commandDate);
+    const snapshot = await instructorCommandApi.getSnapshot(
+      instructorId,
+      initialCommandDate(configuredCommandDate),
+    );
     if (!isCurrentSignedInGeneration(generation)) return;
     applySnapshot(snapshot);
     if (!state.snapshot) return;
@@ -261,18 +276,23 @@ function render(): void {
   const modal = state.calendarHandoff
     ? renderCalendarHandoffModal(state.calendarHandoff, instructorApiBaseUrl, window.location.href)
     : "";
-  document.body.classList.toggle("calendar-modal-open", Boolean(state.calendarHandoff));
+  const blockerModal = state.blockerEditor ? renderBlockerEditor(state.blockerEditor) : "";
+  const hasModal = Boolean(state.calendarHandoff || state.blockerEditor);
+  document.body.classList.toggle("calendar-modal-open", hasModal);
   app.innerHTML = `
-    <div data-command-surface ${state.calendarHandoff ? "inert" : ""}>
+    <div data-command-surface ${hasModal ? "inert" : ""}>
       ${renderShell(state.snapshot, state.activeScreen, `${renderError()}${body}`)}
       ${renderToast()}
     </div>
     ${modal}
+    ${blockerModal}
   `;
   wireEvents();
   wireCalendarHandoffEvents();
+  wireBlockerEditorEvents();
   restoreDeliveryFocus();
   restorePolicyFocus();
+  restoreBlockerFocus();
 }
 
 function renderLockedScreen(): string {
@@ -415,6 +435,16 @@ function wireEvents(): void {
     });
   });
 
+  app.querySelector<HTMLButtonElement>("[data-add-blocker]")?.addEventListener("click", () => {
+    openCreateBlockerEditor();
+  });
+
+  app.querySelectorAll<HTMLButtonElement>("[data-edit-blocker]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openEditBlockerEditor(button.dataset.editBlocker ?? "");
+    });
+  });
+
   app.querySelectorAll<HTMLButtonElement>("[data-setup-required-action], [data-open-provider-settings]").forEach((button) => {
     button.addEventListener("click", () => {
       const action = button.dataset.setupRequiredAction;
@@ -482,7 +512,7 @@ function wireEvents(): void {
       await runAction(async (generation) => {
         await instructorCommandApi.requestAlternatives(button.dataset.alternativesRequest ?? "", []);
         if (!isCurrentSignedInGeneration(generation)) return;
-        const snapshot = await instructorCommandApi.getSnapshot(instructorId, commandDate);
+        const snapshot = await instructorCommandApi.getSnapshot(instructorId, activeScheduleDate());
         if (!isCurrentSignedInGeneration(generation)) return;
         applySnapshot(snapshot);
         state.toast = "Alternatives requested.";
@@ -493,6 +523,378 @@ function wireEvents(): void {
   wireEmailDeliveryEvents();
   wireProviderSettingsEvents();
   wireSchedulingPolicyEvents();
+}
+
+function openCreateBlockerEditor(): void {
+  if (!state.snapshot) return;
+  state.blockerReturnFocus = { kind: "add" };
+  const draft: BlockerMutation = {
+    kind: "break",
+    title: "Break",
+    date: state.snapshot.date,
+    start_time: "12:00",
+    end_time: "12:30",
+    location_address: null,
+  };
+  state.blockerEditor = {
+    mode: "create",
+    blockerId: null,
+    revision: null,
+    idempotencyKey: newBlockerIdempotencyKey(state.snapshot.date),
+    draft: copyBlockerDraft(draft),
+    initialDraft: copyBlockerDraft(draft),
+    pending: false,
+    error: "",
+    deleteConfirm: false,
+    discardConfirm: false,
+  };
+  render();
+}
+
+function openEditBlockerEditor(blockerId: string): void {
+  const blocker = state.snapshot?.schedule.find((item) => item.id === blockerId);
+  if (!blocker || !isBlockerScheduleItem(blocker)) return;
+  if (!Number.isInteger(blocker.revision) || blocker.revision < 1) {
+    state.error = "This schedule event is missing its revision. Reload before editing it.";
+    render();
+    return;
+  }
+  state.blockerReturnFocus = { kind: "edit", id: blocker.id };
+  const draft: BlockerMutation = {
+    kind: blocker.kind,
+    title: blocker.title,
+    date: blocker.start_time.slice(0, 10),
+    start_time: blocker.start_time.slice(11, 16),
+    end_time: blocker.end_time.slice(11, 16),
+    location_address: blocker.location?.address ?? null,
+  };
+  state.blockerEditor = {
+    mode: "edit",
+    blockerId: blocker.id,
+    revision: blocker.revision,
+    idempotencyKey: "",
+    draft: copyBlockerDraft(draft),
+    initialDraft: copyBlockerDraft(draft),
+    pending: false,
+    error: "",
+    deleteConfirm: false,
+    discardConfirm: false,
+  };
+  render();
+}
+
+function wireBlockerEditorEvents(): void {
+  const dialog = app.querySelector<HTMLElement>("[data-blocker-dialog]");
+  const editor = state.blockerEditor;
+  if (!dialog || !editor) return;
+
+  app.querySelector<HTMLButtonElement>("[data-blocker-close]")?.addEventListener("click", closeBlockerEditor);
+  app.querySelector<HTMLElement>("[data-blocker-backdrop]")?.addEventListener("click", (event) => {
+    if (event.target === event.currentTarget && !editor.pending && !editor.deleteConfirm) {
+      closeBlockerEditor();
+    }
+  });
+  app.querySelectorAll<HTMLInputElement>('input[name="kind"]').forEach((control) => {
+    control.addEventListener("change", () => {
+      const form = app.querySelector<HTMLFormElement>("[data-blocker-form]");
+      if (!form || !state.blockerEditor) return;
+      state.blockerEditor.draft = blockerDraftFromForm(form);
+      state.blockerEditor.error = "";
+      render();
+      app.querySelector<HTMLInputElement>(`input[name="kind"][value="${control.value}"]`)?.focus();
+    });
+  });
+  app.querySelector<HTMLFormElement>("[data-blocker-form]")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (event.currentTarget instanceof HTMLFormElement) {
+      await saveBlockerEditor(event.currentTarget);
+    }
+  });
+  app.querySelector<HTMLButtonElement>("[data-blocker-remove]")?.addEventListener("click", () => {
+    if (!state.blockerEditor || state.blockerEditor.pending) return;
+    const form = app.querySelector<HTMLFormElement>("[data-blocker-form]");
+    if (form) state.blockerEditor.draft = blockerDraftFromForm(form);
+    state.blockerEditor.deleteConfirm = true;
+    state.blockerEditor.error = "";
+    render();
+  });
+  app.querySelector<HTMLButtonElement>("[data-blocker-keep]")?.addEventListener("click", () => {
+    if (!state.blockerEditor || state.blockerEditor.pending) return;
+    state.blockerEditor.deleteConfirm = false;
+    state.blockerEditor.error = "";
+    render();
+  });
+  app.querySelector<HTMLButtonElement>("[data-blocker-discard-keep]")?.addEventListener("click", () => {
+    if (!state.blockerEditor || state.blockerEditor.pending) return;
+    state.blockerEditor.discardConfirm = false;
+    state.blockerEditor.error = "";
+    render();
+  });
+  app.querySelector<HTMLButtonElement>("[data-blocker-confirm-discard]")?.addEventListener("click", () => {
+    if (!state.blockerEditor || state.blockerEditor.pending) return;
+    dismissBlockerEditor();
+  });
+  app.querySelector<HTMLButtonElement>("[data-blocker-confirm-remove]")?.addEventListener("click", async () => {
+    await removeBlockerEditorEvent();
+  });
+  dialog.addEventListener("keydown", (event) => trapBlockerDialogFocus(event, dialog));
+  dialog.focus();
+}
+
+function closeBlockerEditor(): void {
+  if (!state.blockerEditor || state.blockerEditor.pending) return;
+  if (state.blockerEditor.deleteConfirm) {
+    state.blockerEditor.deleteConfirm = false;
+    state.blockerEditor.error = "";
+    render();
+    return;
+  }
+  if (state.blockerEditor.discardConfirm) {
+    state.blockerEditor.discardConfirm = false;
+    state.blockerEditor.error = "";
+    render();
+    return;
+  }
+  const form = app.querySelector<HTMLFormElement>("[data-blocker-form]");
+  if (form) {
+    state.blockerEditor.draft = blockerDraftFromForm(form);
+  }
+  if (!sameBlockerDraft(state.blockerEditor.draft, state.blockerEditor.initialDraft)) {
+    state.blockerEditor.discardConfirm = true;
+    state.blockerEditor.error = "";
+    render();
+    return;
+  }
+  dismissBlockerEditor();
+}
+
+function dismissBlockerEditor(): void {
+  state.blockerEditor = null;
+  state.blockerFocusPending = state.blockerReturnFocus;
+  state.blockerReturnFocus = null;
+  render();
+}
+
+function copyBlockerDraft(draft: BlockerMutation): BlockerMutation {
+  return { ...draft };
+}
+
+function sameBlockerDraft(left: BlockerMutation, right: BlockerMutation): boolean {
+  return left.kind === right.kind
+    && left.title === right.title
+    && left.date === right.date
+    && left.start_time === right.start_time
+    && left.end_time === right.end_time
+    && left.location_address === right.location_address;
+}
+
+function blockerDraftFromForm(form: HTMLFormElement): BlockerMutation {
+  const data = new FormData(form);
+  const kindValue = String(data.get("kind") ?? "break");
+  const kind = isBlockerKind(kindValue) ? kindValue : "break";
+  const location = kind === "personal" ? String(data.get("location_address") ?? "").trim() : "";
+  return {
+    kind,
+    title: String(data.get("title") ?? "").trim(),
+    date: String(data.get("date") ?? ""),
+    start_time: String(data.get("start_time") ?? ""),
+    end_time: String(data.get("end_time") ?? ""),
+    location_address: location || null,
+  };
+}
+
+function blockerDraftError(draft: BlockerMutation): string {
+  if (!draft.title) return "Enter a title for this schedule event.";
+  if (!draft.date || !draft.start_time || !draft.end_time) return "Choose a date, start time, and end time.";
+  if (draft.end_time <= draft.start_time) return "End time must be later than start time.";
+  return "";
+}
+
+async function saveBlockerEditor(form: HTMLFormElement): Promise<void> {
+  const editor = state.blockerEditor;
+  if (!editor || editor.pending) return;
+  editor.draft = blockerDraftFromForm(form);
+  editor.error = blockerDraftError(editor.draft);
+  if (editor.error) {
+    render();
+    app.querySelector<HTMLElement>("[data-blocker-status]")?.focus();
+    return;
+  }
+  if (editor.mode === "edit" && editor.revision === null) {
+    editor.error = "This schedule event is missing its revision. Reload before saving it.";
+    render();
+    app.querySelector<HTMLElement>("[data-blocker-status]")?.focus();
+    return;
+  }
+
+  const generation = authGeneration;
+  editor.pending = true;
+  editor.error = "";
+  render();
+  let persisted = false;
+  try {
+    const saved = editor.mode === "create"
+      ? await instructorCommandApi.createBlocker(editor.draft, editor.idempotencyKey)
+      : await instructorCommandApi.updateBlocker(editor.blockerId ?? "", {
+          ...editor.draft,
+          expected_revision: editor.revision!,
+        });
+    persisted = true;
+    if (!isCurrentSignedInGeneration(generation)) return;
+    await refreshAfterBlockerMutation(generation, saved.local_date);
+    if (!isCurrentSignedInGeneration(generation)) return;
+    state.blockerEditor = null;
+    state.blockerReturnFocus = null;
+    state.blockerFocusPending = { kind: "edit", id: saved.id };
+    state.toast = editor.mode === "create" ? "Schedule event added." : "Schedule event updated.";
+    render();
+  } catch (error) {
+    if (!isCurrentGeneration(generation)) return;
+    if (handleAuthFailure(
+      error,
+      persisted
+        ? "The schedule event was saved, but your session expired before the agenda refreshed. Sign in again; do not save it again."
+        : undefined,
+      generation,
+    )) return;
+    if (persisted) {
+      state.blockerEditor = null;
+      state.blockerReturnFocus = null;
+      state.blockerFocusPending = { kind: "add" };
+      clearAvailability("stale");
+      state.error = "The schedule event was saved, but the agenda could not refresh. Reload to see it; do not save it again.";
+    } else if (state.blockerEditor) {
+      state.blockerEditor.pending = false;
+      state.blockerEditor.error = formatApiError(error);
+    }
+    render();
+    if (!persisted && state.blockerEditor) {
+      app.querySelector<HTMLElement>("[data-blocker-status]")?.focus();
+    }
+  }
+}
+
+async function removeBlockerEditorEvent(): Promise<void> {
+  const editor = state.blockerEditor;
+  if (
+    !editor
+    || editor.mode !== "edit"
+    || editor.pending
+    || !editor.blockerId
+    || editor.revision === null
+  ) return;
+  const generation = authGeneration;
+  editor.pending = true;
+  editor.error = "";
+  render();
+  let persisted = false;
+  try {
+    await instructorCommandApi.deleteBlocker(editor.blockerId, editor.revision);
+    persisted = true;
+    if (!isCurrentSignedInGeneration(generation)) return;
+    await refreshAfterBlockerMutation(generation, editor.initialDraft.date);
+    if (!isCurrentSignedInGeneration(generation)) return;
+    state.blockerEditor = null;
+    state.blockerReturnFocus = null;
+    state.blockerFocusPending = { kind: "add" };
+    state.toast = "Schedule event removed.";
+    render();
+  } catch (error) {
+    if (!isCurrentGeneration(generation)) return;
+    if (handleAuthFailure(
+      error,
+      persisted
+        ? "The schedule event was removed, but your session expired before the agenda refreshed. Sign in again; do not remove it again."
+        : undefined,
+      generation,
+    )) return;
+    if (persisted) {
+      state.blockerEditor = null;
+      state.blockerReturnFocus = null;
+      state.blockerFocusPending = { kind: "add" };
+      clearAvailability("stale");
+      state.error = "The schedule event was removed, but the agenda could not refresh. Reload to verify it; do not remove it again.";
+    } else if (state.blockerEditor) {
+      state.blockerEditor.pending = false;
+      state.blockerEditor.error = formatApiError(error);
+    }
+    render();
+    if (!persisted && state.blockerEditor) {
+      app.querySelector<HTMLElement>("[data-blocker-status]")?.focus();
+    }
+  }
+}
+
+async function refreshAfterBlockerMutation(
+  generation: number,
+  date: string,
+): Promise<void> {
+  if (!isCurrentSignedInGeneration(generation)) return;
+  persistCommandDate(date);
+  const snapshot = await instructorCommandApi.getSnapshot(instructorId, date);
+  if (!isCurrentSignedInGeneration(generation)) return;
+  applySnapshot(snapshot);
+  clearAvailability("stale");
+}
+
+function trapBlockerDialogFocus(event: KeyboardEvent, dialog: HTMLElement): void {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeBlockerEditor();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = [...dialog.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )].filter((element) => !element.hasAttribute("hidden"));
+  if (!focusable.length) {
+    event.preventDefault();
+    dialog.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (active === dialog) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && (active === first || !dialog.contains(active))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function restoreBlockerFocus(): void {
+  const target = state.blockerFocusPending;
+  if (!target || state.blockerEditor || state.calendarHandoff) return;
+  state.blockerFocusPending = null;
+  if (target.kind === "edit" && target.id) {
+    const edit = [...app.querySelectorAll<HTMLButtonElement>("[data-edit-blocker]")]
+      .find((button) => button.dataset.editBlocker === target.id);
+    if (edit) {
+      edit.focus();
+      return;
+    }
+  }
+  app.querySelector<HTMLButtonElement>("[data-add-blocker]")?.focus();
+}
+
+function isBlockerKind(value: string): value is "break" | "personal" | "unavailable" {
+  return value === "break" || value === "personal" || value === "unavailable";
+}
+
+function isBlockerScheduleItem(
+  item: CommandCenterSnapshot["schedule"][number],
+): item is BlockerScheduleItem {
+  return isBlockerKind(item.kind);
+}
+
+function newBlockerIdempotencyKey(date: string): string {
+  const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `blocker:${date}:${random}`;
 }
 
 function wireSchedulingPolicyEvents(): void {
@@ -1064,6 +1466,30 @@ function applySnapshot(snapshot: CommandCenterSnapshot): void {
       : snapshot.instructor,
     email_deliveries: mergedDeliveries,
   };
+  persistCommandDate(snapshot.date);
+}
+
+function initialCommandDate(fallback: string): string {
+  const requested = new URLSearchParams(window.location.search).get("date")?.trim() ?? "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(requested)) return fallback;
+  const parsed = new Date(`${requested}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === requested
+    ? requested
+    : fallback;
+}
+
+function persistCommandDate(date: string): void {
+  const url = new URL(window.location.href);
+  if (date === configuredCommandDate) {
+    url.searchParams.delete("date");
+  } else {
+    url.searchParams.set("date", date);
+  }
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+function activeScheduleDate(): string {
+  return state.snapshot?.date ?? initialCommandDate(configuredCommandDate);
 }
 
 function patchEmailDeliveries(deliveries: CoachEmailDelivery[]): void {
@@ -1299,7 +1725,7 @@ function unavailableHandoff(
 async function refreshAfterPersistence(generation: number): Promise<void> {
   if (!isCurrentSignedInGeneration(generation)) return;
   try {
-    const snapshot = await instructorCommandApi.getSnapshot(instructorId, commandDate);
+    const snapshot = await instructorCommandApi.getSnapshot(instructorId, activeScheduleDate());
     if (!isCurrentSignedInGeneration(generation)) return;
     applySnapshot(snapshot);
     await refreshSlots(generation);
@@ -1400,6 +1826,9 @@ function clearProtectedState(): void {
   state.availabilityContext = null;
   state.availability = { status: "idle", message: "" };
   state.calendarHandoff = null;
+  state.blockerEditor = null;
+  state.blockerReturnFocus = null;
+  state.blockerFocusPending = null;
   state.schedulingPolicy = null;
   state.schedulingPolicyDraft = null;
   state.policyPending = false;

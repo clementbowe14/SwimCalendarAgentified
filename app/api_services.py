@@ -14,6 +14,8 @@ from sqlalchemy.exc import IntegrityError
 from app import db, timezones, tools
 from app.api_errors import (
     AlternativeSlotContextMismatch,
+    ApiException,
+    BlockerStale,
     CalendarLinksUnavailable,
     GeocodingFailed as GeocodingFailedApiError,
     IdempotencyConflict,
@@ -37,6 +39,10 @@ from app.api_schemas import (
     AvailabilitySearchResponse,
     BookLessonResponse,
     CoachBookLessonRequest,
+    CoachBlockerScheduleItemResponse,
+    CoachBlockerMutation,
+    CoachBlockerResponse,
+    CoachBlockerUpdate,
     CoachClientResponse,
     CoachCommandCenterSnapshot,
     CoachEmailDeliveryResponse,
@@ -45,6 +51,7 @@ from app.api_schemas import (
     CoachLessonRequestConfirmResponse,
     CoachLessonRequestConfirmRequest,
     CoachLessonRequestResponse,
+    CoachLessonScheduleItemResponse,
     CoachScheduleItemResponse,
     CoachScheduleResponse,
     CoachSchedulerRules,
@@ -386,9 +393,273 @@ def get_coach_schedule(instructor_id: str, schedule_date: date) -> CoachSchedule
                 lat=appointment["lat"],
                 lng=appointment["lng"],
                 is_break=appointment["is_break"],
+                blocker_kind=appointment["blocker_kind"],
+                revision=appointment["revision"],
             )
             for appointment in appointments
         ],
+    )
+
+
+def get_coach_blockers(
+    instructor_id: str,
+    blocker_date: date,
+) -> list[CoachBlockerResponse]:
+    configuration = _blocker_provider_configuration(instructor_id)
+    return [
+        _blocker_response(row, configuration.timezone)
+        for row in db.list_blockers_for_date(
+            instructor_id,
+            blocker_date.isoformat(),
+            configuration.timezone,
+        )
+    ]
+
+
+def create_coach_blocker(
+    instructor_id: str,
+    request: CoachBlockerMutation,
+    idempotency_key: str,
+) -> CoachBlockerResponse:
+    replay = _blocker_creation_replay(instructor_id, idempotency_key, request)
+    if replay is not None:
+        return replay
+    configuration = _blocker_provider_configuration(instructor_id)
+    start_time, end_time = _blocker_instants(request, configuration.timezone)
+    address, lat, lng = _blocker_location(request)
+    try:
+        row = db.create_blocker(
+            instructor_id,
+            kind=request.kind,
+            title=request.title,
+            start_time=start_time,
+            end_time=end_time,
+            location_address=address,
+            lat=lat,
+            lng=lng,
+            idempotency_key=idempotency_key,
+            timezone_name=configuration.timezone,
+        )
+    except db.IdempotencyKeyConflictError as exc:
+        replay = _blocker_creation_replay(instructor_id, idempotency_key, request)
+        if replay is not None:
+            return replay
+        raise IdempotencyConflict() from exc
+    except db.ScheduleConflictError as exc:
+        raise SchedulingConflict(
+            "That event overlaps another active schedule item."
+        ) from exc
+    return _blocker_response(
+        row,
+        row.get("creation_timezone", configuration.timezone),
+    )
+
+
+def _blocker_creation_replay(
+    instructor_id: str,
+    idempotency_key: str,
+    request: CoachBlockerMutation,
+) -> Optional[CoachBlockerResponse]:
+    try:
+        existing = db.get_blocker_creation_by_idempotency_key(
+            instructor_id,
+            idempotency_key,
+        )
+    except db.IdempotencyKeyConflictError as exc:
+        raise IdempotencyConflict() from exc
+    if existing is None:
+        return None
+    try:
+        start_time, end_time = _blocker_instants(
+            request,
+            existing["creation_timezone"],
+        )
+    except ApiException as exc:
+        raise IdempotencyConflict() from exc
+    if not _blocker_request_matches_row(existing, request, start_time, end_time):
+        raise IdempotencyConflict()
+    return _blocker_response(existing, existing["creation_timezone"])
+
+
+def update_coach_blocker(
+    instructor_id: str,
+    blocker_id: str,
+    request: CoachBlockerUpdate,
+) -> CoachBlockerResponse:
+    configuration = _blocker_provider_configuration(instructor_id)
+    existing = db.get_active_blocker(instructor_id, blocker_id)
+    if existing is None:
+        raise ResourceNotFound("The schedule event could not be found.")
+    if existing["revision"] != request.expected_revision:
+        raise BlockerStale()
+    start_time, end_time = _blocker_instants(request, configuration.timezone)
+    address, lat, lng = _blocker_location(request)
+    try:
+        row = db.update_blocker(
+            instructor_id,
+            blocker_id,
+            expected_revision=request.expected_revision,
+            kind=request.kind,
+            title=request.title,
+            start_time=start_time,
+            end_time=end_time,
+            location_address=address,
+            lat=lat,
+            lng=lng,
+            timezone_name=configuration.timezone,
+        )
+    except db.BlockerNotFoundError as exc:
+        raise ResourceNotFound("The schedule event could not be found.") from exc
+    except db.BlockerStaleError as exc:
+        raise BlockerStale() from exc
+    except db.ScheduleConflictError as exc:
+        raise SchedulingConflict(
+            "That event overlaps another active schedule item."
+        ) from exc
+    return _blocker_response(row, configuration.timezone)
+
+
+def delete_coach_blocker(
+    instructor_id: str,
+    blocker_id: str,
+    expected_revision: int,
+) -> None:
+    try:
+        db.delete_blocker(
+            instructor_id,
+            blocker_id,
+            expected_revision=expected_revision,
+        )
+    except db.BlockerNotFoundError as exc:
+        raise ResourceNotFound("The schedule event could not be found.") from exc
+    except db.BlockerStaleError as exc:
+        raise BlockerStale() from exc
+
+
+def _blocker_provider_configuration(instructor_id: str) -> ProviderConfiguration:
+    try:
+        configuration = load_provider_configuration(instructor_id)
+    except ProviderNotFound as exc:
+        raise ResourceNotFound("The instructor could not be found.") from exc
+    try:
+        timezones.get_zone(configuration.timezone)
+    except timezones.InvalidTimezoneError as exc:
+        raise ProviderSetupRequired(["timezone"]) from exc
+    return configuration
+
+
+def _blocker_instants(
+    request: CoachBlockerMutation,
+    timezone_name: str,
+) -> tuple[datetime, datetime]:
+    start_time = _blocker_instant(
+        request.date,
+        request.start_time,
+        timezone_name,
+        "start_time",
+    )
+    end_time = _blocker_instant(
+        request.date,
+        request.end_time,
+        timezone_name,
+        "end_time",
+    )
+    if end_time <= start_time:
+        raise ApiException(
+            "VALIDATION_ERROR",
+            "End time must be later than start time.",
+            422,
+            {"field": "end_time"},
+        )
+    return start_time, end_time
+
+
+def _blocker_instant(
+    blocker_date: date,
+    value: str,
+    timezone_name: str,
+    field: str,
+) -> datetime:
+    try:
+        return timezones.parse_local_date_time(blocker_date, value, timezone_name)
+    except timezones.NonexistentLocalTimeError as exc:
+        raise ApiException(
+            "VALIDATION_ERROR",
+            "That local time does not exist because of daylight saving time.",
+            422,
+            {"field": field, "reason": "nonexistent_local_time"},
+        ) from exc
+    except timezones.AmbiguousLocalTimeError as exc:
+        raise ApiException(
+            "VALIDATION_ERROR",
+            "That local time occurs twice because of daylight saving time. Choose another time.",
+            422,
+            {"field": field, "reason": "ambiguous_local_time"},
+        ) from exc
+
+
+def _blocker_location(
+    request: CoachBlockerMutation,
+) -> tuple[Optional[str], Optional[float], Optional[float]]:
+    if request.location_address is None:
+        return None, None, None
+    lat, lng = _provider_location_coordinates(
+        request.location_address,
+        None,
+        "location_address",
+        {},
+    )
+    return request.location_address, lat, lng
+
+
+def _blocker_request_matches_row(
+    row: dict,
+    request: CoachBlockerMutation,
+    start_time: datetime,
+    end_time: datetime,
+) -> bool:
+    return (
+        row["event_type"] == "block"
+        and row["blocker_kind"] == request.kind
+        and row["title"] == request.title
+        and timezones.to_utc_storage(row["start_time"])
+        == timezones.to_utc_storage(start_time)
+        and timezones.to_utc_storage(row["end_time"])
+        == timezones.to_utc_storage(end_time)
+        and row["location_address"] == request.location_address
+    )
+
+
+def _blocker_response(
+    row: dict,
+    timezone_name: str,
+) -> CoachBlockerResponse:
+    location = None
+    if (
+        row["location_address"] is not None
+        and row["lat"] is not None
+        and row["lng"] is not None
+    ):
+        location = LocationResponse(
+            address=row["location_address"],
+            lat=row["lat"],
+            lng=row["lng"],
+            is_instructor_facility=False,
+        )
+    start_time = row["start_time"]
+    end_time = row["end_time"]
+    return CoachBlockerResponse(
+        id=row["id"],
+        kind=row["blocker_kind"] or "break",
+        title=row["title"],
+        start_time=start_time,
+        end_time=end_time,
+        local_date=start_time.date(),
+        local_start_time=start_time.strftime("%H:%M"),
+        local_end_time=end_time.strftime("%H:%M"),
+        timezone=timezone_name,
+        revision=row["revision"],
+        location=location,
     )
 
 
@@ -427,25 +698,46 @@ def _schedule_item_response(
     appointment: dict,
     instructor: CoachInstructorProfileResponse,
 ) -> CoachScheduleItemResponse:
-    is_break = appointment["is_break"] or appointment["event_type"] == "block"
-    is_facility = is_break or appointment["location_address"] == instructor.main_address
+    is_blocker = appointment["event_type"] == "block"
+    blocker_kind = appointment["blocker_kind"] or "break"
+    has_location = (
+        appointment["location_address"] is not None
+        and appointment["lat"] is not None
+        and appointment["lng"] is not None
+    )
+    is_facility = has_location and appointment["location_address"] == instructor.main_address
     title = appointment["title"]
-    if not is_break:
+    if not is_blocker:
         title = title.replace("Lesson with ", "", 1)
-    return CoachScheduleItemResponse(
-        id=appointment["id"],
-        kind="break" if is_break else "lesson",
-        client_id=None if is_break else appointment["client_id"],
-        title=title,
-        start_time=appointment["start_time"],
-        end_time=appointment["end_time"],
-        location=LocationResponse(
+    location = None
+    if has_location:
+        location = LocationResponse(
             address=appointment["location_address"],
             lat=appointment["lat"],
             lng=appointment["lng"],
             is_instructor_facility=is_facility,
-        ),
-        status=None if is_break else _lesson_status(appointment["status"]),
+        )
+    if is_blocker:
+        return CoachBlockerScheduleItemResponse(
+            id=appointment["id"],
+            kind=blocker_kind,
+            title=title,
+            start_time=appointment["start_time"],
+            end_time=appointment["end_time"],
+            location=location,
+            revision=appointment["revision"],
+        )
+    if location is None or appointment["client_id"] is None:
+        raise RuntimeError("Active lessons require a client and complete location.")
+    return CoachLessonScheduleItemResponse(
+        id=appointment["id"],
+        kind="lesson",
+        client_id=appointment["client_id"],
+        title=title,
+        start_time=appointment["start_time"],
+        end_time=appointment["end_time"],
+        location=location,
+        status=_lesson_status(appointment["status"]),
     )
 
 

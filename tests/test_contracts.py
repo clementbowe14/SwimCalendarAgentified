@@ -14,6 +14,7 @@ from app.api_schemas import (
     CoachCommandCenterSnapshot,
     CoachEmailDeliveryResponse,
     CoachAuthResponse,
+    CoachBlockerResponse,
     CoachLessonRequestConfirmResponse,
     CoachProviderSettingsResponse,
     CoachScheduleResponse,
@@ -41,6 +42,7 @@ FIXTURE_SCHEMAS = {
     "fixtures/coach/lesson_request_confirmation_response.json": CoachLessonRequestConfirmResponse,
     "fixtures/coach/availability_search_response.json": AvailabilitySearchResponse,
     "fixtures/coach/schedule_response.json": CoachScheduleResponse,
+    "fixtures/coach/blocker_response.json": CoachBlockerResponse,
     "fixtures/coach/settings.json": CoachSchedulerRules,
     "fixtures/coach/scheduling_policy.json": CoachSchedulingPolicyResponse,
     "fixtures/coach/provider.json": CoachProviderSettingsResponse,
@@ -69,6 +71,8 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/auth/coach/sign-out" in paths
     assert "/api/auth/coach/logout" in paths
     assert "/api/coach/availability" in paths
+    assert "/api/coach/blockers" in paths
+    assert "/api/coach/blockers/{blocker_id}" in paths
     assert "/api/coach/command-center/snapshot" in paths
     assert "/api/coach/appointments/{appointment_id}/calendar-links" in paths
     assert "/api/coach/appointments/{appointment_id}/calendar.ics" in paths
@@ -112,6 +116,54 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/public/command-center/snapshot" not in paths
     assert "/api/public/settings" not in paths
     assert "/api/public/provider" not in paths
+    blocker_create = openapi["paths"]["/api/coach/blockers"]["post"]
+    assert blocker_create["responses"]["201"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/CoachBlockerResponse"
+    }
+    blocker_delete = openapi["paths"]["/api/coach/blockers/{blocker_id}"]["delete"]
+    assert "204" in blocker_delete["responses"]
+    blocker_operations = (
+        openapi["paths"]["/api/coach/blockers"]["get"],
+        blocker_create,
+        openapi["paths"]["/api/coach/blockers/{blocker_id}"]["put"],
+        blocker_delete,
+    )
+    for operation in blocker_operations:
+        for status in ("404", "409", "422"):
+            assert operation["responses"][status]["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/ErrorResponse"
+            }
+    schedule_items = openapi["components"]["schemas"]["CoachCommandCenterSnapshot"][
+        "properties"
+    ]["schedule"]["items"]
+    assert schedule_items["discriminator"]["propertyName"] == "kind"
+    assert schedule_items["discriminator"]["mapping"] == {
+        "lesson": "#/components/schemas/CoachLessonScheduleItemResponse",
+        "break": "#/components/schemas/CoachBlockerScheduleItemResponse",
+        "personal": "#/components/schemas/CoachBlockerScheduleItemResponse",
+        "unavailable": "#/components/schemas/CoachBlockerScheduleItemResponse",
+        "travel": "#/components/schemas/CoachUtilityScheduleItemResponse",
+        "buffer": "#/components/schemas/CoachUtilityScheduleItemResponse",
+        "open_gap": "#/components/schemas/CoachUtilityScheduleItemResponse",
+    }
+    assert {
+        item["$ref"] for item in schedule_items["oneOf"]
+    } == {
+        "#/components/schemas/CoachLessonScheduleItemResponse",
+        "#/components/schemas/CoachBlockerScheduleItemResponse",
+        "#/components/schemas/CoachUtilityScheduleItemResponse",
+    }
+    lesson_schedule_item = openapi["components"]["schemas"][
+        "CoachLessonScheduleItemResponse"
+    ]
+    assert {"kind", "client_id", "location", "status"}.issubset(
+        lesson_schedule_item["required"]
+    )
+    blocker_schedule_item = openapi["components"]["schemas"][
+        "CoachBlockerScheduleItemResponse"
+    ]
+    assert {"revision", "location"}.issubset(blocker_schedule_item["required"])
+    assert blocker_schedule_item["properties"]["revision"]["minimum"] == 1
     routing_readiness = openapi["components"]["schemas"]["RoutingReadinessResponse"]
     assert set(routing_readiness["required"]) == {"provider", "mode", "configured"}
 
@@ -198,6 +250,15 @@ def test_fixtures_validate_against_response_schemas():
     TypeAdapter(list[CoachEmailDeliveryResponse]).validate_python(
         _load_json(CONTRACT_ROOT / "fixtures/coach/email_deliveries.json")
     )
+
+
+def test_blocker_fixture_uses_provider_local_response_instants():
+    payload = _load_json(CONTRACT_ROOT / "fixtures/coach/blocker_response.json")
+    assert payload["timezone"] == "America/Chicago"
+    assert payload["start_time"] == "2026-08-20T12:00:00-05:00"
+    assert payload["end_time"] == "2026-08-20T12:30:00-05:00"
+    openapi = _load_json(CONTRACT_ROOT / "openapi.json")
+    assert "location" in openapi["components"]["schemas"]["CoachBlockerResponse"]["required"]
 
 
 def test_coach_email_delivery_fixture_is_allowlisted_and_privacy_safe():

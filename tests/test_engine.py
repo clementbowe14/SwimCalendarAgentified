@@ -225,3 +225,207 @@ def test_engine_uses_candidate_end_time_for_return_leg_routing(policy):
 def test_engine_requires_an_explicit_policy(routing):
     with pytest.raises(TypeError):
         SwimSchedulerConstraintEngine(routing)
+
+
+def test_locationless_blocker_is_always_a_temporal_boundary(policy):
+    routing = RecordingRoutingProvider()
+    engine = SwimSchedulerConstraintEngine(routing, policy)
+    slots = engine.find_available_slots_for_day(
+        day_start=datetime.datetime(2026, 8, 20, 8, 0),
+        day_end=datetime.datetime(2026, 8, 20, 12, 0),
+        instructor_main_location=LocationInfo(
+            address="Base",
+            lat=30.0,
+            lng=-97.0,
+            is_instructor_facility=True,
+        ),
+        existing_events=[
+            {
+                "id": "block_personal",
+                "event_type": "block",
+                "blocker_kind": "personal",
+                "start_time": datetime.datetime(2026, 8, 20, 9, 0),
+                "end_time": datetime.datetime(2026, 8, 20, 10, 0),
+                "lat": None,
+                "lng": None,
+                "is_break": False,
+            }
+        ],
+        target_location=LocationInfo(
+            address="Target",
+            lat=30.1,
+            lng=-97.1,
+            is_instructor_facility=False,
+        ),
+        duration_mins=30,
+    )
+
+    assert slots
+    assert all(
+        slot.end_time <= datetime.datetime(2026, 8, 20, 9, 0)
+        or slot.start_time >= datetime.datetime(2026, 8, 20, 10, 0)
+        for slot in slots
+    )
+
+
+def test_only_break_kind_applies_post_break_recovery(policy):
+    main_location = LocationInfo(
+        address="Base",
+        lat=30.0,
+        lng=-97.0,
+        is_instructor_facility=True,
+    )
+    target_location = LocationInfo(
+        address="Target",
+        lat=30.1,
+        lng=-97.1,
+        is_instructor_facility=False,
+    )
+
+    def first_after(kind):
+        engine = SwimSchedulerConstraintEngine(RecordingRoutingProvider(), policy)
+        slots = engine.find_available_slots_for_day(
+            day_start=datetime.datetime(2026, 8, 20, 8, 0),
+            day_end=datetime.datetime(2026, 8, 20, 12, 0),
+            instructor_main_location=main_location,
+            existing_events=[
+                {
+                    "id": f"block_{kind}",
+                    "event_type": "block",
+                    "blocker_kind": kind,
+                    "start_time": datetime.datetime(2026, 8, 20, 9, 0),
+                    "end_time": datetime.datetime(2026, 8, 20, 10, 0),
+                    "lat": None,
+                    "lng": None,
+                    "is_break": kind == "break",
+                }
+            ],
+            target_location=target_location,
+            duration_mins=30,
+        )
+        return next(slot for slot in slots if slot.start_time >= datetime.datetime(2026, 8, 20, 10, 0))
+
+    assert first_after("personal").start_time == datetime.datetime(2026, 8, 20, 10, 15)
+    assert first_after("unavailable").start_time == datetime.datetime(2026, 8, 20, 10, 15)
+    assert first_after("break").start_time == datetime.datetime(2026, 8, 20, 10, 30)
+
+
+def test_located_personal_event_becomes_the_next_travel_anchor(policy):
+    routing = RecordingRoutingProvider()
+    engine = SwimSchedulerConstraintEngine(routing, policy)
+    event_coords = (30.4, -97.4)
+    engine.find_available_slots_for_day(
+        day_start=datetime.datetime(2026, 8, 20, 8, 0),
+        day_end=datetime.datetime(2026, 8, 20, 12, 0),
+        instructor_main_location=LocationInfo(
+            address="Base",
+            lat=30.0,
+            lng=-97.0,
+            is_instructor_facility=True,
+        ),
+        existing_events=[
+            {
+                "id": "block_doctor",
+                "event_type": "block",
+                "blocker_kind": "personal",
+                "start_time": datetime.datetime(2026, 8, 20, 9, 0),
+                "end_time": datetime.datetime(2026, 8, 20, 10, 0),
+                "lat": event_coords[0],
+                "lng": event_coords[1],
+                "is_break": False,
+            }
+        ],
+        target_location=LocationInfo(
+            address="Target",
+            lat=30.1,
+            lng=-97.1,
+            is_instructor_facility=False,
+        ),
+        duration_mins=30,
+    )
+
+    assert any(
+        call["origin"] == event_coords
+        and call["departure_time"] == datetime.datetime(2026, 8, 20, 10, 0)
+        for call in routing.calls
+    )
+
+
+class LocationlessLookaheadRoutingProvider(RecordingRoutingProvider):
+    def estimate_route(self, origin_coords, dest_coords, departure_time=None, traffic_mode="none"):
+        self.calls.append(
+            {
+                "origin": origin_coords,
+                "destination": dest_coords,
+                "departure_time": departure_time,
+                "traffic_mode": traffic_mode,
+            }
+        )
+        travel_time = 60 if origin_coords == (30.1, -97.1) and dest_coords == (30.4, -97.4) else 5
+        return RouteEstimate(
+            distance_miles=1.0,
+            travel_time_mins=travel_time,
+            duration_seconds=travel_time * 60,
+            provider=self.provider_name,
+        )
+
+
+def test_candidate_before_locationless_blockers_must_reach_next_physical_event(policy):
+    routing = LocationlessLookaheadRoutingProvider()
+    engine = SwimSchedulerConstraintEngine(routing, policy)
+    slots = engine.find_available_slots_for_day(
+        day_start=datetime.datetime(2026, 8, 20, 8, 0),
+        day_end=datetime.datetime(2026, 8, 20, 12, 0),
+        instructor_main_location=LocationInfo(
+            address="Base",
+            lat=30.0,
+            lng=-97.0,
+            is_instructor_facility=True,
+        ),
+        existing_events=[
+            {
+                "id": "block_one",
+                "event_type": "block",
+                "blocker_kind": "unavailable",
+                "start_time": datetime.datetime(2026, 8, 20, 9, 0),
+                "end_time": datetime.datetime(2026, 8, 20, 9, 30),
+                "lat": None,
+                "lng": None,
+                "is_break": False,
+            },
+            {
+                "id": "block_two",
+                "event_type": "block",
+                "blocker_kind": "personal",
+                "start_time": datetime.datetime(2026, 8, 20, 9, 45),
+                "end_time": datetime.datetime(2026, 8, 20, 10, 15),
+                "lat": None,
+                "lng": None,
+                "is_break": False,
+            },
+            {
+                "id": "physical_next",
+                "event_type": "lesson",
+                "start_time": datetime.datetime(2026, 8, 20, 11, 0),
+                "end_time": datetime.datetime(2026, 8, 20, 11, 30),
+                "lat": 30.4,
+                "lng": -97.4,
+                "is_break": False,
+            },
+        ],
+        target_location=LocationInfo(
+            address="Target",
+            lat=30.1,
+            lng=-97.1,
+            is_instructor_facility=False,
+        ),
+        duration_mins=30,
+    )
+
+    assert not [slot for slot in slots if slot.end_time <= datetime.datetime(2026, 8, 20, 9, 0)]
+    assert any(
+        call["origin"] == (30.1, -97.1)
+        and call["destination"] == (30.4, -97.4)
+        and call["departure_time"] == datetime.datetime(2026, 8, 20, 10, 15)
+        for call in routing.calls
+    )
