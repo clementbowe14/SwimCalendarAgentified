@@ -24,6 +24,21 @@ test.describe("client invite self-booking flow", () => {
     await expectInviteProgress(page, "Step 2 of 5: Times", 40);
   });
 
+  test("preserves the home-pool address while comparing the instructor facility", async ({ page }) => {
+    await page.goto("/");
+
+    const homeAddress = page.getByLabel("Home pool address");
+    await homeAddress.fill("123 Test Home Avenue");
+
+    await page.getByRole("button", { name: "Facility" }).click();
+    await expect(page.getByLabel("Preferred facility")).toHaveValue("Riverside facility, Austin, TX");
+    await expect(page.getByLabel("Preferred facility")).toHaveAttribute("readonly", "");
+
+    await page.getByRole("button", { name: "Home pool" }).click();
+    await expect(page.getByLabel("Home pool address")).toHaveValue("123 Test Home Avenue");
+    await expect(page.getByLabel("Home pool address")).not.toHaveAttribute("readonly", "");
+  });
+
   test("finds backend-shaped slot results from availability preferences", async ({ page }) => {
     await page.goto("/");
     await page.getByRole("button", { name: "Continue to availability" }).click();
