@@ -8,6 +8,9 @@ from app.models import LocationInfo, TimeSlotDTO
 from app.routing import BaseRoutingProvider
 
 
+SLOT_INCREMENT_MINUTES = 15
+
+
 @dataclass(frozen=True)
 class DistanceBufferTier:
     min_miles: float
@@ -17,31 +20,15 @@ class DistanceBufferTier:
 
 @dataclass(frozen=True)
 class BufferPolicy:
-    buffers_enabled: bool
-    apply_distance_buffer_at_shift_start: bool
-    rounding_increment_mins: int
-    post_break_buffer_mins: int
+    distance_buffers_enabled: bool
+    post_break_recovery_mins: int
     distance_buffer_tiers: tuple[DistanceBufferTier, ...]
 
-    @classmethod
-    def default(cls) -> "BufferPolicy":
-        return cls(
-            buffers_enabled=True,
-            apply_distance_buffer_at_shift_start=False,
-            rounding_increment_mins=15,
-            post_break_buffer_mins=15,
-            distance_buffer_tiers=(
-                DistanceBufferTier(0, 4.999, 10),
-                DistanceBufferTier(5, 10, 20),
-                DistanceBufferTier(10.001, None, 30),
-            ),
-        )
-
     def distance_buffer_minutes(self, distance_miles: float) -> int:
-        if not self.buffers_enabled:
-            return 0
         if not math.isfinite(distance_miles) or distance_miles < 0:
             raise ValueError("Distance must be a finite non-negative number.")
+        if not self.distance_buffers_enabled:
+            return 0
         normalized = round(distance_miles, 2)
         for tier in self.distance_buffer_tiers:
             if normalized >= tier.min_miles and (tier.max_miles is None or normalized <= tier.max_miles):
@@ -55,12 +42,10 @@ class BufferPolicy:
         is_after_break: bool,
         is_shift_start: bool,
     ) -> int:
-        if not self.buffers_enabled:
-            return 0
-        if is_shift_start and not self.apply_distance_buffer_at_shift_start:
+        if is_shift_start:
             return 0
         if is_after_break:
-            return self.post_break_buffer_mins
+            return self.post_break_recovery_mins
         return self.distance_buffer_minutes(distance_miles)
 
     def ceil_datetime(
@@ -69,16 +54,16 @@ class BufferPolicy:
         timezone_name: Optional[str] = None,
     ) -> datetime.datetime:
         if value.tzinfo is None or value.utcoffset() is None:
-            return _ceil_naive_label(value, self.rounding_increment_mins)
+            return _ceil_naive_label(value, SLOT_INCREMENT_MINUTES)
 
         zone = timezones.get_zone(timezone_name)
         local = value.astimezone(zone)
-        label = _ceil_naive_label(local.replace(tzinfo=None), self.rounding_increment_mins)
+        label = _ceil_naive_label(local.replace(tzinfo=None), SLOT_INCREMENT_MINUTES)
         while True:
             resolved = _resolve_local_label(label, zone, local.fold)
             if resolved is not None:
                 return resolved.astimezone(value.tzinfo)
-            label += datetime.timedelta(minutes=self.rounding_increment_mins)
+            label += datetime.timedelta(minutes=SLOT_INCREMENT_MINUTES)
 
 
 def _ceil_naive_label(value: datetime.datetime, increment_mins: int) -> datetime.datetime:
@@ -111,11 +96,11 @@ class SwimSchedulerConstraintEngine:
     def __init__(
         self,
         routing_provider: BaseRoutingProvider,
-        buffer_policy: Optional[BufferPolicy] = None,
+        buffer_policy: BufferPolicy,
         timezone_name: Optional[str] = None,
     ):
         self.routing = routing_provider
-        self.buffer_policy = buffer_policy or BufferPolicy.default()
+        self.buffer_policy = buffer_policy
         self.timezone_name = timezone_name
 
     def get_inter_lesson_buffer_minutes(self, distance_miles: float) -> int:
@@ -217,7 +202,7 @@ class SwimSchedulerConstraintEngine:
         raw_start = prev_end_time + datetime.timedelta(minutes=travel_from_prev + buffer_mins)
         current_candidate = self.buffer_policy.ceil_datetime(raw_start, self.timezone_name)
         latest_gap_end = next_start_time if next_coords is not None else day_end
-        increment = datetime.timedelta(minutes=self.buffer_policy.rounding_increment_mins)
+        increment = datetime.timedelta(minutes=SLOT_INCREMENT_MINUTES)
 
         while current_candidate + lesson_delta <= latest_gap_end:
             candidate_end = current_candidate + lesson_delta

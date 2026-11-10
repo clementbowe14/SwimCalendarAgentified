@@ -20,7 +20,8 @@ import type {
   LessonRequest,
   ProviderConfiguration,
   ProviderConfigurationUpdate,
-  SchedulerRules,
+  SchedulingPolicy,
+  SchedulingPolicyUpdate,
   TimeSlotDTO,
 } from "./types.js";
 
@@ -34,6 +35,21 @@ function clone<T>(value: T): T {
 
 function sameDate(isoDateTime: string, date: string): boolean {
   return isoDateTime.slice(0, 10) === date;
+}
+
+function mockDistanceBufferMinutes(policy: SchedulingPolicy, distanceMiles: number): number {
+  if (!policy.distance_buffers_enabled) return 0;
+  const normalizedDistance = Math.round(distanceMiles * 100) / 100;
+  return policy.distance_buffer_tiers.find((tier) => (
+    normalizedDistance >= tier.min_miles
+    && (tier.max_miles === null || normalizedDistance <= tier.max_miles)
+  ))?.buffer_mins ?? 0;
+}
+
+function mockPolicyStartShiftMinutes(previousBuffer: number, currentBuffer: number): number {
+  const roundedPrevious = Math.ceil(previousBuffer / 15) * 15;
+  const roundedCurrent = Math.ceil(currentBuffer / 15) * 15;
+  return roundedCurrent - roundedPrevious;
 }
 
 export class MockInstructorCommandApi implements InstructorCommandApi {
@@ -122,6 +138,44 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
     return clone(this.currentProvider);
   }
 
+  async getSchedulingPolicy(): Promise<SchedulingPolicy> {
+    return clone(this.currentSnapshot.scheduling_policy);
+  }
+
+  async saveSchedulingPolicy(payload: SchedulingPolicyUpdate): Promise<SchedulingPolicy> {
+    const current = this.currentSnapshot.scheduling_policy;
+    if (payload.expected_revision !== current.revision) {
+      throw new InstructorCommandApiError(
+        409,
+        "SCHEDULING_POLICY_STALE",
+        "The scheduling policy changed in another tab.",
+      );
+    }
+    const currentIds = current.distance_buffer_tiers.map(({ id }) => id);
+    const updateIds = payload.distance_buffer_tiers.map(({ id }) => id);
+    if (
+      currentIds.length !== updateIds.length
+      || currentIds.some((id, index) => id !== updateIds[index])
+    ) {
+      throw new InstructorCommandApiError(
+        422,
+        "VALIDATION_ERROR",
+        "Distance tier IDs must match the saved policy in order.",
+      );
+    }
+    const saved: SchedulingPolicy = {
+      revision: current.revision + 1,
+      distance_buffers_enabled: payload.distance_buffers_enabled,
+      post_break_recovery_mins: payload.post_break_recovery_mins,
+      distance_buffer_tiers: current.distance_buffer_tiers.map((tier, index) => ({
+        ...tier,
+        buffer_mins: payload.distance_buffer_tiers[index].buffer_mins,
+      })),
+    };
+    this.currentSnapshot = { ...this.currentSnapshot, scheduling_policy: saved };
+    return clone(saved);
+  }
+
   async getSnapshot(instructor_id: Id, date: string): Promise<CommandCenterSnapshot> {
     const fullSnapshot = clone(this.currentSnapshot);
     return {
@@ -138,14 +192,24 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
   async findAvailableSlots(request: BookingRequestDTO): Promise<TimeSlotDTO[]> {
     const targetDate = request.requested_date;
     const isFacility = request.location.is_instructor_facility;
+    const policy = this.currentSnapshot.scheduling_policy;
     return clone(candidateSlots)
       .filter((slot) => sameDate(slot.start_time, targetDate))
       .filter((slot) => slot.target_location.is_instructor_facility === isFacility || !isFacility)
-      .map((slot) => ({
-        ...slot,
-        end_time: addMinutes(slot.start_time, request.duration_mins),
-        target_location: request.location,
-      }));
+      .map((slot) => {
+        const buffer_mins = mockDistanceBufferMinutes(policy, slot.distance_miles);
+        const start_time = addMinutes(
+          slot.start_time,
+          mockPolicyStartShiftMinutes(slot.buffer_mins, buffer_mins),
+        );
+        return {
+          ...slot,
+          start_time,
+          end_time: addMinutes(start_time, request.duration_mins),
+          buffer_mins,
+          target_location: request.location,
+        };
+      });
   }
 
   async bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse> {
@@ -336,14 +400,6 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
     }));
   }
 
-  async saveRules(rules: SchedulerRules): Promise<SchedulerRules> {
-    this.currentSnapshot = {
-      ...this.currentSnapshot,
-      rules: clone(rules),
-    };
-    return clone(rules);
-  }
-
   private updateRequest(request_id: Id, update: (request: LessonRequest) => LessonRequest): LessonRequest {
     let updated: LessonRequest | undefined;
     this.currentSnapshot = {
@@ -418,6 +474,14 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
 
   saveProvider(provider: ProviderConfigurationUpdate): Promise<ProviderConfiguration> {
     return this.put("/coach/provider", provider);
+  }
+
+  getSchedulingPolicy(): Promise<SchedulingPolicy> {
+    return this.get("/coach/scheduling-policy");
+  }
+
+  saveSchedulingPolicy(policy: SchedulingPolicyUpdate): Promise<SchedulingPolicy> {
+    return this.put("/coach/scheduling-policy", policy);
   }
 
   async getSnapshot(_instructor_id: Id, date: string): Promise<CommandCenterSnapshot> {
@@ -497,10 +561,6 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     return this.post(`/coach/lesson-requests/${encodeURIComponent(_request_id)}/alternatives`, {
       preferred_slot_ids: _preferred_slot_ids,
     });
-  }
-
-  saveRules(rules: SchedulerRules): Promise<SchedulerRules> {
-    return this.put("/coach/settings", rules);
   }
 
   private async get<T>(path: string): Promise<T> {

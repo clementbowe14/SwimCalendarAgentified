@@ -115,6 +115,34 @@ class SchedulingConflict(ApiException):
         super().__init__("SCHEDULING_CONFLICT", message, status_code=409, details=details)
 
 
+class SchedulingPolicyStale(ApiException):
+    def __init__(self):
+        super().__init__(
+            "SCHEDULING_POLICY_STALE",
+            "The scheduling policy changed. Reload it before saving again.",
+            status_code=409,
+        )
+
+
+class SchedulingPolicyEndpointMoved(ApiException):
+    def __init__(self):
+        super().__init__(
+            "SCHEDULING_POLICY_ENDPOINT_MOVED",
+            "Scheduling policy updates must use /api/coach/scheduling-policy.",
+            status_code=410,
+        )
+
+
+class SchedulingPolicyValidationError(ApiException):
+    def __init__(self, message: str):
+        super().__init__(
+            "VALIDATION_ERROR",
+            message,
+            status_code=422,
+            details={"field": "distance_buffer_tiers"},
+        )
+
+
 class ProviderSetupRequired(ApiException):
     def __init__(
         self,

@@ -60,8 +60,8 @@ export type TimeSlotDTO = {
   buffer_mins: number;
   distance_miles: number;
   target_location: LocationInfo;
-  previous_event_id?: Id;
-  next_event_id?: Id;
+  previous_event_id?: Id | null;
+  next_event_id?: Id | null;
 };
 
 export type BookingRequestDTO = {
@@ -210,7 +210,7 @@ export type Client = {
   name: string;
   phone: string;
   email: string;
-  guardian_name?: string;
+  guardian_name?: string | null;
   default_location: LocationInfo;
   location_mode: LessonLocationMode;
   availability: AvailabilityWindow[];
@@ -223,15 +223,15 @@ export type Client = {
 export type ScheduleItem = {
   id: Id;
   kind: AppointmentKind;
-  client_id?: Id;
+  client_id?: Id | null;
   title: string;
   start_time: string;
   end_time: string;
   location: LocationInfo;
-  travel_time_mins?: number;
-  buffer_mins?: number;
-  status?: LessonStatus;
-  note?: string;
+  travel_time_mins?: number | null;
+  buffer_mins?: number | null;
+  status?: LessonStatus | null;
+  note?: string | null;
 };
 
 export type LessonRequest = {
@@ -266,6 +266,33 @@ export type SchedulerRules = {
   };
 };
 
+export type DistanceBufferTier = {
+  id: Id;
+  label: string;
+  min_miles: number;
+  max_miles: number | null;
+  buffer_mins: number;
+};
+
+export type SchedulingPolicy = {
+  revision: number;
+  distance_buffers_enabled: boolean;
+  post_break_recovery_mins: number;
+  distance_buffer_tiers: DistanceBufferTier[];
+};
+
+export type SchedulingPolicyTierUpdate = {
+  id: Id;
+  buffer_mins: number;
+};
+
+export type SchedulingPolicyUpdate = {
+  expected_revision: number;
+  distance_buffers_enabled: boolean;
+  post_break_recovery_mins: number;
+  distance_buffer_tiers: SchedulingPolicyTierUpdate[];
+};
+
 export type CommandCenterSnapshot = {
   instructor: InstructorProfile;
   date: string;
@@ -273,6 +300,8 @@ export type CommandCenterSnapshot = {
   schedule: ScheduleItem[];
   requests: LessonRequest[];
   email_deliveries: CoachEmailDelivery[];
+  scheduling_policy: SchedulingPolicy;
+  /** @deprecated Read compatibility only. New instructor code uses scheduling_policy. */
   rules: SchedulerRules;
 };
 
@@ -293,6 +322,8 @@ export type InstructorCommandApi = {
   signOut(): Promise<void>;
   getProvider(): Promise<ProviderConfiguration>;
   saveProvider(provider: ProviderConfigurationUpdate): Promise<ProviderConfiguration>;
+  getSchedulingPolicy(): Promise<SchedulingPolicy>;
+  saveSchedulingPolicy(policy: SchedulingPolicyUpdate): Promise<SchedulingPolicy>;
   getSnapshot(instructor_id: Id, date: string): Promise<CommandCenterSnapshot>;
   findAvailableSlots(request: BookingRequestDTO): Promise<TimeSlotDTO[]>;
   bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse>;
@@ -303,5 +334,4 @@ export type InstructorCommandApi = {
   getAppointmentCalendarLinks(appointment_id: Id): Promise<CalendarLinks>;
   downloadCalendarIcs(calendar_url: string): Promise<Blob>;
   requestAlternatives(request_id: Id, preferred_slot_ids: Id[]): Promise<LessonRequest | CoachLessonRequestActionResponse>;
-  saveRules(rules: SchedulerRules): Promise<SchedulerRules>;
 };

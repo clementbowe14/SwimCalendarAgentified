@@ -4,7 +4,6 @@ import type {
   CommandCenterSnapshot,
   LessonRequest,
   LocationInfo,
-  SchedulerRules,
   ScheduleItem,
   TimeSlotDTO,
 } from "../api/types.js";
@@ -39,7 +38,7 @@ export function buildAgendaRows(schedule: ScheduleItem[]): AgendaRow[] {
     time: formatTimeRange(item.start_time, item.end_time),
     title: item.title,
     detail: itemDetail(item),
-    status: item.status,
+    status: item.status ?? undefined,
   }));
 }
 
@@ -63,8 +62,8 @@ export function slotSafetyFacts(slot: TimeSlotDTO): string {
   return `Travel ${slot.travel_time_mins} min | Buffer ${slot.buffer_mins} min | ${location}`;
 }
 
-export function slotExplanation(slot: TimeSlotDTO, rules: SchedulerRules): string {
-  return `Starts on a ${rules.rounding_increment_mins}-minute boundary after travel and required buffer time.`;
+export function slotExplanation(_slot: TimeSlotDTO): string {
+  return "Starts on a 15-minute boundary after travel and required buffer time.";
 }
 
 export function summarizeRequests(requests: LessonRequest[]): RequestSummary {
@@ -113,7 +112,7 @@ export function buildReadinessReport(): ScreenReadiness[] {
     {
       screen: "Settings",
       isReadyForBackend: true,
-      requiredApiMethods: ["getSnapshot", "saveRules"],
+      requiredApiMethods: ["getSnapshot", "getSchedulingPolicy", "saveSchedulingPolicy"],
       missingApiContracts: [],
     },
     {

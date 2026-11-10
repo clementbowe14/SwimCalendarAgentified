@@ -1013,6 +1013,7 @@ function commandCenterSnapshot(emailDeliveries: Array<Record<string, unknown>>):
       },
     ],
     email_deliveries: emailDeliveries,
+    scheduling_policy: schedulingPolicyResponse(),
     rules: {
       rounding_increment_mins: 15,
       post_break_buffer_mins: 15,
@@ -1026,6 +1027,19 @@ function commandCenterSnapshot(emailDeliveries: Array<Record<string, unknown>>):
         require_payment_method_for_new_clients: true,
       },
     },
+  };
+}
+
+function schedulingPolicyResponse(): Record<string, unknown> {
+  return {
+    revision: 0,
+    distance_buffers_enabled: true,
+    post_break_recovery_mins: 15,
+    distance_buffer_tiers: [
+      { id: "near", label: "Under 5 mi", min_miles: 0, max_miles: 4.999, buffer_mins: 10 },
+      { id: "medium", label: "5-10 mi", min_miles: 5, max_miles: 10, buffer_mins: 20 },
+      { id: "far", label: "Over 10 mi", min_miles: 10.001, max_miles: null, buffer_mins: 30 },
+    ],
   };
 }
 

@@ -61,8 +61,10 @@ Protected coach endpoints:
 - `POST /api/coach/bookings`
 - `GET /api/coach/appointments/{appointment_id}/calendar-links`
 - `GET /api/coach/appointments/{appointment_id}/calendar.ics`
-- `GET /api/coach/settings`
-- `PUT /api/coach/settings`
+- `GET /api/coach/scheduling-policy`
+- `PUT /api/coach/scheduling-policy`
+- `GET /api/coach/settings` is a deprecated read-only compatibility endpoint.
+- `PUT /api/coach/settings` returns `410 SCHEDULING_POLICY_ENDPOINT_MOVED`; new product code never uses it.
 - `POST /api/coach/lesson-requests/{request_token}/confirm` is the canonical confirmation endpoint. The
   instructor app sends `{}` for the current requested occurrence or `{ "slot_id": "..." }` when the
   client selected a request-bound alternative.
@@ -82,7 +84,8 @@ npm run test:e2e:auth
 `npm test` covers screen models, renderers, calendar URL safety, API adapter contracts, and exact data-mode
 selection. `npm run test:e2e` explicitly drives the browser prototype with the mock adapter.
 `npm run test:e2e:auth` exercises cookie-authenticated bootstrap, reload, expiry, sign-out, calendar
-fallback, CSRF, and failure states against intercepted API responses. `npm run test:e2e:live` requires
+fallback, CSRF, scheduling-policy editing, and failure states against intercepted API responses.
+`npm run test:e2e:live` requires
 `VITE_INSTRUCTOR_API_URL`; a missing URL fails
 rather than executing mock tests or passing with a skipped live suite. The live suite discovers and
 selects a real request-bound alternative, confirms it through the UI, independently checks the coach

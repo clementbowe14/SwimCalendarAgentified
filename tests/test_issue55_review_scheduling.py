@@ -5,7 +5,7 @@ import datetime as dt
 import pytest
 
 from app import provider_settings, tools
-from app.engine import BufferPolicy
+from app.scheduler_settings import default_scheduling_policy, to_buffer_policy
 from app.models import InstructorDB, ProviderWorkingHoursDB, TimeSlotDTO
 from app.provider_settings import (
     ProviderConfiguration,
@@ -87,7 +87,7 @@ def _find_slots(monkeypatch: pytest.MonkeyPatch, events: list[dict]) -> list[Tim
         client_address="Provider location",
         is_instructor_facility=True,
         duration_mins=60,
-        buffer_policy=BufferPolicy.default(),
+        buffer_policy=to_buffer_policy(default_scheduling_policy()),
     )
 
 

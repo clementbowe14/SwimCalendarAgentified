@@ -311,9 +311,15 @@ class CoachEmailContactUpdateRequest(BaseModel):
 class CoachDistanceBufferTier(BaseModel):
     id: str = Field(min_length=1, max_length=64)
     label: str = Field(min_length=1, max_length=120)
-    min_miles: float = Field(ge=0, le=10_000, allow_inf_nan=False)
-    max_miles: Optional[float] = Field(default=None, ge=0, le=10_000, allow_inf_nan=False)
-    buffer_mins: int = Field(ge=0, le=240)
+    min_miles: float = Field(ge=0, le=10_000, allow_inf_nan=False, strict=True)
+    max_miles: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=10_000,
+        allow_inf_nan=False,
+        strict=True,
+    )
+    buffer_mins: int = Field(ge=0, le=240, strict=True)
 
     @field_validator("id", "label", mode="before")
     @classmethod
@@ -338,6 +344,38 @@ class CoachDistanceBufferTier(BaseModel):
         return self
 
 
+def _validate_complete_distance_coverage(
+    tiers: list[CoachDistanceBufferTier],
+) -> None:
+    ids = [tier.id for tier in tiers]
+    if len(ids) != len(set(ids)):
+        raise ValueError("Distance buffer tier ids must be unique.")
+    if Decimal(str(tiers[0].min_miles)) != Decimal("0"):
+        raise ValueError("The first distance buffer tier must start at 0 miles.")
+
+    for index, tier in enumerate(tiers):
+        is_last = index == len(tiers) - 1
+        if is_last and tier.max_miles is not None:
+            raise ValueError("The last distance buffer tier must have max_miles set to null.")
+        if not is_last and tier.max_miles is None:
+            raise ValueError("Only the last distance buffer tier may have max_miles set to null.")
+        if not is_last:
+            current_max = Decimal(str(tier.max_miles))
+            next_min = Decimal(str(tiers[index + 1].min_miles))
+            if next_min <= current_max:
+                raise ValueError("Distance buffer tiers must not overlap.")
+            last_hundredth = int(
+                (current_max * 100).to_integral_value(rounding=ROUND_FLOOR)
+            )
+            next_hundredth = int(
+                (next_min * 100).to_integral_value(rounding=ROUND_CEILING)
+            )
+            if last_hundredth + 1 != next_hundredth:
+                raise ValueError(
+                    "Distance buffer tiers must cover every hundredth of a mile exactly once."
+                )
+
+
 class CoachSchedulerPayments(BaseModel):
     enabled_methods: list[Literal["card", "ach", "cash", "wallet"]] = Field(default_factory=list)
     cancellation_window_hours: int = Field(default=24, ge=0, le=168)
@@ -354,28 +392,62 @@ class CoachSchedulerRules(BaseModel):
 
     @model_validator(mode="after")
     def validate_complete_distance_coverage(self) -> "CoachSchedulerRules":
-        tiers = self.distance_buffer_tiers
-        ids = [tier.id for tier in tiers]
+        _validate_complete_distance_coverage(self.distance_buffer_tiers)
+        return self
+
+
+class CoachSchedulingPolicyTierUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=64)
+    buffer_mins: int = Field(ge=0, le=240, strict=True)
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def trim_id(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", value):
+            raise ValueError(
+                "Tier id must start with a lowercase letter and contain only lowercase letters, numbers, '_' or '-'."
+            )
+        return value
+
+
+class CoachSchedulingPolicyUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=0, strict=True)
+    distance_buffers_enabled: bool = Field(strict=True)
+    post_break_recovery_mins: int = Field(ge=0, le=240, strict=True)
+    distance_buffer_tiers: list[CoachSchedulingPolicyTierUpdate] = Field(
+        min_length=1,
+        max_length=10,
+    )
+
+    @model_validator(mode="after")
+    def validate_unique_tier_ids(self) -> "CoachSchedulingPolicyUpdate":
+        ids = [tier.id for tier in self.distance_buffer_tiers]
         if len(ids) != len(set(ids)):
             raise ValueError("Distance buffer tier ids must be unique.")
-        if Decimal(str(tiers[0].min_miles)) != Decimal("0"):
-            raise ValueError("The first distance buffer tier must start at 0 miles.")
+        return self
 
-        for index, tier in enumerate(tiers):
-            is_last = index == len(tiers) - 1
-            if is_last and tier.max_miles is not None:
-                raise ValueError("The last distance buffer tier must have max_miles set to null.")
-            if not is_last and tier.max_miles is None:
-                raise ValueError("Only the last distance buffer tier may have max_miles set to null.")
-            if index and tier.min_miles <= tiers[index - 1].min_miles:
-                raise ValueError("Distance buffer tiers must be ordered by increasing min_miles.")
-            if not is_last:
-                current_max = Decimal(str(tier.max_miles))
-                next_min = Decimal(str(tiers[index + 1].min_miles))
-                last_hundredth = int((current_max * 100).to_integral_value(rounding=ROUND_FLOOR))
-                next_hundredth = int((next_min * 100).to_integral_value(rounding=ROUND_CEILING))
-                if last_hundredth + 1 != next_hundredth:
-                    raise ValueError("Distance buffer tiers must cover every hundredth of a mile exactly once.")
+
+class CoachSchedulingPolicyResponse(BaseModel):
+    revision: int = Field(ge=0, strict=True)
+    distance_buffers_enabled: bool = Field(strict=True)
+    post_break_recovery_mins: int = Field(ge=0, le=240, strict=True)
+    distance_buffer_tiers: list[CoachDistanceBufferTier] = Field(
+        min_length=1,
+        max_length=10,
+    )
+
+    @model_validator(mode="after")
+    def validate_complete_distance_coverage(self) -> "CoachSchedulingPolicyResponse":
+        _validate_complete_distance_coverage(self.distance_buffer_tiers)
         return self
 
 
@@ -387,6 +459,7 @@ class CoachCommandCenterSnapshot(BaseModel):
     requests: list[CoachLessonRequestResponse]
     email_deliveries: list[CoachEmailDeliveryResponse] = Field(default_factory=list)
     rules: CoachSchedulerRules
+    scheduling_policy: CoachSchedulingPolicyResponse
 
 
 class AvailabilitySearchRequest(BaseModel):

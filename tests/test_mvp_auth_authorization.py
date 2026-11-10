@@ -29,17 +29,14 @@ JAMIE_EMAIL = "jamie.coach@example.com"
 JAMIE_PASSWORD = "jamie-secure-password"
 JAMIE_REQUEST_TOKEN = "req_jamie_pending_auth"
 SCHEDULER_SETTINGS_PAYLOAD = {
-    "rounding_increment_mins": 15,
-    "post_break_buffer_mins": 15,
+    "expected_revision": 0,
+    "distance_buffers_enabled": True,
+    "post_break_recovery_mins": 15,
     "distance_buffer_tiers": [
-        {"id": "near", "label": "Nearby", "min_miles": 0, "max_miles": 5, "buffer_mins": 10},
-        {"id": "far", "label": "Farther", "min_miles": 5, "max_miles": None, "buffer_mins": 20},
+        {"id": "near", "buffer_mins": 10},
+        {"id": "medium", "buffer_mins": 20},
+        {"id": "far", "buffer_mins": 30},
     ],
-    "payments": {
-        "enabled_methods": ["card"],
-        "cancellation_window_hours": 24,
-        "require_payment_method_for_new_clients": False,
-    },
 }
 AVAILABILITY_PAYLOAD = {
     "client_name": "Validation Swimmer",
@@ -64,7 +61,9 @@ def auth_client(migrated_postgres_db: None):
         ("GET", "/api/coach/schedule", {"params": {"date": "2026-08-20"}}),
         ("GET", "/api/coach/command-center/snapshot", {"params": {"date": "2026-08-20"}}),
         ("GET", "/api/coach/settings", {}),
-        ("PUT", "/api/coach/settings", {"json": SCHEDULER_SETTINGS_PAYLOAD}),
+        ("PUT", "/api/coach/settings", {"json": {}}),
+        ("GET", "/api/coach/scheduling-policy", {}),
+        ("PUT", "/api/coach/scheduling-policy", {"json": SCHEDULER_SETTINGS_PAYLOAD}),
         ("POST", "/api/coach/availability", {"json": AVAILABILITY_PAYLOAD}),
         ("POST", "/api/coach/lesson-requests/req_sofia_pending_0820/approve", {}),
         ("POST", "/api/coach/lesson-requests/req_sofia_pending_0820/confirm", {"json": {}}),
@@ -114,10 +113,18 @@ def test_valid_cookie_reaches_representative_coach_reads_and_mutations(auth_clie
         params={"date": "2026-08-20"},
         headers=headers,
     )
-    settings = auth_client.get("/api/coach/settings", headers=headers)
+    settings = auth_client.get("/api/coach/scheduling-policy", headers=headers)
     saved_settings = auth_client.put(
-        "/api/coach/settings",
-        json=settings.json(),
+        "/api/coach/scheduling-policy",
+        json={
+            "expected_revision": settings.json()["revision"],
+            "distance_buffers_enabled": settings.json()["distance_buffers_enabled"],
+            "post_break_recovery_mins": settings.json()["post_break_recovery_mins"],
+            "distance_buffer_tiers": [
+                {"id": tier["id"], "buffer_mins": tier["buffer_mins"]}
+                for tier in settings.json()["distance_buffer_tiers"]
+            ],
+        },
         headers=headers,
     )
     availability = auth_client.post(

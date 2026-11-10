@@ -228,6 +228,13 @@ def select_client_lesson_request_alternative(
         )
         if offer is None:
             raise SlotOfferNotFound()
+        provider = _require_public_provider_setup(lesson_request.instructor_id)
+        _validate_current_facility_offer(offer, provider)
+        policy = load_buffer_policy(
+            lesson_request.instructor_id,
+            operation="client_invite_alternative_selection",
+        )
+        _validate_offer_occurrences(offer, policy, provider.timezone)
         lesson_request.slot_start = offer.slot_start
         lesson_request.slot_end = offer.slot_end
         lesson_request.requested_date = offer.requested_date

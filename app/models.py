@@ -3,6 +3,7 @@ from uuid import uuid4
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -512,6 +513,12 @@ class InviteSlotOfferDB(Base):
 
 class SchedulerSettingsDB(Base):
     __tablename__ = "scheduler_settings"
+    __table_args__ = (
+        CheckConstraint(
+            "policy_revision >= 0",
+            name="ck_scheduler_settings_policy_revision_nonnegative",
+        ),
+    )
 
     instructor_id = Column(String, ForeignKey("instructors.id"), primary_key=True)
     buffers_enabled = Column(Boolean, nullable=False, default=True, server_default="true")
@@ -522,6 +529,12 @@ class SchedulerSettingsDB(Base):
     payments_enabled_methods = Column(Text, nullable=False, default="")
     cancellation_window_hours = Column(Integer, nullable=False, default=24)
     require_payment_method_for_new_clients = Column(Boolean, nullable=False, default=False)
+    policy_revision = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

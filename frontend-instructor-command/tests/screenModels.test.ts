@@ -14,6 +14,7 @@ import {
   findFeaturedClient,
   summarizeRequests,
 } from "../src/domain/screenModels.js";
+import { schedulingPolicyDraftFromPolicy } from "../src/domain/schedulingPolicy.js";
 
 test("Today schedule renders lessons, travel, buffers, and open gaps", () => {
   const html = renderTodaySchedule(snapshot);
@@ -48,20 +49,26 @@ test("Client Detail renders contact, availability, notes, and next lesson state"
   assert.match(html, /Riverside Aquatic Center/);
 });
 
-test("Settings screen stays aligned to Python engine buffer rules", () => {
-  const html = renderSettingsRules(snapshot.rules);
+test("Settings renders only the canonical provider-editable scheduling policy", () => {
+  const html = renderSettingsRules(
+    snapshot.scheduling_policy,
+    schedulingPolicyDraftFromPolicy(snapshot.scheduling_policy),
+  );
 
   assert.deepEqual(
-    snapshot.rules.distance_buffer_tiers.map((tier) => tier.buffer_mins),
+    snapshot.scheduling_policy.distance_buffer_tiers.map((tier) => tier.buffer_mins),
     [10, 20, 30],
   );
-  assert.equal(snapshot.rules.post_break_buffer_mins, 15);
+  assert.equal(snapshot.scheduling_policy.post_break_recovery_mins, 15);
   assert.match(html, /Under 5 mi/);
   assert.match(html, /Over 10 mi/);
-  assert.match(html, /name="buffers_enabled" type="checkbox" checked/);
-  assert.match(html, /name="rounding_increment_mins"/);
+  assert.match(html, /role="switch"/);
+  assert.match(html, /name="distance_buffers_enabled"/);
   assert.match(html, /name="tier\.near\.buffer_mins"/);
-  assert.match(html, /<form class="scheduler-rules-form" data-rules-form>/);
+  assert.match(html, /name="post_break_recovery_mins"/);
+  assert.match(html, /15-minute local-time boundaries/);
+  assert.doesNotMatch(html, /payments|rounding_increment_mins|shift start/i);
+  assert.match(html, /data-scheduling-policy-form/);
 });
 
 test("Request management summarizes clear and at-risk pending requests", () => {

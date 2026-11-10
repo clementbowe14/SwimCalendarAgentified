@@ -5,13 +5,14 @@ import {
   InstructorCommandApiError,
 } from "./api/instructorApi.js";
 import type {
+  BookingRequestDTO,
   CalendarLinks,
   CoachEmailDelivery,
   CommandCenterSnapshot,
   InstructorAuthSession,
   ProviderConfiguration,
   ProviderConfigurationUpdate,
-  SchedulerRules,
+  SchedulingPolicy,
   TimeSlotDTO,
 } from "./api/types.js";
 import { resolveInstructorDataMode } from "./config/dataMode.js";
@@ -35,6 +36,21 @@ import { renderSettingsRules } from "./components/SettingsRules.js";
 import { renderTodaySchedule } from "./components/TodaySchedule.js";
 import { buildFindSlotsRequest, findFeaturedClient } from "./domain/screenModels.js";
 import { mergeEmailDeliveries } from "./domain/emailDelivery.js";
+import {
+  availabilityAfterPolicySave,
+  availabilityRefreshFailed,
+  compareSchedulingPolicyRevision,
+  MonotonicRequestGate,
+  schedulingPolicyDraftMatchesPolicy,
+  schedulingPolicyDraftFromPolicy,
+  schedulingPolicyDraftWithMinute,
+  schedulingPolicyDraftWithToggle,
+  schedulingPolicyUpdateFromDraft,
+  stepSchedulingPolicyDraft,
+  type AvailabilityUiState,
+  type SchedulingPolicyDraft,
+  type SchedulingPolicyMinuteField,
+} from "./domain/schedulingPolicy.js";
 import {
   firstProviderErrorField,
   normalizeProviderDraft,
@@ -79,11 +95,18 @@ type AppState = {
   deliveryRefreshError: string;
   deliveryFocus: { primary: string; fallback?: string } | null;
   recommendedSlots: TimeSlotDTO[];
+  availabilityContext: BookingRequestDTO | null;
+  availability: AvailabilityUiState;
   calendarHandoff: CalendarHandoffModalModel | null;
   toast: string;
   error: string;
-  settingsPending: boolean;
-  settingsError: string;
+  schedulingPolicy: SchedulingPolicy | null;
+  schedulingPolicyDraft: SchedulingPolicyDraft | null;
+  policyPending: boolean;
+  policyError: string;
+  policySuccess: string;
+  policyConflict: boolean;
+  policyFocus: string | null;
   provider: ProviderConfiguration | null;
   providerDraft: ProviderConfigurationUpdate | null;
   providerPending: boolean;
@@ -106,11 +129,18 @@ const state: AppState = {
   deliveryRefreshError: "",
   deliveryFocus: null,
   recommendedSlots: [],
+  availabilityContext: null,
+  availability: { status: "idle", message: "" },
   calendarHandoff: null,
   toast: "",
   error: "",
-  settingsPending: false,
-  settingsError: "",
+  schedulingPolicy: null,
+  schedulingPolicyDraft: null,
+  policyPending: false,
+  policyError: "",
+  policySuccess: "",
+  policyConflict: false,
+  policyFocus: null,
   provider: null,
   providerDraft: null,
   providerPending: false,
@@ -126,6 +156,8 @@ const instructorApiBaseUrl = instructorRuntimeConfig.mode === "http"
   ? instructorRuntimeConfig.apiBaseUrl
   : "";
 let authGeneration = 0;
+const availabilityRequestGate = new MonotonicRequestGate();
+const policyRequestGate = new MonotonicRequestGate();
 
 void boot();
 
@@ -198,14 +230,9 @@ async function loadCommandCenter(generation: number): Promise<void> {
     }
     if (!provider.setup_complete) {
       state.activeScreen = "settings";
-      state.recommendedSlots = [];
+      clearAvailability("idle");
     } else {
-      const selectedClient = findFeaturedClient(state.snapshot, state.selectedClientId);
-      const slots = await instructorCommandApi.findAvailableSlots(
-        buildFindSlotsRequest(state.snapshot.instructor.id, selectedClient, state.snapshot.date),
-      );
-      if (!isCurrentSignedInGeneration(generation)) return;
-      state.recommendedSlots = slots;
+      await refreshSlots(generation);
     }
   } catch (error) {
     if (!isCurrentGeneration(generation)) return;
@@ -245,6 +272,7 @@ function render(): void {
   wireEvents();
   wireCalendarHandoffEvents();
   restoreDeliveryFocus();
+  restorePolicyFocus();
 }
 
 function renderLockedScreen(): string {
@@ -337,7 +365,12 @@ function renderAuthStatusScreen(heading: string, body: string, action = ""): str
 function renderActiveScreen(snapshot: CommandCenterSnapshot): string {
   if (state.activeScreen === "today") return renderTodaySchedule(snapshot);
   if (state.activeScreen === "finder") {
-    return renderAvailabilityFinder(snapshot, findFeaturedClient(snapshot, state.selectedClientId), state.recommendedSlots);
+    return renderAvailabilityFinder(
+      snapshot,
+      findFeaturedClient(snapshot, state.selectedClientId),
+      state.recommendedSlots,
+      state.availability,
+    );
   }
   if (state.activeScreen === "client") return renderClientDetail(snapshot, state.selectedClientId);
   if (state.activeScreen === "requests") {
@@ -358,9 +391,14 @@ function renderActiveScreen(snapshot: CommandCenterSnapshot): string {
         setupPrompt: state.providerSetupPrompt,
       })
     : `<section class="provider-settings-loading" aria-live="polite">Loading provider settings…</section>`;
-  return renderSettingsRules(snapshot.rules, instructorCommandApi.authMode === "live", {
-    pending: state.settingsPending,
-    error: state.settingsError,
+  const policy = state.schedulingPolicy ?? snapshot.scheduling_policy;
+  const draft = state.schedulingPolicyDraft ?? schedulingPolicyDraftFromPolicy(policy);
+  return renderSettingsRules(policy, draft, instructorCommandApi.authMode === "live", {
+    pending: state.policyPending,
+    error: state.policyError,
+    success: state.policySuccess,
+    conflict: state.policyConflict,
+    availability: state.availability,
   }, providerSettings);
 }
 
@@ -400,9 +438,15 @@ function wireEvents(): void {
 
   app.querySelector<HTMLButtonElement>("[data-refresh-slots]")?.addEventListener("click", async () => {
     await runAction(async (generation) => {
-      await refreshSlots(generation);
-      if (!isCurrentSignedInGeneration(generation)) return;
-      state.toast = "Safe starts refreshed from the adapter.";
+      const refreshed = await refreshSlots(generation);
+      if (!refreshed || !isCurrentSignedInGeneration(generation)) return;
+      state.toast = "Safe starts refreshed.";
+    });
+  });
+
+  app.querySelectorAll<HTMLButtonElement>("[data-retry-availability]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await retryAvailability();
     });
   });
 
@@ -448,30 +492,246 @@ function wireEvents(): void {
 
   wireEmailDeliveryEvents();
   wireProviderSettingsEvents();
+  wireSchedulingPolicyEvents();
+}
 
-  app.querySelector<HTMLFormElement>("[data-rules-form]")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (!state.snapshot || state.settingsPending) return;
-    const payload = schedulerRulesFromForm(event.currentTarget as HTMLFormElement, state.snapshot.rules);
-    state.settingsPending = true;
-    state.settingsError = "";
-    const generation = authGeneration;
-    render();
-    try {
-      const saved = await instructorCommandApi.saveRules(payload);
-      if (!isCurrentSignedInGeneration(generation)) return;
-      if (state.snapshot) state.snapshot = { ...state.snapshot, rules: saved };
-      state.toast = "Scheduling rules saved.";
-    } catch (error) {
-      if (!isCurrentGeneration(generation)) return;
-      if (!handleAuthFailure(error, undefined, generation)) state.settingsError = formatApiError(error);
-    } finally {
-      if (!isCurrentGeneration(generation)) return;
-      state.settingsPending = false;
-      render();
-      app.querySelector<HTMLElement>("[data-settings-error]")?.focus();
-    }
+function wireSchedulingPolicyEvents(): void {
+  const form = app.querySelector<HTMLFormElement>("[data-scheduling-policy-form]");
+  if (!form || !state.schedulingPolicy || !state.schedulingPolicyDraft) return;
+
+  form.querySelector<HTMLInputElement>("[data-policy-toggle]")?.addEventListener("change", (event) => {
+    if (!state.schedulingPolicyDraft) return;
+    const control = event.currentTarget as HTMLInputElement;
+    state.schedulingPolicyDraft = schedulingPolicyDraftWithToggle(state.schedulingPolicyDraft, control.checked);
+    clearPolicyFeedbackInPlace();
   });
+
+  form.querySelectorAll<HTMLInputElement>("[data-policy-minute]").forEach((control) => {
+    control.addEventListener("input", () => {
+      if (!state.schedulingPolicyDraft) return;
+      const field = policyMinuteField(control.dataset.policyMinute);
+      if (!field) return;
+      state.schedulingPolicyDraft = schedulingPolicyDraftWithMinute(
+        state.schedulingPolicyDraft,
+        field,
+        control.value,
+      );
+      updatePolicyStepperAccessibleNames(control);
+      clearPolicyFeedbackInPlace();
+    });
+  });
+
+  form.querySelectorAll<HTMLButtonElement>("[data-policy-step]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!state.schedulingPolicyDraft) return;
+      const field = policyMinuteField(button.dataset.policyStep);
+      const delta = button.dataset.policyStepDelta === "-1" ? -1 : 1;
+      if (!field) return;
+      state.schedulingPolicyDraft = stepSchedulingPolicyDraft(state.schedulingPolicyDraft, field, delta);
+      state.policyError = "";
+      state.policySuccess = "";
+      state.policyFocus = `${field}:${delta === -1 ? "decrease" : "increase"}`;
+      render();
+    });
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (state.policyPending || state.policyConflict) return;
+    await saveSchedulingPolicy(form);
+  });
+
+  form.querySelector<HTMLButtonElement>("[data-reload-scheduling-policy]")?.addEventListener("click", async () => {
+    await reloadSchedulingPolicy();
+  });
+}
+
+async function saveSchedulingPolicy(form: HTMLFormElement): Promise<void> {
+  if (!state.schedulingPolicy || !state.schedulingPolicyDraft) return;
+  state.schedulingPolicyDraft = schedulingPolicyDraftFromForm(form, state.schedulingPolicyDraft);
+  const result = schedulingPolicyUpdateFromDraft(state.schedulingPolicy, state.schedulingPolicyDraft);
+  state.policyError = "";
+  state.policySuccess = "";
+  state.policyConflict = false;
+  if (!result.ok) {
+    state.policyError = result.error;
+    state.policyFocus = "error";
+    render();
+    return;
+  }
+
+  const generation = authGeneration;
+  const requestToken = policyRequestGate.next();
+  state.policyPending = true;
+  render();
+
+  let saved: SchedulingPolicy | null = null;
+  try {
+    const response = await instructorCommandApi.saveSchedulingPolicy(result.payload);
+    if (
+      !isCurrentSignedInGeneration(generation)
+      || !policyRequestGate.isCurrent(requestToken)
+    ) return;
+    saved = response;
+    if (!replaceSchedulingPolicy(response)) {
+      state.policyConflict = true;
+      state.policyFocus = "conflict";
+      return;
+    }
+    state.policySuccess = "Scheduling policy saved.";
+    state.toast = "Scheduling policy saved.";
+  } catch (error) {
+    if (!isCurrentGeneration(generation) || !policyRequestGate.isCurrent(requestToken)) return;
+    if (handleAuthFailure(error, undefined, generation)) return;
+    if (
+      error instanceof InstructorCommandApiError
+      && error.status === 409
+      && error.code === "SCHEDULING_POLICY_STALE"
+    ) {
+      state.policyConflict = true;
+      state.policyFocus = "conflict";
+      if (state.availabilityContext) {
+        availabilityRequestGate.invalidate();
+        state.recommendedSlots = [];
+        state.availability = {
+          status: "stale",
+          message: "The saved policy changed elsewhere. Reload it and retry safe starts before booking.",
+        };
+      }
+    } else {
+      state.policyError = formatApiError(error);
+      state.policyFocus = "error";
+    }
+  } finally {
+    if (!isCurrentGeneration(generation) || !policyRequestGate.isCurrent(requestToken)) return;
+    state.policyPending = false;
+    render();
+  }
+
+  if (!saved || !state.availabilityContext || !isCurrentSignedInGeneration(generation)) return;
+  const context = structuredClone(state.availabilityContext);
+  state.recommendedSlots = [];
+  state.availability = availabilityAfterPolicySave(true);
+  render();
+  await refreshAvailabilityContext(context, generation, true);
+}
+
+async function reloadSchedulingPolicy(): Promise<void> {
+  if (state.policyPending) return;
+  const generation = authGeneration;
+  const requestToken = policyRequestGate.next();
+  state.policyPending = true;
+  state.policyError = "";
+  state.policySuccess = "";
+  render();
+
+  let reloaded = false;
+  try {
+    const policy = await instructorCommandApi.getSchedulingPolicy();
+    if (
+      !isCurrentSignedInGeneration(generation)
+      || !policyRequestGate.isCurrent(requestToken)
+    ) return;
+    if (!replaceSchedulingPolicy(policy)) {
+      state.policyConflict = true;
+      state.policyFocus = "conflict";
+      return;
+    }
+    state.policyConflict = false;
+    state.policySuccess = "Latest saved policy loaded.";
+    reloaded = true;
+  } catch (error) {
+    if (!isCurrentGeneration(generation) || !policyRequestGate.isCurrent(requestToken)) return;
+    if (!handleAuthFailure(error, undefined, generation)) {
+      state.policyError = formatApiError(error);
+      state.policyFocus = "error";
+    }
+  } finally {
+    if (!isCurrentGeneration(generation) || !policyRequestGate.isCurrent(requestToken)) return;
+    state.policyPending = false;
+    render();
+  }
+
+  if (!reloaded || !state.availabilityContext || !isCurrentSignedInGeneration(generation)) return;
+  const context = structuredClone(state.availabilityContext);
+  state.recommendedSlots = [];
+  state.availability = { status: "refreshing", message: "Rechecking safe starts with the saved policy…" };
+  render();
+  await refreshAvailabilityContext(context, generation, false);
+}
+
+function schedulingPolicyDraftFromForm(
+  form: HTMLFormElement,
+  current: SchedulingPolicyDraft,
+): SchedulingPolicyDraft {
+  let draft = schedulingPolicyDraftWithToggle(
+    current,
+    form.querySelector<HTMLInputElement>("[data-policy-toggle]")?.checked ?? false,
+  );
+  form.querySelectorAll<HTMLInputElement>("[data-policy-minute]").forEach((control) => {
+    const field = policyMinuteField(control.dataset.policyMinute);
+    if (field) draft = schedulingPolicyDraftWithMinute(draft, field, control.value);
+  });
+  return draft;
+}
+
+function policyMinuteField(value: string | undefined): SchedulingPolicyMinuteField | null {
+  if (value === "post_break_recovery_mins") return value;
+  return value?.startsWith("tier.") && value.endsWith(".buffer_mins")
+    ? value as SchedulingPolicyMinuteField
+    : null;
+}
+
+function clearPolicyFeedbackInPlace(): void {
+  state.policyError = "";
+  state.policySuccess = "";
+  app.querySelector<HTMLElement>("[data-policy-error]")?.remove();
+  const success = app.querySelector<HTMLElement>("[data-policy-save-status]");
+  if (success) success.textContent = "";
+}
+
+function updatePolicyStepperAccessibleNames(control: HTMLInputElement): void {
+  const row = control.closest<HTMLElement>("[data-policy-minute-row]");
+  const label = row?.querySelector<HTMLElement>(".policy-minute-copy strong")?.textContent?.trim();
+  if (!row || !label) return;
+  const current = control.value.trim();
+  row.querySelectorAll<HTMLButtonElement>("[data-policy-step]").forEach((button) => {
+    const action = button.dataset.policyStepDelta === "-1" ? "Decrease" : "Increase";
+    const valueDescription = current ? `${current} minutes` : "no value";
+    button.setAttribute("aria-label", `${action} ${label}, currently ${valueDescription}`);
+  });
+}
+
+function replaceSchedulingPolicy(policy: SchedulingPolicy): boolean {
+  if (compareSchedulingPolicyRevision(state.schedulingPolicy, policy) === "older") return false;
+  state.schedulingPolicy = policy;
+  state.schedulingPolicyDraft = schedulingPolicyDraftFromPolicy(policy);
+  state.policyConflict = false;
+  if (state.snapshot) state.snapshot = { ...state.snapshot, scheduling_policy: policy };
+  return true;
+}
+
+function restorePolicyFocus(): void {
+  const focus = state.policyFocus;
+  if (!focus || state.activeScreen !== "settings" || state.calendarHandoff) return;
+  state.policyFocus = null;
+  const target = focus === "error"
+    ? app.querySelector<HTMLElement>("[data-policy-error]")
+    : focus === "conflict"
+      ? app.querySelector<HTMLElement>("[data-policy-conflict]")
+      : [...app.querySelectorAll<HTMLElement>("[data-policy-focus]")]
+        .find((element) => element.dataset.policyFocus === focus);
+  target?.focus({ preventScroll: true });
+}
+
+async function retryAvailability(): Promise<void> {
+  const generation = authGeneration;
+  const context = state.availabilityContext;
+  if (!context || state.availability.status === "refreshing") return;
+  state.recommendedSlots = [];
+  state.availability = { status: "refreshing", message: "Rechecking safe starts…" };
+  render();
+  await refreshAvailabilityContext(structuredClone(context), generation, false);
 }
 
 function wireProviderSettingsEvents(): void {
@@ -561,7 +821,7 @@ async function saveProviderSettings(form: HTMLFormElement): Promise<void> {
         }
       }
     } else {
-      state.recommendedSlots = [];
+      clearAvailability("idle");
     }
   } catch (error) {
     if (!isCurrentGeneration(generation)) return;
@@ -769,10 +1029,36 @@ function isValidEmailAddress(value: string): boolean {
 }
 
 function applySnapshot(snapshot: CommandCenterSnapshot): void {
+  const currentPolicy = state.schedulingPolicy;
+  const draft = state.schedulingPolicyDraft;
+  const incomingPolicy = snapshot.scheduling_policy;
+  const revisionOrder = compareSchedulingPolicyRevision(currentPolicy, incomingPolicy);
+  if (!currentPolicy) {
+    replaceSchedulingPolicy(incomingPolicy);
+  } else if (revisionOrder === "newer") {
+    availabilityRequestGate.invalidate();
+    state.recommendedSlots = [];
+    if (state.availabilityContext) {
+      state.availability = {
+        status: "stale",
+        message: "The saved policy changed. Retry safe starts before booking.",
+      };
+    }
+    if (!draft || schedulingPolicyDraftMatchesPolicy(currentPolicy, draft)) {
+      replaceSchedulingPolicy(incomingPolicy);
+    } else {
+      state.schedulingPolicy = incomingPolicy;
+      state.policyConflict = true;
+      state.policyError = "";
+      state.policySuccess = "";
+      if (state.activeScreen === "settings") state.policyFocus = "conflict";
+    }
+  }
   const mergedDeliveries = mergeEmailDeliveries(state.emailDeliveries, snapshot.email_deliveries ?? []);
   state.emailDeliveries = mergedDeliveries;
   state.snapshot = {
     ...snapshot,
+    scheduling_policy: state.schedulingPolicy ?? incomingPolicy,
     instructor: state.provider
       ? projectProviderOntoInstructor(snapshot.instructor, state.provider)
       : snapshot.instructor,
@@ -804,21 +1090,6 @@ function restoreDeliveryFocus(): void {
     ?? candidates.find((element) => element.dataset.deliveryFocus === request.fallback);
   state.deliveryFocus = null;
   target?.focus();
-}
-
-function schedulerRulesFromForm(form: HTMLFormElement, current: SchedulerRules): SchedulerRules {
-  const data = new FormData(form);
-  return {
-    ...current,
-    buffers_enabled: data.has("buffers_enabled"),
-    apply_distance_buffer_at_shift_start: data.has("apply_distance_buffer_at_shift_start"),
-    rounding_increment_mins: Number(data.get("rounding_increment_mins")) as SchedulerRules["rounding_increment_mins"],
-    post_break_buffer_mins: Number(data.get("post_break_buffer_mins")),
-    distance_buffer_tiers: current.distance_buffer_tiers.map((tier) => ({
-      ...tier,
-      buffer_mins: Number(data.get(`tier.${tier.id}.buffer_mins`)),
-    })),
-  };
 }
 
 function wireAuthEvents(): void {
@@ -888,23 +1159,64 @@ async function signOut(): Promise<void> {
   render();
 }
 
-async function refreshSlots(generation: number): Promise<void> {
-  if (!state.snapshot) return;
+async function refreshSlots(generation: number): Promise<boolean> {
+  if (!state.snapshot) return false;
   if (!isProviderSetupComplete()) {
-    state.recommendedSlots = [];
-    return;
+    clearAvailability("idle");
+    return false;
   }
   const selectedClient = findFeaturedClient(state.snapshot, state.selectedClientId);
-  const slots = await instructorCommandApi.findAvailableSlots(
-    buildFindSlotsRequest(state.snapshot.instructor.id, selectedClient, state.snapshot.date),
-  );
-  if (!isCurrentSignedInGeneration(generation)) return;
-  state.recommendedSlots = slots;
+  const request = buildFindSlotsRequest(state.snapshot.instructor.id, selectedClient, state.snapshot.date);
+  state.availabilityContext = structuredClone(request);
+  state.recommendedSlots = [];
+  state.availability = { status: "refreshing", message: "Finding safe starts…" };
+  render();
+  return refreshAvailabilityContext(request, generation, false);
+}
+
+async function refreshAvailabilityContext(
+  request: BookingRequestDTO,
+  generation: number,
+  afterPolicySave: boolean,
+): Promise<boolean> {
+  const requestToken = availabilityRequestGate.next();
+  try {
+    const slots = await instructorCommandApi.findAvailableSlots(request);
+    if (
+      !isCurrentSignedInGeneration(generation)
+      || !availabilityRequestGate.isCurrent(requestToken)
+    ) return false;
+    state.availabilityContext = structuredClone(request);
+    state.recommendedSlots = slots;
+    state.availability = { status: "current", message: "" };
+    render();
+    return true;
+  } catch (error) {
+    if (!isCurrentGeneration(generation) || !availabilityRequestGate.isCurrent(requestToken)) return false;
+    if (handleAuthFailure(error, undefined, generation) || handleProviderSetupRequired(error)) return false;
+    state.recommendedSlots = [];
+    state.availability = availabilityRefreshFailed(afterPolicySave);
+    if (error instanceof InstructorCommandApiError && error.status === 403) {
+      state.availability = { status: "stale", message: formatApiError(error) };
+    }
+    render();
+    return false;
+  }
+}
+
+function clearAvailability(status: "idle" | "stale" = "idle"): void {
+  availabilityRequestGate.invalidate();
+  state.recommendedSlots = [];
+  state.availabilityContext = null;
+  state.availability = {
+    status,
+    message: status === "stale" ? "Safe starts need to be refreshed before booking." : "",
+  };
 }
 
 async function bookSlot(slotId: string, returnFocusKey: string): Promise<void> {
   await runAction(async (generation) => {
-    if (!state.snapshot) return;
+    if (!state.snapshot || state.availability.status !== "current") return;
     const selectedClient = findFeaturedClient(state.snapshot, state.selectedClientId);
     const slot = state.recommendedSlots.find((item) => item.id === slotId);
     if (!slot) return;
@@ -1060,7 +1372,7 @@ function handleProviderSetupRequired(error: unknown): boolean {
       },
     };
   }
-  state.recommendedSlots = [];
+  clearAvailability("idle");
   state.activeScreen = "settings";
   state.providerSetupPrompt = "Complete provider setup before scheduling new lesson times.";
   return true;
@@ -1080,12 +1392,21 @@ function isCurrentSignedInGeneration(generation: number): boolean {
 }
 
 function clearProtectedState(): void {
+  availabilityRequestGate.invalidate();
+  policyRequestGate.invalidate();
   state.authSession = null;
   state.snapshot = null;
   state.recommendedSlots = [];
+  state.availabilityContext = null;
+  state.availability = { status: "idle", message: "" };
   state.calendarHandoff = null;
-  state.settingsPending = false;
-  state.settingsError = "";
+  state.schedulingPolicy = null;
+  state.schedulingPolicyDraft = null;
+  state.policyPending = false;
+  state.policyError = "";
+  state.policySuccess = "";
+  state.policyConflict = false;
+  state.policyFocus = null;
   state.provider = null;
   state.providerDraft = null;
   state.providerPending = false;

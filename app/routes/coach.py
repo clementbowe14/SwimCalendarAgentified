@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import PlainTextResponse
 
-from app.api_errors import ApiException
+from app.api_errors import ApiException, SchedulingPolicyEndpointMoved
 from app.notifications import (
     correct_coach_email_delivery_contact,
     enqueue_invite_for_coach,
@@ -30,6 +30,9 @@ from app.api_schemas import (
     CoachProviderSettingsUpdate,
     CoachScheduleResponse,
     CoachSchedulerRules,
+    CoachSchedulingPolicyResponse,
+    CoachSchedulingPolicyUpdate,
+    ErrorResponse,
     InviteNotificationResponse,
 )
 from app.api_services import (
@@ -43,10 +46,11 @@ from app.api_services import (
     get_coach_provider_settings,
     get_coach_schedule,
     get_coach_scheduler_settings,
+    get_coach_scheduling_policy,
     request_alternatives_for_coach_lesson_request,
     search_coach_availability,
     update_coach_provider_settings,
-    update_coach_scheduler_settings,
+    update_coach_scheduling_policy,
 )
 from app.dependencies import CoachContext, get_current_coach, require_csrf_protection
 
@@ -172,7 +176,6 @@ def read_schedule(
 @router.get(
     "/command-center/snapshot",
     response_model=CoachCommandCenterSnapshot,
-    response_model_exclude_none=True,
 )
 def read_command_center_snapshot(
     date_: date = Query(alias="date"),
@@ -181,19 +184,53 @@ def read_command_center_snapshot(
     return get_coach_command_center_snapshot(coach.instructor_id, date_)
 
 
-@router.get("/settings", response_model=CoachSchedulerRules)
+@router.get("/settings", response_model=CoachSchedulerRules, deprecated=True)
 def read_scheduler_settings(
     coach: CoachContext = Depends(get_current_coach),
 ) -> CoachSchedulerRules:
     return get_coach_scheduler_settings(coach.instructor_id)
 
 
-@router.put("/settings", response_model=CoachSchedulerRules)
-def save_scheduler_settings(
-    rules: CoachSchedulerRules,
+@router.put(
+    "/settings",
+    deprecated=True,
+    status_code=410,
+    response_model=ErrorResponse,
+    response_description="Scheduling policy endpoint moved.",
+)
+def reject_legacy_scheduler_settings_write(
     coach: CoachContext = Depends(get_current_coach),
-) -> CoachSchedulerRules:
-    return update_coach_scheduler_settings(coach.instructor_id, rules)
+) -> None:
+    del coach
+    raise SchedulingPolicyEndpointMoved()
+
+
+@router.get("/scheduling-policy", response_model=CoachSchedulingPolicyResponse)
+def read_scheduling_policy(
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachSchedulingPolicyResponse:
+    return get_coach_scheduling_policy(coach.instructor_id)
+
+
+@router.put(
+    "/scheduling-policy",
+    response_model=CoachSchedulingPolicyResponse,
+    responses={
+        409: {
+            "model": ErrorResponse,
+            "description": "The expected policy revision is stale.",
+        },
+        422: {
+            "model": ErrorResponse,
+            "description": "The policy update is invalid.",
+        },
+    },
+)
+def save_scheduling_policy(
+    policy: CoachSchedulingPolicyUpdate,
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachSchedulingPolicyResponse:
+    return update_coach_scheduling_policy(coach.instructor_id, policy)
 
 
 @router.post("/availability", response_model=AvailabilitySearchResponse)

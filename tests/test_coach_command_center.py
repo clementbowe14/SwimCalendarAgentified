@@ -5,6 +5,7 @@ import pytest
 from app import db
 from app.api import create_app
 from app.dependencies import get_current_coach
+from app.models import SchedulerSettingsDB
 from tests.conftest import login_coach
 from tests.db_test_utils import reset_postgres_database
 
@@ -36,24 +37,21 @@ def test_coach_command_center_snapshot_includes_backend_operational_data(client)
     assert payload["requests"][0]["id"] == "req_sofia_pending_0820"
     assert payload["requests"][0]["requested_slot"]["target_location"]["address"] == "820 Lakeview Dr, Austin, TX"
     assert payload["rules"]["payments"]["enabled_methods"] == ["card", "ach", "cash"]
+    assert payload["scheduling_policy"]["revision"] == 0
+    assert payload["scheduling_policy"]["distance_buffers_enabled"] is True
 
 
-def test_coach_scheduler_settings_can_be_read_and_updated(client):
+def test_legacy_scheduler_settings_are_read_only(client):
     initial = client.get("/api/coach/settings")
     assert initial.status_code == 200
 
-    updated_rules = initial.json()
-    updated_rules["post_break_buffer_mins"] = 20
-    updated_rules["payments"]["enabled_methods"] = ["card", "cash"]
-    updated_rules["payments"]["cancellation_window_hours"] = 18
-
-    update = client.put("/api/coach/settings", json=updated_rules)
+    update = client.put("/api/coach/settings", json=initial.json())
     reread = client.get("/api/coach/settings")
 
-    assert update.status_code == 200
-    assert update.json() == updated_rules
+    assert update.status_code == 410
+    assert update.json()["error"]["code"] == "SCHEDULING_POLICY_ENDPOINT_MOVED"
     assert reread.status_code == 200
-    assert reread.json() == updated_rules
+    assert reread.json() == initial.json()
 
 
 def test_persisted_buffer_toggle_changes_real_availability(client):
@@ -66,48 +64,83 @@ def test_persisted_buffer_toggle_changes_real_availability(client):
     }
     enabled = client.post("/api/coach/availability", json=request)
     assert enabled.status_code == 200
-    assert any(slot["buffer_mins"] > 0 for slot in enabled.json()["available_slots"])
+    enabled_slots = enabled.json()["available_slots"]
+    assert any(slot["buffer_mins"] > 0 for slot in enabled_slots)
+    assert enabled_slots[0]["start_iso"] == "2026-08-20T10:15:00-05:00"
 
-    rules = client.get("/api/coach/settings").json()
-    rules["buffers_enabled"] = False
-    saved = client.put("/api/coach/settings", json=rules)
+    policy = client.get("/api/coach/scheduling-policy").json()
+    update = {
+        "expected_revision": policy["revision"],
+        "distance_buffers_enabled": False,
+        "post_break_recovery_mins": policy["post_break_recovery_mins"],
+        "distance_buffer_tiers": [
+            {"id": tier["id"], "buffer_mins": tier["buffer_mins"]}
+            for tier in policy["distance_buffer_tiers"]
+        ],
+    }
+    saved = client.put("/api/coach/scheduling-policy", json=update)
     disabled = client.post("/api/coach/availability", json=request)
 
     assert saved.status_code == 200
+    assert saved.json()["revision"] == 1
     assert disabled.status_code == 200
-    assert disabled.json()["available_slots"]
-    assert all(slot["buffer_mins"] == 0 for slot in disabled.json()["available_slots"])
+    disabled_slots = disabled.json()["available_slots"]
+    assert disabled_slots
+    assert disabled_slots[0]["start_iso"] == "2026-08-20T10:00:00-05:00"
 
 
-def test_old_settings_payload_preserves_explicit_buffer_switches(client):
-    rules = client.get("/api/coach/settings").json()
-    rules["buffers_enabled"] = False
-    rules["apply_distance_buffer_at_shift_start"] = True
-    assert client.put("/api/coach/settings", json=rules).status_code == 200
+def test_canonical_policy_update_preserves_payment_and_legacy_fields(client):
+    policy = client.get("/api/coach/scheduling-policy").json()
+    first = client.put(
+        "/api/coach/scheduling-policy",
+        json=_policy_update(policy, post_break_recovery_mins=22),
+    )
+    assert first.status_code == 200
 
-    old_payload = dict(rules)
-    old_payload.pop("buffers_enabled")
-    old_payload.pop("apply_distance_buffer_at_shift_start")
-    old_payload["post_break_buffer_mins"] = 22
-    response = client.put("/api/coach/settings", json=old_payload)
+    with db.SessionLocal() as session:
+        row = session.get(SchedulerSettingsDB, "inst_001")
+        row.payments_enabled_methods = "cash,wallet"
+        row.cancellation_window_hours = 37
+        row.require_payment_method_for_new_clients = True
+        row.rounding_increment_mins = 10
+        row.apply_distance_buffer_at_shift_start = True
+        session.commit()
+        preserved = (
+            row.payments_enabled_methods,
+            row.cancellation_window_hours,
+            row.require_payment_method_for_new_clients,
+            row.rounding_increment_mins,
+            row.apply_distance_buffer_at_shift_start,
+        )
 
-    assert response.status_code == 200
-    assert response.json()["buffers_enabled"] is False
-    assert response.json()["apply_distance_buffer_at_shift_start"] is True
-    assert response.json()["post_break_buffer_mins"] == 22
+    current = client.get("/api/coach/scheduling-policy").json()
+    second = client.put(
+        "/api/coach/scheduling-policy",
+        json=_policy_update(current, post_break_recovery_mins=31),
+    )
+    assert second.status_code == 200
+
+    with db.SessionLocal() as session:
+        row = session.get(SchedulerSettingsDB, "inst_001")
+        assert (
+            row.payments_enabled_methods,
+            row.cancellation_window_hours,
+            row.require_payment_method_for_new_clients,
+            row.rounding_increment_mins,
+            row.apply_distance_buffer_at_shift_start,
+        ) == preserved
 
 
 def test_invalid_tier_update_is_atomic(client):
-    original = client.get("/api/coach/settings").json()
-    invalid = dict(original)
-    invalid["distance_buffer_tiers"] = [dict(tier) for tier in original["distance_buffer_tiers"]]
-    invalid["distance_buffer_tiers"][0]["max_miles"] = 4.98
+    original = client.get("/api/coach/scheduling-policy").json()
+    invalid = _policy_update(original)
+    invalid["distance_buffer_tiers"] = list(reversed(invalid["distance_buffer_tiers"]))
 
-    response = client.put("/api/coach/settings", json=invalid)
+    response = client.put("/api/coach/scheduling-policy", json=invalid)
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
-    assert client.get("/api/coach/settings").json() == original
+    assert client.get("/api/coach/scheduling-policy").json() == original
 
 
 @pytest.mark.parametrize(
@@ -115,6 +148,17 @@ def test_invalid_tier_update_is_atomic(client):
     [
         ("GET", "/api/coach/command-center/snapshot?date=2026-08-20", None),
         ("GET", "/api/coach/settings", None),
+        ("GET", "/api/coach/scheduling-policy", None),
+        ("PUT", "/api/coach/scheduling-policy", {
+            "expected_revision": 0,
+            "distance_buffers_enabled": True,
+            "post_break_recovery_mins": 15,
+            "distance_buffer_tiers": [
+                {"id": "near", "buffer_mins": 10},
+                {"id": "medium", "buffer_mins": 20},
+                {"id": "far", "buffer_mins": 30},
+            ],
+        }),
         ("PUT", "/api/coach/settings", {
             "rounding_increment_mins": 15,
             "post_break_buffer_mins": 15,
@@ -161,3 +205,17 @@ def test_command_center_and_settings_do_not_appear_under_public_routes():
 
     assert snapshot.status_code == 404
     assert settings.status_code == 404
+
+
+def _policy_update(policy, **overrides):
+    payload = {
+        "expected_revision": policy["revision"],
+        "distance_buffers_enabled": policy["distance_buffers_enabled"],
+        "post_break_recovery_mins": policy["post_break_recovery_mins"],
+        "distance_buffer_tiers": [
+            {"id": tier["id"], "buffer_mins": tier["buffer_mins"]}
+            for tier in policy["distance_buffer_tiers"]
+        ],
+    }
+    payload.update(overrides)
+    return payload
