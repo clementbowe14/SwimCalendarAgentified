@@ -21,6 +21,8 @@ from app.api_schemas import (
     CoachBlockerResponse,
     CoachBlockerUpdate,
     CoachBookLessonRequest,
+    CoachClientListResponse,
+    CoachClientProfileResponse,
     CoachCommandCenterSnapshot,
     CoachContext as CoachContextResponse,
     CoachEmailContactUpdateRequest,
@@ -49,10 +51,12 @@ from app.api_services import (
     get_coach_calendar_ics,
     get_coach_calendar_links,
     get_coach_blockers,
+    get_coach_client,
     get_coach_provider_settings,
     get_coach_schedule,
     get_coach_scheduler_settings,
     get_coach_scheduling_policy,
+    list_coach_clients,
     request_alternatives_for_coach_lesson_request,
     search_coach_availability,
     update_coach_provider_settings,
@@ -80,6 +84,14 @@ BLOCKER_ERROR_RESPONSES = {
     422: {
         "model": ErrorResponse,
         "description": "The blocker input, local time, or location is invalid.",
+    },
+}
+
+
+CLIENT_READ_ERROR_RESPONSES = {
+    404: {
+        "model": ErrorResponse,
+        "description": "The provider or client could not be found.",
     },
 }
 
@@ -185,6 +197,33 @@ def save_provider_settings(
 ) -> CoachProviderSettingsResponse:
     _private_response(response)
     return update_coach_provider_settings(coach.instructor_id, settings)
+
+
+@router.get(
+    "/clients",
+    response_model=CoachClientListResponse,
+    responses=CLIENT_READ_ERROR_RESPONSES,
+)
+def read_clients(
+    response: Response,
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachClientListResponse:
+    _private_response(response)
+    return list_coach_clients(coach.instructor_id)
+
+
+@router.get(
+    "/clients/{client_id}",
+    response_model=CoachClientProfileResponse,
+    responses=CLIENT_READ_ERROR_RESPONSES,
+)
+def read_client(
+    client_id: str,
+    response: Response,
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachClientProfileResponse:
+    _private_response(response)
+    return get_coach_client(coach.instructor_id, client_id)
 
 
 @router.get("/schedule", response_model=CoachScheduleResponse)

@@ -42,6 +42,12 @@ default duration, and weekly hours use authenticated `GET /api/coach/provider` a
 read compatibility, while its legacy `PUT` returns 410 and cannot mutate policy or payment data.
 Public invite payloads expose only the service location, never the private base.
 
+Canonical active client profiles use authenticated `GET /api/coach/clients` and
+`GET /api/coach/clients/{client_id}`. These reads expose persisted contact details, notes, generic
+location mode, client availability, duration, and revision without changing the legacy
+command-center client projection. Unknown, deactivated, and cross-provider IDs share one generic
+not-found response.
+
 Provider-managed breaks, personal events, and unavailable windows use authenticated
 `GET /api/coach/blockers`, `POST /api/coach/blockers`, and
 `PUT`/`DELETE /api/coach/blockers/{blocker_id}`. Mutations use optimistic revisions; creates also

@@ -3,9 +3,9 @@ import json
 import os
 import uuid
 from typing import Optional, List
-from sqlalchemy import create_engine, inspect, or_, text
+from sqlalchemy import create_engine, func, inspect, or_, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import selectinload, sessionmaker
 from app import timezones
 from app.config import (
     ApplicationSettings,
@@ -476,6 +476,76 @@ def get_clients_for_instructor(instructor_id: str) -> List[dict]:
     ]
     session.close()
     return result
+
+
+def list_client_profiles_for_instructor(instructor_id: str) -> List[dict]:
+    session = SessionLocal()
+    try:
+        clients = (
+            session.query(ClientDB)
+            .options(selectinload(ClientDB.availability_windows))
+            .filter(
+                ClientDB.instructor_id == instructor_id,
+                ClientDB.status == "active",
+            )
+            .order_by(func.lower(ClientDB.name).asc(), ClientDB.id.asc())
+            .all()
+        )
+        return [_client_profile_record(client) for client in clients]
+    finally:
+        session.close()
+
+
+def get_client_profile_for_instructor(
+    instructor_id: str,
+    client_id: str,
+) -> Optional[dict]:
+    session = SessionLocal()
+    try:
+        client = (
+            session.query(ClientDB)
+            .options(selectinload(ClientDB.availability_windows))
+            .filter(
+                ClientDB.id == client_id,
+                ClientDB.instructor_id == instructor_id,
+                ClientDB.status == "active",
+            )
+            .one_or_none()
+        )
+        return _client_profile_record(client) if client is not None else None
+    finally:
+        session.close()
+
+
+def _client_profile_record(client: ClientDB) -> dict:
+    availability = [
+        {
+            "id": window.id,
+            "day_mask": window.day_mask,
+            "start_time": window.start_time,
+            "end_time": window.end_time,
+            "position": window.position,
+        }
+        for window in sorted(
+            client.availability_windows,
+            key=lambda window: (window.position, window.id),
+        )
+    ]
+    return {
+        "id": client.id,
+        "name": client.name,
+        "email": client.email,
+        "phone": client.phone,
+        "notes": client.notes,
+        "location_mode": client.location_mode,
+        "default_location_address": client.default_location_address,
+        "default_lat": client.default_lat,
+        "default_lng": client.default_lng,
+        "default_duration_mins": client.default_duration_mins,
+        "revision": client.revision,
+        "availability": availability,
+    }
+
 
 def get_pending_lesson_requests_for_instructor(instructor_id: str) -> List[dict]:
     session = SessionLocal()

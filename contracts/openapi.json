@@ -1206,6 +1206,192 @@
         "title": "CoachBookLessonRequest",
         "type": "object"
       },
+      "CoachClientAvailabilityWindowResponse": {
+        "properties": {
+          "days": {
+            "items": {
+              "enum": [
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday"
+              ],
+              "type": "string"
+            },
+            "maxItems": 7,
+            "minItems": 1,
+            "title": "Days",
+            "type": "array"
+          },
+          "end_time": {
+            "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+            "title": "End Time",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "start_time": {
+            "pattern": "^(?:[01]\\d|2[0-3]):[0-5]\\d$",
+            "title": "Start Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "days",
+          "start_time",
+          "end_time"
+        ],
+        "title": "CoachClientAvailabilityWindowResponse",
+        "type": "object"
+      },
+      "CoachClientListResponse": {
+        "properties": {
+          "clients": {
+            "items": {
+              "$ref": "#/components/schemas/CoachClientProfileResponse"
+            },
+            "title": "Clients",
+            "type": "array"
+          }
+        },
+        "required": [
+          "clients"
+        ],
+        "title": "CoachClientListResponse",
+        "type": "object"
+      },
+      "CoachClientLocationResponse": {
+        "properties": {
+          "address": {
+            "title": "Address",
+            "type": "string"
+          },
+          "lat": {
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Lat",
+            "type": "number"
+          },
+          "lng": {
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Lng",
+            "type": "number"
+          }
+        },
+        "required": [
+          "address",
+          "lat",
+          "lng"
+        ],
+        "title": "CoachClientLocationResponse",
+        "type": "object"
+      },
+      "CoachClientProfileResponse": {
+        "properties": {
+          "availability": {
+            "items": {
+              "$ref": "#/components/schemas/CoachClientAvailabilityWindowResponse"
+            },
+            "title": "Availability",
+            "type": "array"
+          },
+          "client_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CoachClientLocationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "default_duration_mins": {
+            "maximum": 240.0,
+            "minimum": 15.0,
+            "multipleOf": 15.0,
+            "title": "Default Duration Mins",
+            "type": "integer"
+          },
+          "effective_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CoachClientLocationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "location_mode": {
+            "enum": [
+              "client_location",
+              "service_location"
+            ],
+            "title": "Location Mode",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "notes": {
+            "title": "Notes",
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "revision": {
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "phone",
+          "email",
+          "notes",
+          "location_mode",
+          "client_location",
+          "effective_location",
+          "default_duration_mins",
+          "revision"
+        ],
+        "title": "CoachClientProfileResponse",
+        "type": "object"
+      },
       "CoachClientResponse": {
         "properties": {
           "availability": {
@@ -4125,6 +4311,99 @@
           }
         ],
         "summary": "Create Booking",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/clients": {
+      "get": {
+        "operationId": "read_clients_api_coach_clients_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachClientListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The provider or client could not be found."
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Read Clients",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/clients/{client_id}": {
+      "get": {
+        "operationId": "read_client_api_coach_clients__client_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "client_id",
+            "required": true,
+            "schema": {
+              "title": "Client Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachClientProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The provider or client could not be found."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Read Client",
         "tags": [
           "coach"
         ]

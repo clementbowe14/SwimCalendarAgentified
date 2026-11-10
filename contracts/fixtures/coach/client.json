@@ -1,0 +1,32 @@
+{
+  "availability": [
+    {
+      "days": [
+        "monday",
+        "wednesday",
+        "friday"
+      ],
+      "end_time": "19:00",
+      "id": "availability_weekday",
+      "start_time": "16:00"
+    }
+  ],
+  "client_location": {
+    "address": "820 Lakeview Dr, Austin, TX",
+    "lat": 30.289,
+    "lng": -97.739
+  },
+  "default_duration_mins": 45,
+  "effective_location": {
+    "address": "820 Lakeview Dr, Austin, TX",
+    "lat": 30.289,
+    "lng": -97.739
+  },
+  "email": "ana.martinez@example.com",
+  "id": "client_sofia",
+  "location_mode": "client_location",
+  "name": "Sofia Martinez",
+  "notes": "Prefers weekday afternoons.",
+  "phone": "(512) 555-0194",
+  "revision": 1
+}
