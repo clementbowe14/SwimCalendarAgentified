@@ -89,7 +89,7 @@ test.describe("instructor command real-backend integration", () => {
     const signOut = page.getByRole("button", { name: "Sign out" });
     await expect(signOut).toBeVisible();
     await expect(signOut).toHaveCSS("color", "rgb(255, 255, 255)");
-    await expect(signOut).toHaveCSS("background-image", /rgb\(217, 71, 50\)/);
+    await expect(signOut).toHaveCSS("background-color", "rgb(166, 81, 56)");
     const signOutResponsePromise = page.waitForResponse((response) =>
       response.request().method() === "POST" && response.url().endsWith("/auth/coach/sign-out"),
     );
