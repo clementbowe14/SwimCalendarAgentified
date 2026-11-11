@@ -1,4 +1,4 @@
-export const INSTRUCTOR_APP_NAME = "Instructor Command";
+export const INSTRUCTOR_APP_NAME = "Dayweave";
 export const MOCK_API_ENV_KEY = "VITE_USE_MOCK_API";
 export const INSTRUCTOR_API_URL_ENV_KEY = "VITE_INSTRUCTOR_API_URL";
 

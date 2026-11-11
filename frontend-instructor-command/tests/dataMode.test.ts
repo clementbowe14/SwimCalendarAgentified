@@ -37,7 +37,7 @@ test("adapter classes are importable in Node without evaluating browser configur
 test("production builds reject explicit mock mode", () => {
   assert.throws(
     () => resolveInstructorDataMode({ VITE_USE_MOCK_API: "true" }, "build"),
-    (error: unknown) => configurationErrorNames(error, "Instructor Command", "VITE_USE_MOCK_API"),
+    (error: unknown) => configurationErrorNames(error, "Dayweave", "VITE_USE_MOCK_API"),
   );
 });
 
@@ -61,7 +61,7 @@ for (const mockFlag of [undefined, "", "false"] as const) {
     };
     assert.throws(
       () => createInstructorCommandApi(environment),
-      (error: unknown) => configurationErrorNames(error, "Instructor Command", "VITE_INSTRUCTOR_API_URL"),
+      (error: unknown) => configurationErrorNames(error, "Dayweave", "VITE_INSTRUCTOR_API_URL"),
     );
   });
 }
@@ -73,7 +73,7 @@ for (const invalidFlag of ["TRUE", "1", "yes", " true "]) {
         VITE_USE_MOCK_API: invalidFlag,
         VITE_INSTRUCTOR_API_URL: "/api",
       }),
-      (error: unknown) => configurationErrorNames(error, "Instructor Command", "VITE_USE_MOCK_API"),
+      (error: unknown) => configurationErrorNames(error, "Dayweave", "VITE_USE_MOCK_API"),
     );
   });
 }

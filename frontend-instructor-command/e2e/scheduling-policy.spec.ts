@@ -133,7 +133,7 @@ test.describe("provider scheduling policy", () => {
   test("clears old slots after save failure and requires a successful retry", async ({ page }) => {
     const api = await installSchedulingPolicyApi(page);
     await page.goto("/");
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
     await expect(page.getByRole("button", { name: "Book lesson" })).toHaveCount(1);
 
     await page.getByRole("button", { name: "Settings" }).click();
@@ -143,7 +143,7 @@ test.describe("provider scheduling policy", () => {
     await form.getByRole("button", { name: "Save scheduling policy" }).click();
     await expect(form.locator(".availability-policy-status.stale")).toContainText(/Policy saved.*Retry/i);
 
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
     await expect(page.getByRole("button", { name: "Book lesson" })).toHaveCount(0);
     await expect(page.getByText("Do not book the old options")).toBeVisible();
     await page.getByRole("button", { name: "Retry safe starts" }).click();
@@ -153,7 +153,7 @@ test.describe("provider scheduling policy", () => {
   test("ignores an older availability response after a policy save refresh", async ({ page }) => {
     const api = await installSchedulingPolicyApi(page);
     await page.goto("/");
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
     api.delayNextAvailability();
     await page.getByRole("button", { name: "Find safe starts" }).click();
 
@@ -162,7 +162,7 @@ test.describe("provider scheduling policy", () => {
     await form.locator('[data-policy-minute="tier.near.buffer_mins"]').fill("90");
     await form.getByRole("button", { name: "Save scheduling policy" }).click();
     await expect(form.locator("[data-policy-save-status]")).toContainText("Scheduling policy saved");
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
     await expect(page.locator(".slot-card")).toContainText("Buffer 90 min");
     const currentSlot = await page.locator(".slot-card").textContent();
 

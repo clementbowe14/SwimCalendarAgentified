@@ -54,12 +54,12 @@ test.describe("MVP coach auth flow", () => {
     const shellColumns = await page.locator(".command-shell").evaluate((node) => {
       return window.getComputedStyle(node).gridTemplateColumns;
     });
-    expect(shellColumns).toContain("280px");
+    expect(shellColumns).toContain("252px");
 
-    const brandRadius = await page.locator(".brand-mark").evaluate((node) => {
+    const brandRadius = await page.locator(".sidebar .brand-mark").evaluate((node) => {
       return window.getComputedStyle(node).borderRadius;
     });
-    expect(brandRadius).toBe("8px");
+    expect(brandRadius).toBe("14px");
 
     const cookie = (await page.context().cookies()).find((item) => item.name === SESSION_COOKIE_NAME);
     expect(cookie?.httpOnly).toBe(true);
@@ -126,7 +126,7 @@ test.describe("MVP coach auth flow", () => {
   test("uses the exact direct-booking ID for an authenticated calendar fallback", async ({ page }) => {
     const api = await mockAuthenticatedCoachApi(page);
     await signInThroughUi(page);
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
     await page.getByRole("button", { name: "Book lesson" }).first().click();
 
     const dialog = page.getByRole("dialog", { name: "Ready for your calendar" });
@@ -250,7 +250,7 @@ test.describe("MVP coach auth flow", () => {
     const api = await mockAuthenticatedCoachApi(page);
     api.failNextCalendarReadWith(409);
     await signInThroughUi(page);
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
     await page.getByRole("button", { name: "Book lesson" }).first().click();
 
     const dialog = page.getByRole("dialog", { name: "Calendar options unavailable" });
@@ -264,7 +264,7 @@ test.describe("MVP coach auth flow", () => {
     const api = await mockAuthenticatedCoachApi(page);
     api.failNextCalendarReadWith(401);
     await signInThroughUi(page);
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
     await page.getByRole("button", { name: "Book lesson" }).first().click();
 
     await expect(page.getByRole("heading", { name: "Session expired" })).toBeVisible();
@@ -278,7 +278,7 @@ test.describe("MVP coach auth flow", () => {
     await signInThroughUi(page);
 
     api.revokeSession();
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
     await page.getByRole("button", { name: "Find safe starts" }).click();
 
     await expect(page.getByRole("heading", { name: "Session expired" })).toBeVisible();
@@ -290,7 +290,7 @@ test.describe("MVP coach auth flow", () => {
     await signInThroughUi(page);
     api.failProtectedRequestsWith(403);
 
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
     await page.getByRole("button", { name: "Find safe starts" }).click();
 
     await expect(page.getByRole("alert")).toContainText(/permission|forbidden/i);
@@ -301,7 +301,7 @@ test.describe("MVP coach auth flow", () => {
   test("rejects an unsafe command without optimistic booking or session expiry", async ({ page }) => {
     const api = await mockAuthenticatedCoachApi(page);
     await signInThroughUi(page);
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
     api.failNextBookingWithCsrf();
 
     await page.getByRole("button", { name: "Book lesson" }).first().click();
@@ -349,7 +349,7 @@ test.describe("MVP coach auth flow", () => {
   test("a delayed protected response cannot repopulate state after sign-out", async ({ page }) => {
     const api = await mockAuthenticatedCoachApi(page);
     await signInThroughUi(page);
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
     api.delayNextAvailability();
 
     await page.getByRole("button", { name: "Find safe starts" }).click({ noWaitAfter: true });

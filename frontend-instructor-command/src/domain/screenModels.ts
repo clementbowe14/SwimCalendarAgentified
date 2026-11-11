@@ -32,12 +32,12 @@ export type ScreenReadiness = {
   missingApiContracts: string[];
 };
 
-export function buildAgendaRows(schedule: ScheduleItem[]): AgendaRow[] {
+export function buildAgendaRows(schedule: ScheduleItem[], timeZone?: string): AgendaRow[] {
   return schedule.map((item) => ({
     id: item.id,
     tone: agendaTone(item.kind),
     kind: item.kind,
-    time: formatTimeRange(item.start_time, item.end_time),
+    time: formatTimeRange(item.start_time, item.end_time, timeZone),
     title: item.title,
     detail: itemDetail(item),
     status: item.status ?? undefined,
@@ -134,10 +134,11 @@ export function scheduleUtilization(schedule: ScheduleItem[]): number {
   return Math.round((lessonMinutes / availableMinutes) * 100);
 }
 
-export function requestDateLabel(request: LessonRequest): string {
-  return `${formatShortDate(request.requested_slot.start_time)} ${formatTimeRange(
+export function requestDateLabel(request: LessonRequest, timeZone?: string): string {
+  return `${formatShortDate(request.requested_slot.start_time, timeZone)} ${formatTimeRange(
     request.requested_slot.start_time,
     request.requested_slot.end_time,
+    timeZone,
   )}`;
 }
 

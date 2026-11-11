@@ -6,11 +6,15 @@ test("navigates the instructor command screens with the local adapter", async ({
   await expect(page.locator("html")).toHaveAttribute("data-data-mode", "mock");
   await expect(page.getByText("Mock data", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
-  await page.getByRole("button", { name: "Find" }).click();
+  await expect(page.getByRole("button", { name: "Schedule", exact: true })).toHaveAttribute("aria-current", "page");
+  const findNavigation = page.getByRole("button", { name: "Find", exact: true });
+  await findNavigation.click();
+  await expect(findNavigation).toBeFocused();
+  await expect(findNavigation).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("heading", { name: "Availability finder" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Find safe starts" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Client", exact: true }).click();
+  await page.getByRole("button", { name: "Clients", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Client detail" })).toBeVisible();
 
   await page.getByRole("button", { name: "Requests", exact: true }).click();
@@ -18,6 +22,32 @@ test("navigates the instructor command screens with the local adapter", async ({
 
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+});
+
+test("keeps the Schedule route usable and date navigation contained at 320px", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto("/");
+
+  const overflow = await page.evaluate(() => ({
+    document: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    body: document.body.scrollWidth - document.body.clientWidth,
+  }));
+  expect(overflow.document).toBeLessThanOrEqual(1);
+  expect(overflow.body).toBeLessThanOrEqual(1);
+
+  const routeAction = page.getByRole("link", { name: "Open map", exact: true });
+  const tabbar = page.locator(".mobile-tabbar");
+  await routeAction.scrollIntoViewIfNeeded();
+  const routeBounds = await routeAction.boundingBox();
+  const tabbarBounds = await tabbar.boundingBox();
+  expect((routeBounds?.y ?? 0) + (routeBounds?.height ?? 0)).toBeLessThanOrEqual((tabbarBounds?.y ?? 0) + 1);
+
+  const previousDate = page.getByRole("button", { name: "Monday, August 24, 2026", exact: true });
+  await previousDate.click();
+  await expect(previousDate).toBeFocused();
+  await expect(previousDate).toHaveAttribute("aria-current", "date");
+  await expect(page).toHaveURL(/date=2026-08-24/);
+  await expect(page.getByText("No active lessons that day", { exact: true })).toBeVisible();
 });
 
 test("creates, edits, and confirmation-gates removal of schedule events", async ({ page }) => {
@@ -144,7 +174,7 @@ test("saves one canonical provider configuration while keeping scheduler rules s
 
   await expect(page.locator("[data-provider-save-status]")).toContainText("Provider settings saved");
   await expect(page.getByRole("heading", { name: "Scheduling is ready" })).toBeVisible();
-  await page.getByRole("button", { name: "Today" }).click();
+  await page.getByRole("button", { name: "Schedule" }).click();
   await expect(page.locator(".operator-card")).toContainText("Jordan Lee");
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.getByLabel("Display name")).toHaveValue("Jordan Lee");
@@ -298,7 +328,7 @@ test("keeps email recovery controls one-handed at 320px", async ({ page }) => {
 
 test("hands a directly booked persisted appointment to the instructor calendar", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Find" }).click();
+  await page.getByRole("button", { name: "Find", exact: true }).click();
 
   const bookLesson = page.getByRole("button", { name: "Book lesson" }).first();
   await bookLesson.click();
@@ -356,7 +386,7 @@ test("uses confirmation IDs for a recurring request handoff", async ({ page }) =
 test("keeps calendar handoff controls usable at 320px", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 720 });
   await page.goto("/");
-  await page.getByRole("button", { name: "Find" }).click();
+  await page.getByRole("button", { name: "Find", exact: true }).click();
   await page.getByRole("button", { name: "Book lesson" }).first().click();
 
   const dialog = page.getByRole("dialog", { name: "Ready for your calendar" });

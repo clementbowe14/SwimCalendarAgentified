@@ -1,4 +1,4 @@
-# Instructor Command Frontend
+# Dayweave Provider Frontend
 
 Instructor command-center prototype for viewing a schedule, searching availability, and booking a safe start.
 
