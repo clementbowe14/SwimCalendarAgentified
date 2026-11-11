@@ -117,7 +117,7 @@ test.describe("instructor command real-backend integration", () => {
   test("loads coach schedule data and searches availability through /api/coach", async ({ page }) => {
     await signIn(page);
 
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Availability finder" })).toBeVisible();
 
     await page.getByRole("button", { name: "Find safe starts" }).click();
@@ -426,7 +426,7 @@ test.describe("instructor command real-backend integration", () => {
 
   test("books a safe slot and independently reads back its exact appointment ID", async ({ page }) => {
     await signIn(page);
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
 
     const bookingResponsePromise = page.waitForResponse((response) =>
       response.request().method() === "POST" && response.url().endsWith("/coach/bookings"),

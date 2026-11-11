@@ -1,0 +1,343 @@
+/* Dayweave earth-tone design system */
+:root {
+  color: #28271f;
+  background: #f4efe4;
+  --ink: #28271f;
+  --muted: #6d695d;
+  --water: #245f49;
+  --teal: #4f8171;
+  --sun: #bf831c;
+  --green: #3d754e;
+  --rose: #a65138;
+  --forest: #245f49;
+  --forest-dark: #184737;
+  --sage: #dfe8dc;
+  --sage-strong: #6f927c;
+  --ochre: #bf831c;
+  --clay: #a65138;
+  --line: rgba(55, 58, 45, 0.16);
+  --line-strong: rgba(55, 58, 45, 0.26);
+  --surface: #fffdf8;
+  --soft: #f1ebdf;
+  --bone: #f7f2e8;
+  font-family: "Avenir Next", Avenir, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  color: var(--ink);
+  background: #f4efe4;
+}
+
+button,
+a,
+input,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 3px solid rgba(36, 95, 73, 0.36);
+  outline-offset: 3px;
+}
+
+.command-shell {
+  grid-template-columns: 252px minmax(0, 1fr);
+  background: #f4efe4;
+}
+
+.sidebar {
+  gap: 24px;
+  padding: 28px 22px;
+  border-color: var(--line);
+  background: rgba(255, 253, 248, 0.92);
+  box-shadow: 8px 0 32px rgba(54, 48, 36, 0.04);
+  backdrop-filter: blur(20px);
+}
+
+.brand-lockup {
+  min-width: 0;
+}
+
+.brand-mark,
+.avatar {
+  color: #fffdf8;
+  background: var(--forest);
+  box-shadow: 0 9px 22px rgba(36, 95, 73, 0.18);
+}
+
+.brand-mark {
+  overflow: hidden;
+  border-radius: 14px;
+  background: #fffaf0;
+  box-shadow: none;
+  font-size: 23px;
+}
+
+.brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.brand-lockup strong {
+  font-family: inherit;
+  font-size: 20px;
+  letter-spacing: -0.02em;
+}
+
+.brand-lockup span:not(.brand-mark) {
+  display: block;
+  max-width: 150px;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.section-nav {
+  gap: 5px;
+}
+
+.section-nav .nav-item {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 0 14px;
+  border-radius: 14px;
+  color: #5f6257;
+  font-weight: 750;
+}
+
+.section-nav .nav-item.selected {
+  color: #fffdf8;
+  background: var(--forest);
+  box-shadow: 0 10px 24px rgba(36, 95, 73, 0.18);
+}
+
+.nav-icon {
+  display: inline-grid;
+  position: relative;
+  place-items: center;
+  width: 22px;
+  font-size: 20px;
+}
+
+.nav-icon small {
+  position: absolute;
+  top: -9px;
+  right: -10px;
+  display: grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 2px solid var(--surface);
+  border-radius: 999px;
+  color: #fff;
+  background: var(--clay);
+  font-size: 9px;
+  line-height: 1;
+}
+
+.section-nav .selected .nav-icon small {
+  border-color: var(--forest);
+  color: var(--forest-dark);
+  background: #f5d49b;
+}
+
+.operator-card,
+.hero-panel,
+.finder-form,
+.new-client-panel,
+.slot-results,
+.client-profile,
+.detail-grid article,
+.request-card,
+.rules-overview,
+.rules-list,
+.payment-panel,
+.email-delivery-section,
+.auth-panel {
+  border-color: var(--line);
+  border-radius: 16px;
+  background: rgba(255, 253, 248, 0.96);
+  box-shadow: 0 12px 32px rgba(67, 58, 43, 0.07);
+}
+
+.operator-card {
+  background: var(--soft);
+  box-shadow: none;
+}
+
+.eyebrow {
+  color: var(--forest);
+  letter-spacing: 0.1em;
+}
+
+.workspace {
+  padding: 28px 32px 40px;
+}
+
+.topbar {
+  max-width: 1080px;
+  margin-bottom: 24px;
+}
+
+.topbar h1 {
+  font-family: inherit;
+  font-size: clamp(34px, 4vw, 48px);
+  letter-spacing: -0.035em;
+}
+
+.topbar-actions,
+.primary-action,
+.primary-compact,
+.secondary-action,
+.secondary-compact,
+.danger-action,
+.navigate-action,
+.gap-action,
+.request-cue button,
+.schedule-add-button {
+  gap: 8px;
+}
+
+.primary-action,
+.primary-compact {
+  color: #fffdf8;
+  background: var(--forest);
+  box-shadow: 0 10px 22px rgba(36, 95, 73, 0.18);
+}
+
+.secondary-action,
+.secondary-compact {
+  border-color: rgba(36, 95, 73, 0.3);
+  color: var(--forest);
+  background: var(--surface);
+}
+
+.danger-action {
+  background: var(--clay);
+  box-shadow: 0 10px 22px rgba(166, 81, 56, 0.18);
+}
+
+.metric-pill,
+.safe-chip,
+.status-chip {
+  border-radius: 999px;
+}
+
+.request-pill {
+  gap: 7px;
+  border: 1px solid rgba(166, 81, 56, 0.18);
+  color: #78412f;
+  background: #f7e4dc;
+}
+
+.safe-chip {
+  color: #2d6142;
+  background: #e3eee2;
+}
+
+.status-chip {
+  color: #754f0b;
+  background: #f7e6bf;
+}
+
+input,
+select,
+.blocker-field input {
+  border-color: var(--line-strong);
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.segmented-control {
+  border-color: var(--line);
+  background: var(--soft);
+}
+
+.segmented-control button.selected {
+  color: var(--forest);
+  background: var(--surface);
+  box-shadow: 0 4px 12px rgba(67, 58, 43, 0.08);
+}
+
+.hero-panel {
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.slot-results {
+  background: var(--surface);
+}
+
+.slot-card,
+.rule-row,
+.email-delivery-card {
+  border-color: var(--line);
+  background: var(--surface);
+}
+
+.slot-card strong,
+.stats-grid strong,
+.request-summary strong {
+  color: var(--forest);
+}
+
+.request-facts {
+  color: #4c5c4d;
+  background: #edf1e7;
+}
+
+.blocker-modal-backdrop,
+.calendar-modal-backdrop {
+  background: rgba(37, 36, 28, 0.62);
+}
+
+.blocker-editor-sheet,
+.calendar-handoff-modal {
+  border-color: var(--line);
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 28px 80px rgba(37, 36, 28, 0.3);
+}
+
+.blocker-kind-option {
+  border-color: var(--line);
+  background: var(--bone);
+}
+
+.blocker-kind-option.selected {
+  border-color: var(--forest);
+  background: var(--sage);
+  box-shadow: 0 0 0 3px rgba(36, 95, 73, 0.1);
+}
+
+.calendar-action-google {
+  border-color: rgba(36, 95, 73, 0.3);
+  color: var(--forest);
+  background: #f3f5ee;
+}
+
+.calendar-action-ics {
+  background: var(--forest);
+  box-shadow: 0 12px 24px rgba(36, 95, 73, 0.18);
+}
+
+.toast {
+  color: #fffdf8;
+  background: #30352c;
+  box-shadow: 0 12px 32px rgba(37, 36, 28, 0.22);
+}
+
+.mobile-brandbar,
+.mobile-tabbar {
+  display: none;
+}

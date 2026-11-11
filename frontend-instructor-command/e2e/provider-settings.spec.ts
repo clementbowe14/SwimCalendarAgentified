@@ -18,9 +18,9 @@ test.describe("provider setup workflow", () => {
     await expect(page.getByRole("heading", { name: "Complete your scheduling setup" })).toBeVisible();
     expect(api.availabilityCalls()).toBe(0);
 
-    await page.getByRole("button", { name: "Today" }).click();
+    await page.getByRole("button", { name: "Schedule" }).click();
     await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
     await expect(page.getByText(/before you find availability/i)).toBeVisible();
 
@@ -60,7 +60,7 @@ test.describe("provider setup workflow", () => {
     expect(payload).not.toHaveProperty("lat");
     expect(api.lastProviderRequest()?.headers()["x-csrf-protection"]).toBe("1");
 
-    await page.getByRole("button", { name: "Find" }).click();
+    await page.getByRole("button", { name: "Find", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Availability finder" })).toBeVisible();
   });
 

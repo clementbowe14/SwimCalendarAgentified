@@ -163,7 +163,7 @@ function renderSlot(slot: TimeSlotDTO, snapshot: CommandCenterSnapshot): string 
   return `
     <article class="slot-card">
       <div>
-        <strong>${escapeHtml(formatShortDate(slot.start_time))} ${escapeHtml(formatTimeRange(slot.start_time, slot.end_time))}</strong>
+        <strong>${escapeHtml(formatShortDate(slot.start_time, snapshot.instructor.timezone))} ${escapeHtml(formatTimeRange(slot.start_time, slot.end_time, snapshot.instructor.timezone))}</strong>
         <span>${escapeHtml(slotSafetyFacts(slot))}</span>
         <p>${escapeHtml(slotExplanation(slot))}</p>
       </div>

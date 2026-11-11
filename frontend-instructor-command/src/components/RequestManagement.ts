@@ -45,14 +45,14 @@ export function renderRequestManagement(
         </section>
       `}
       <section class="request-list" aria-label="Lesson requests">
-        ${snapshot.requests.map((request) => renderRequest(request, schedulingReady)).join("")}
+        ${snapshot.requests.map((request) => renderRequest(request, schedulingReady, snapshot.instructor.timezone)).join("")}
       </section>
       ${renderEmailDeliverySection(deliveryState)}
     </section>
   `;
 }
 
-function renderRequest(request: LessonRequest, schedulingReady: boolean): string {
+function renderRequest(request: LessonRequest, schedulingReady: boolean, timeZone: string): string {
   const isPending = request.status === "pending";
   const selectedAlternativeId = request.alternative_slots.find(
     (slot) => slot.id === request.requested_slot.id,
@@ -66,7 +66,7 @@ function renderRequest(request: LessonRequest, schedulingReady: boolean): string
         <div>
           <p class="eyebrow">${escapeHtml(request.source.replaceAll("_", " "))}</p>
           <h2>${escapeHtml(request.client_name)}</h2>
-          <span>${escapeHtml(requestDateLabel(request))}</span>
+          <span>${escapeHtml(requestDateLabel(request, timeZone))}</span>
         </div>
         <span class="status-chip">${escapeHtml(requestStatusLabel(request))}</span>
       </div>

@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 declare module "*.css";
+declare module "@phosphor-icons/web/regular";
 
 interface ViteTypeOptions {
   strictImportMetaEnv: unknown;

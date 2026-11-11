@@ -20,7 +20,7 @@ export function renderClientDetail(snapshot: CommandCenterSnapshot, clientId: st
       <section class="detail-grid">
         <article>
           <p class="eyebrow">Next lesson</p>
-          <h3>${nextLesson ? `${formatShortDate(nextLesson.start_time)} ${formatTimeRange(nextLesson.start_time, nextLesson.end_time)}` : "No lesson scheduled"}</h3>
+          <h3>${nextLesson ? `${formatShortDate(nextLesson.start_time, snapshot.instructor.timezone)} ${formatTimeRange(nextLesson.start_time, nextLesson.end_time, snapshot.instructor.timezone)}` : "No lesson scheduled"}</h3>
           <span>${nextLesson ? escapeHtml(nextLesson.location?.address ?? "Location unavailable") : "Use Find to recommend safe times."}</span>
         </article>
         <article>

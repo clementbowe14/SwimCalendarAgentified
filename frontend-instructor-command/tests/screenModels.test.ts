@@ -12,6 +12,7 @@ import {
   buildFindSlotsRequest,
   buildReadinessReport,
   findFeaturedClient,
+  requestDateLabel,
   summarizeRequests,
 } from "../src/domain/screenModels.js";
 import { schedulingPolicyDraftFromPolicy } from "../src/domain/schedulingPolicy.js";
@@ -24,6 +25,26 @@ test("Today schedule renders lessons, travel, buffers, and open gaps", () => {
   assert.match(html, /Maya Chen/);
   assert.match(html, /Recovery buffer/);
   assert.match(html, /Open gap/);
+});
+
+test("Today schedule never presents canceled lessons as an on-time departure", () => {
+  const canceledSnapshot = structuredClone(snapshot);
+  canceledSnapshot.schedule = canceledSnapshot.schedule.map((item) => (
+    item.kind === "lesson" ? { ...item, status: "canceled" as const } : item
+  ));
+  const html = renderTodaySchedule(canceledSnapshot);
+
+  assert.match(html, /No active lessons that day/);
+  assert.doesNotMatch(html, /On time/);
+});
+
+test("request labels preserve provider-local wall time for naive and offset timestamps", () => {
+  assert.match(requestDateLabel(snapshot.requests[0], snapshot.instructor.timezone), /6:00 PM-6:45 PM/);
+  const offsetRequest = structuredClone(snapshot.requests[0]);
+  offsetRequest.requested_slot.start_time = "2026-08-27T18:00:00-05:00";
+  offsetRequest.requested_slot.end_time = "2026-08-27T18:45:00-05:00";
+
+  assert.match(requestDateLabel(offsetRequest, "America/Chicago"), /6:00 PM-6:45 PM/);
 });
 
 test("Availability Finder builds backend-shaped slot requests and renders safety evidence", async () => {

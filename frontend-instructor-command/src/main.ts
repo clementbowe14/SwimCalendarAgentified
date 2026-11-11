@@ -1,4 +1,7 @@
 import "./styles.css";
+import "./dayweave-theme.css";
+import "./dayweave-schedule.css";
+import "@phosphor-icons/web/regular";
 import {
   clearLegacyInstructorAuthState,
   createInstructorCommandApi,
@@ -268,7 +271,7 @@ function render(): void {
 
   if (!state.snapshot) {
     document.body.classList.remove("calendar-modal-open");
-    app.innerHTML = `<main class="loading-screen">Loading command center${renderError()}</main>`;
+    app.innerHTML = `<main class="loading-screen">Loading Dayweave${renderError()}</main>`;
     return;
   }
 
@@ -301,7 +304,7 @@ function renderLockedScreen(): string {
     const isSignOut = state.authStatus === "signing_out";
     const heading = isSignIn ? "Signing you in…" : isSignOut ? "Signing out…" : "Checking your session…";
     const body = isSignIn
-      ? "Securely opening your instructor command center."
+      ? "Securely opening your Dayweave workspace."
       : isSignOut
         ? "Revoking this browser session."
         : "Verifying this browser before any protected schedule data loads.";
@@ -325,19 +328,19 @@ function renderLockedScreen(): string {
   }
 
   const isExpired = state.authStatus === "expired";
-  const heading = isExpired ? "Session expired" : "Swim Command locked";
+  const heading = isExpired ? "Session expired" : "Dayweave locked";
   const body = isExpired
     ? "Sign in again to continue managing protected coach data."
-    : "Sign in to open the instructor command center.";
+    : "Sign in to open your Dayweave workspace.";
 
   return `
     <main class="auth-shell">
       <section class="auth-panel" aria-labelledby="auth-title">
         <div class="brand-lockup">
-          <span class="brand-mark">SC</span>
+          <span class="brand-mark" aria-hidden="true"><img src="/assets/dayweave-mark.png" alt="" /></span>
           <div>
-            <strong>Swim Command</strong>
-            <span>Instructor access</span>
+            <strong>Dayweave</strong>
+            <span>Provider access</span>
           </div>
         </div>
         <div class="auth-copy">
@@ -367,8 +370,8 @@ function renderAuthStatusScreen(heading: string, body: string, action = ""): str
     <main class="auth-shell">
       <section class="auth-panel auth-status-panel" aria-labelledby="auth-title" aria-live="polite">
         <div class="brand-lockup">
-          <span class="brand-mark">SC</span>
-          <div><strong>Swim Command</strong><span>Instructor access</span></div>
+          <span class="brand-mark" aria-hidden="true"><img src="/assets/dayweave-mark.png" alt="" /></span>
+          <div><strong>Dayweave</strong><span>Provider access</span></div>
         </div>
         <div class="auth-copy">
           <p class="eyebrow">Protected workspace</p>
@@ -429,9 +432,25 @@ function wireEvents(): void {
 
   app.querySelectorAll<HTMLButtonElement>("[data-screen]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.activeScreen = button.dataset.screen as ScreenId;
+      const nextScreen = button.dataset.screen as ScreenId;
+      state.activeScreen = nextScreen;
       state.providerSetupPrompt = "";
       render();
+      focusActiveScreenNavigation(nextScreen);
+    });
+  });
+
+  app.querySelectorAll<HTMLButtonElement>("[data-schedule-date]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const date = button.dataset.scheduleDate ?? "";
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date === state.snapshot?.date) return;
+      await runAction(async (generation) => {
+        const snapshot = await instructorCommandApi.getSnapshot(instructorId, date);
+        if (!isCurrentSignedInGeneration(generation)) return;
+        applySnapshot(snapshot);
+        clearAvailability();
+      });
+      app.querySelector<HTMLButtonElement>(`[data-schedule-date="${date}"]`)?.focus({ preventScroll: true });
     });
   });
 
@@ -523,6 +542,12 @@ function wireEvents(): void {
   wireEmailDeliveryEvents();
   wireProviderSettingsEvents();
   wireSchedulingPolicyEvents();
+}
+
+function focusActiveScreenNavigation(screen: ScreenId): void {
+  const controls = [...app.querySelectorAll<HTMLButtonElement>(`.nav-item[data-screen="${screen}"]`)]
+    .filter((control) => control.getClientRects().length > 0);
+  controls.at(-1)?.focus({ preventScroll: true });
 }
 
 function openCreateBlockerEditor(): void {
