@@ -286,6 +286,11 @@ class ProviderSessionDB(Base):
     __table_args__ = (
         CheckConstraint("session_version >= 1", name="ck_provider_sessions_session_version"),
         CheckConstraint("octet_length(token_digest) = 32", name="ck_provider_sessions_digest_length"),
+        UniqueConstraint(
+            "account_id",
+            "id",
+            name="uq_provider_sessions_account_id_id",
+        ),
         Index("uq_provider_sessions_token_digest", "token_digest", unique=True),
         Index("ix_provider_sessions_account_revoked", "account_id", "revoked_at"),
         Index("ix_provider_sessions_expires_at", "expires_at"),
@@ -309,6 +314,74 @@ class ProviderSessionDB(Base):
     revocation_reason = Column(String(80), nullable=True)
 
     account = relationship("ProviderAccountDB", back_populates="sessions")
+    calendar_oauth_state = relationship(
+        "ProviderCalendarOAuthStateDB",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
+
+
+class ProviderCalendarOAuthStateDB(Base):
+    __tablename__ = "provider_calendar_oauth_states"
+    __table_args__ = (
+        CheckConstraint(
+            "octet_length(state_digest) = 32",
+            name="ck_provider_calendar_oauth_states_digest_length",
+        ),
+        CheckConstraint(
+            "provider = 'google'",
+            name="ck_provider_calendar_oauth_states_provider",
+        ),
+        CheckConstraint(
+            "expires_at > created_at AND "
+            "expires_at <= created_at + INTERVAL '10 minutes'",
+            name="ck_provider_calendar_oauth_states_lifetime",
+        ),
+        ForeignKeyConstraint(
+            ["account_id", "session_id"],
+            ["provider_sessions.account_id", "provider_sessions.id"],
+            name="fk_provider_calendar_oauth_states_account_session",
+            ondelete="CASCADE",
+        ),
+        PrimaryKeyConstraint(
+            "state_digest",
+            name="pk_provider_calendar_oauth_states",
+        ),
+        UniqueConstraint(
+            "account_id",
+            "session_id",
+            name="uq_provider_calendar_oauth_states_account_session",
+        ),
+        Index(
+            "ix_provider_calendar_oauth_states_expires_at",
+            "expires_at",
+        ),
+    )
+
+    state_digest = Column(LargeBinary(32), nullable=False)
+    account_id = Column(String, nullable=False)
+    session_id = Column(String, nullable=False)
+    provider = Column(
+        String(16),
+        nullable=False,
+        default="google",
+        server_default=text("'google'"),
+    )
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+
+    session = relationship(
+        "ProviderSessionDB",
+        back_populates="calendar_oauth_state",
+    )
+
 
 class AppointmentDB(Base):
     __tablename__ = 'appointments'

@@ -37,10 +37,13 @@ def use_test_database_for_alembic(monkeypatch):
     monkeypatch.setenv("SWIM_DATABASE_URL", TEST_DATABASE_URL)
 
 
-def test_calendar_connection_revision_is_the_only_alembic_head():
-    assert ScriptDirectory.from_config(_config()).get_heads() == [
-        CALENDAR_CONNECTION_REVISION
-    ]
+def test_calendar_connection_revision_remains_in_alembic_history():
+    assert (
+        ScriptDirectory.from_config(_config()).get_revision(
+            CALENDAR_CONNECTION_REVISION
+        )
+        is not None
+    )
 
 
 def test_schema_has_only_encrypted_provider_owned_connection_fields(
@@ -469,6 +472,7 @@ def test_empty_downgrade_and_reupgrade_round_trip(migrated_postgres_db):
 def test_nonempty_downgrade_refuses_without_losing_connection(
     migrated_postgres_db,
 ):
+    original_revision = _database_revision()
     with db.SessionLocal() as session:
         values, _ = _connection_values(
             _demo_account(session),
@@ -490,12 +494,13 @@ def test_nonempty_downgrade_refuses_without_losing_connection(
         ).scalar_one() == 1
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == CALENDAR_CONNECTION_REVISION
+        ).scalar_one() == original_revision
 
 
 def test_downgrade_lock_contention_preserves_schema_row_and_revision(
     migrated_postgres_db,
 ):
+    original_revision = _database_revision()
     with db.SessionLocal() as session:
         values, _ = _connection_values(
             _demo_account(session),
@@ -526,7 +531,7 @@ def test_downgrade_lock_contention_preserves_schema_row_and_revision(
         ).scalar_one() == 1
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == CALENDAR_CONNECTION_REVISION
+        ).scalar_one() == original_revision
 
 
 def _demo_account(session) -> ProviderAccountDB:
@@ -593,3 +598,10 @@ def _config() -> Config:
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
     return config
+
+
+def _database_revision() -> str:
+    with db.engine.connect() as connection:
+        return connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one()
