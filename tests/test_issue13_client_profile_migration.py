@@ -455,6 +455,8 @@ def test_downgrade_refuses_new_client_state_without_mutation(
     migrated_postgres_db,
     new_state,
 ):
+    command.downgrade(_config(), CURRENT_REVISION)
+
     with db.engine.begin() as connection:
         if new_state == "availability":
             connection.execute(
@@ -547,6 +549,8 @@ def test_downgrade_refuses_new_client_state_without_mutation(
 def test_downgrade_lock_contention_fails_before_schema_mutation(
     migrated_postgres_db,
 ):
+    command.downgrade(_config(), CURRENT_REVISION)
+
     blocking_connection = db.engine.connect()
     blocking_transaction = blocking_connection.begin()
     try:
