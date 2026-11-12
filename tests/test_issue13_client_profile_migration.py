@@ -13,6 +13,7 @@ from tests.db_test_utils import TEST_DATABASE_URL, reset_postgres_database
 
 PREVIOUS_REVISION = "20261110_0012"
 CLIENT_PROFILE_REVISION = "20261110_0013"
+CURRENT_REVISION = "20261111_0014"
 
 
 @pytest.fixture(autouse=True)
@@ -502,7 +503,7 @@ def test_downgrade_refuses_new_client_state_without_mutation(
     with db.engine.connect() as connection:
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == CLIENT_PROFILE_REVISION
+        ).scalar_one() == CURRENT_REVISION
         if new_state == "availability":
             assert connection.execute(
                 text(
@@ -562,7 +563,7 @@ def test_downgrade_lock_contention_fails_before_schema_mutation(
         with db.engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == CLIENT_PROFILE_REVISION
+            ).scalar_one() == CURRENT_REVISION
     finally:
         blocking_transaction.rollback()
         blocking_connection.close()
