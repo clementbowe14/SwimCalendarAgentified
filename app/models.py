@@ -186,6 +186,99 @@ class ProviderAccountDB(Base):
         back_populates="account",
         cascade="all, delete-orphan",
     )
+    calendar_connection = relationship(
+        "ProviderCalendarConnectionDB",
+        back_populates="account",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
+
+
+class ProviderCalendarConnectionDB(Base):
+    __tablename__ = "provider_calendar_connections"
+    __table_args__ = (
+        CheckConstraint(
+            "id ~ '^calconn_[0-9a-f]{32}$'",
+            name="ck_provider_calendar_connections_id",
+        ),
+        CheckConstraint(
+            "provider = 'google'",
+            name="ck_provider_calendar_connections_provider",
+        ),
+        CheckConstraint(
+            "credential_version = 1",
+            name="ck_provider_calendar_connections_credential_version",
+        ),
+        CheckConstraint(
+            "credential_key_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'",
+            name="ck_provider_calendar_connections_credential_key_id",
+        ),
+        CheckConstraint(
+            "octet_length(credential_nonce) = 12",
+            name="ck_provider_calendar_connections_credential_nonce_length",
+        ),
+        CheckConstraint(
+            "octet_length(credential_ciphertext) BETWEEN 17 AND 16400",
+            name="ck_provider_calendar_connections_credential_ciphertext_length",
+        ),
+        CheckConstraint(
+            "updated_at >= created_at",
+            name="ck_provider_calendar_connections_timestamp_order",
+        ),
+        CheckConstraint(
+            "authorization_required_at IS NULL OR "
+            "(authorization_required_at >= created_at "
+            "AND authorization_required_at <= updated_at)",
+            name="ck_provider_calendar_connections_authorization_timing",
+        ),
+        UniqueConstraint(
+            "account_id",
+            name="uq_provider_calendar_connections_account_id",
+        ),
+        Index(
+            "uq_provider_calendar_connections_key_nonce",
+            "credential_key_id",
+            "credential_nonce",
+            unique=True,
+        ),
+    )
+
+    id = Column(String(40), primary_key=True)
+    account_id = Column(
+        String,
+        ForeignKey("provider_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider = Column(
+        String(16),
+        nullable=False,
+        default="google",
+        server_default=text("'google'"),
+    )
+    credential_version = Column(Integer, nullable=False)
+    credential_key_id = Column(String(64), nullable=False)
+    credential_nonce = Column(LargeBinary(12), nullable=False)
+    credential_ciphertext = Column(LargeBinary, nullable=False)
+    authorization_required_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
+
+    account = relationship(
+        "ProviderAccountDB",
+        back_populates="calendar_connection",
+    )
 
 
 class ProviderSessionDB(Base):
