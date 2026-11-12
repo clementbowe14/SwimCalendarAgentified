@@ -2,9 +2,10 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 import math
 import re
+import unicodedata
 from typing import Annotated, Literal, Optional
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app import timezones
 
@@ -76,6 +77,33 @@ PROVIDER_WEEKDAYS = (
     "saturday",
     "sunday",
 )
+_UNSAFE_PLAIN_TEXT_CHARACTERS = frozenset(
+    {
+        "\u061c",
+        "\u200e",
+        "\u200f",
+        "\u2028",
+        "\u2029",
+        "\u202a",
+        "\u202b",
+        "\u202c",
+        "\u202d",
+        "\u202e",
+        "\u2066",
+        "\u2067",
+        "\u2068",
+        "\u2069",
+        "\ufeff",
+    }
+)
+
+
+def _contains_unsafe_plain_text_character(value: str) -> bool:
+    return any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+        or character in _UNSAFE_PLAIN_TEXT_CHARACTERS
+        for character in value
+    )
 
 
 class CoachProviderLocationResponse(BaseModel):
@@ -297,6 +325,169 @@ class CoachClientLocationResponse(BaseModel):
     address: str
     lat: float = Field(ge=-90, le=90)
     lng: float = Field(ge=-180, le=180)
+
+
+class CoachClientLocationMutation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    address: str = Field(min_length=1, max_length=300, strict=True)
+
+    @field_validator("address", mode="before")
+    @classmethod
+    def trim_address(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        if _contains_unsafe_plain_text_character(value):
+            raise ValueError("Address cannot contain control characters.")
+        return value.strip()
+
+
+class CoachClientAvailabilityWindowMutation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    days: list[ProviderWeekday] = Field(min_length=1, max_length=7)
+    start_time: str = Field(strict=True, pattern=r"^ *(?:[01]\d|2[0-3]):[0-5]\d *$")
+    end_time: str = Field(strict=True, pattern=r"^ *(?:[01]\d|2[0-3]):[0-5]\d *$")
+
+    @field_validator("days")
+    @classmethod
+    def normalize_days(
+        cls,
+        value: list[ProviderWeekday],
+    ) -> list[ProviderWeekday]:
+        if len(set(value)) != len(value):
+            raise ValueError("Each weekday may appear only once per availability window.")
+        return sorted(value, key=PROVIDER_WEEKDAYS.index)
+
+    @field_validator("start_time", "end_time", mode="before")
+    @classmethod
+    def normalize_time(cls, value: object) -> object:
+        if not isinstance(value, str) or not re.fullmatch(
+            r" *(?:[01]\d|2[0-3]):[0-5]\d *",
+            value,
+        ):
+            raise ValueError("Time must use 24-hour HH:MM format.")
+        return value.strip(" ")
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> "CoachClientAvailabilityWindowMutation":
+        if self.end_time <= self.start_time:
+            raise ValueError("End time must be later than start time on the same day.")
+        return self
+
+
+class CoachClientMutation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120, strict=True)
+    phone: Optional[str] = Field(max_length=64, strict=True)
+    email: Optional[EmailStr] = Field(max_length=254)
+    notes: str = Field(max_length=4000, strict=True)
+    location_mode: Literal["client_location", "service_location"]
+    client_location: Optional[CoachClientLocationMutation] = None
+    default_duration_mins: int = Field(
+        ge=15,
+        le=240,
+        multiple_of=15,
+        strict=True,
+    )
+    availability: list[CoachClientAvailabilityWindowMutation] = Field(
+        max_length=64,
+    )
+
+    @field_validator("name", "notes", mode="before")
+    @classmethod
+    def trim_text(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        if _contains_unsafe_plain_text_character(value):
+            raise ValueError("Text cannot contain control characters.")
+        return value.strip()
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def normalize_phone(cls, value: object) -> object:
+        if value is None or not isinstance(value, str):
+            return value
+        if _contains_unsafe_plain_text_character(value):
+            raise ValueError("Phone number cannot contain control characters.")
+        normalized = value.strip(" ")
+        if not normalized:
+            return None
+        extension = re.search(
+            r" *(?:(?:x|ext\.?)|#) *([0-9]+)$",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        base_number = (
+            normalized[: extension.start()].rstrip()
+            if extension
+            else normalized
+        )
+        if not re.fullmatch(r"\+?[0-9() .\-]+", base_number):
+            raise ValueError("Phone number contains unsupported characters.")
+        local_number = (
+            base_number[1:].lstrip()
+            if base_number.startswith("+")
+            else base_number
+        )
+        if (
+            not local_number
+            or local_number[0] not in "(0123456789"
+            or base_number[-1] not in ")0123456789"
+            or re.search(r"[.\-]{2,}", base_number)
+            or re.search(r"\([^0-9]*\)", base_number)
+        ):
+            raise ValueError("Phone number punctuation is invalid.")
+        parenthesis_depth = 0
+        for character in base_number:
+            if character == "(":
+                parenthesis_depth += 1
+                if parenthesis_depth > 1:
+                    raise ValueError("Phone number parentheses are invalid.")
+            elif character == ")":
+                parenthesis_depth -= 1
+                if parenthesis_depth < 0:
+                    raise ValueError("Phone number parentheses are invalid.")
+        if parenthesis_depth:
+            raise ValueError("Phone number parentheses are invalid.")
+        base_digit_count = sum(character.isdigit() for character in base_number)
+        total_digit_count = sum(character.isdigit() for character in normalized)
+        if base_digit_count < 7 or total_digit_count > 20:
+            raise ValueError("Phone number must contain between 7 and 20 digits.")
+        return normalized
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: object) -> object:
+        if value is None or not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_profile(self) -> "CoachClientMutation":
+        if self.phone is None and self.email is None:
+            raise ValueError("At least one phone number or email address is required.")
+        if self.location_mode == "client_location" and self.client_location is None:
+            raise ValueError("Client location mode requires a client address.")
+
+        intervals_by_day: dict[str, list[tuple[str, str]]] = {
+            weekday: [] for weekday in PROVIDER_WEEKDAYS
+        }
+        for window in self.availability:
+            for weekday in window.days:
+                intervals_by_day[weekday].append(
+                    (window.start_time, window.end_time)
+                )
+        for intervals in intervals_by_day.values():
+            intervals.sort()
+            for previous, current in zip(intervals, intervals[1:]):
+                if current[0] < previous[1]:
+                    raise ValueError(
+                        "Availability windows cannot overlap on the same weekday."
+                    )
+        return self
 
 
 class CoachClientAvailabilityWindowResponse(BaseModel):
