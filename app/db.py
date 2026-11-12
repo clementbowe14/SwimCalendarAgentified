@@ -15,6 +15,7 @@ from app.config import (
 from app.models import (
     AppointmentDB,
     Base,
+    ClientAvailabilityWindowDB,
     ClientDB,
     InstructorDB,
     InviteIntakeDB,
@@ -515,6 +516,120 @@ def get_client_profile_for_instructor(
         return _client_profile_record(client) if client is not None else None
     finally:
         session.close()
+
+
+def get_client_creation_by_idempotency_key(
+    instructor_id: str,
+    idempotency_key: str,
+) -> Optional[dict]:
+    session = SessionLocal()
+    try:
+        client = (
+            session.query(ClientDB)
+            .filter_by(
+                instructor_id=instructor_id,
+                create_idempotency_key=idempotency_key,
+            )
+            .one_or_none()
+        )
+        if client is None:
+            return None
+        payload = client.client_create_payload
+        if not isinstance(payload, dict):
+            raise IdempotencyKeyConflictError(
+                "The client create replay payload is unavailable."
+            )
+        return payload
+    finally:
+        session.close()
+
+
+def create_client_profile(
+    instructor_id: str,
+    *,
+    client_id: str,
+    name: str,
+    phone: Optional[str],
+    email: Optional[str],
+    notes: str,
+    location_mode: str,
+    default_location_address: Optional[str],
+    default_lat: Optional[float],
+    default_lng: Optional[float],
+    default_duration_mins: int,
+    availability: list[dict],
+    idempotency_key: str,
+    create_payload: dict,
+) -> dict:
+    session = SessionLocal()
+    try:
+        client = ClientDB(
+            id=client_id,
+            instructor_id=instructor_id,
+            name=name,
+            phone=phone,
+            email=email,
+            notes=notes,
+            location_mode=location_mode,
+            default_location_address=default_location_address,
+            default_lat=default_lat,
+            default_lng=default_lng,
+            default_duration_mins=default_duration_mins,
+            revision=1,
+            status="active",
+            deactivated_at=None,
+            create_idempotency_key=idempotency_key,
+            client_create_payload=create_payload,
+        )
+        client.availability_windows = [
+            ClientAvailabilityWindowDB(
+                id=window["id"],
+                client_id=client_id,
+                instructor_id=instructor_id,
+                day_mask=window["day_mask"],
+                start_time=window["start_time"],
+                end_time=window["end_time"],
+                position=window["position"],
+            )
+            for window in availability
+        ]
+        session.add(client)
+        session.commit()
+        return create_payload
+    except IntegrityError:
+        session.rollback()
+        existing = (
+            session.query(ClientDB)
+            .filter_by(
+                instructor_id=instructor_id,
+                create_idempotency_key=idempotency_key,
+            )
+            .one_or_none()
+        )
+        if existing is not None:
+            return _matching_client_create_payload(existing, create_payload)
+        raise
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _matching_client_create_payload(
+    client: ClientDB,
+    attempted_payload: dict,
+) -> dict:
+    existing_payload = client.client_create_payload
+    if (
+        not isinstance(existing_payload, dict)
+        or existing_payload.get("request") != attempted_payload.get("request")
+        or not isinstance(existing_payload.get("response"), dict)
+    ):
+        raise IdempotencyKeyConflictError(
+            "The idempotency key was already used for a different mutation."
+        )
+    return existing_payload
 
 
 def _client_profile_record(client: ClientDB) -> dict:
