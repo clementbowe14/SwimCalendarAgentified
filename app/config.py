@@ -1,5 +1,8 @@
+import base64
+import json
 import math
 import os
+import re
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlsplit
@@ -15,6 +18,10 @@ DEPLOYED_ENVIRONMENTS = {"staging", "production"}
 DEFAULT_COACH_SESSION_TTL_SECONDS = 8 * 60 * 60
 MIN_COACH_SESSION_TTL_SECONDS = 5 * 60
 MAX_COACH_SESSION_TTL_SECONDS = 24 * 60 * 60
+CALENDAR_CREDENTIAL_ACTIVE_KEY_ID_ENV = "SWIM_CALENDAR_CREDENTIAL_ACTIVE_KEY_ID"
+CALENDAR_CREDENTIAL_KEYS_ENV = "SWIM_CALENDAR_CREDENTIAL_KEYS"
+MAX_CALENDAR_CREDENTIAL_KEYS_JSON_BYTES = 4 * 1024
+_CANONICAL_BASE64URL_KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:3000",
     "http://localhost:3000",
@@ -132,6 +139,18 @@ def application_settings_from_env() -> ApplicationSettings:
     )
 
 
+def calendar_credential_cipher_from_env():
+    """Build the redacted calendar credential cipher from deployment secrets."""
+
+    from app.calendar_credentials import CalendarCredentialConfigurationError
+
+    try:
+        return _load_calendar_credential_cipher_from_env()
+    except Exception:
+        pass
+    raise CalendarCredentialConfigurationError() from None
+
+
 def routing_settings_from_env(environment: Optional[str] = None) -> RoutingSettings:
     resolved_environment = (
         environment if environment is not None else os.getenv("SWIM_ENV", "local")
@@ -176,6 +195,87 @@ def routing_settings_from_env(environment: Optional[str] = None) -> RoutingSetti
         route_cache_ttl_hours=route_cache_ttl_hours,
         departure_bucket_minutes=departure_bucket_minutes,
         mapbox_access_token=mapbox_access_token,
+    )
+
+
+def _calendar_key_ring_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    parsed: dict[str, object] = {}
+    for key, value in pairs:
+        if key in parsed:
+            raise ValueError("duplicate key")
+        parsed[key] = value
+    return parsed
+
+
+def _reject_calendar_key_ring_constant(_value: str) -> None:
+    raise ValueError("invalid JSON constant")
+
+
+def _load_calendar_credential_cipher_from_env():
+    """Parse secret-bearing values in a frame never attached to public errors."""
+
+    from app.calendar_credentials import (
+        AES_256_KEY_BYTES,
+        MAX_CREDENTIAL_KEYS,
+        CalendarCredentialCipher,
+    )
+
+    active_key_id = os.getenv(CALENDAR_CREDENTIAL_ACTIVE_KEY_ID_ENV)
+    encoded_key_ring = os.getenv(CALENDAR_CREDENTIAL_KEYS_ENV)
+    if (
+        active_key_id is None
+        or not active_key_id
+        or len(active_key_id) > 64
+        or not active_key_id.strip()
+    ):
+        raise ValueError("invalid active key")
+    if (
+        encoded_key_ring is None
+        or not encoded_key_ring
+        or len(encoded_key_ring) > MAX_CALENDAR_CREDENTIAL_KEYS_JSON_BYTES
+        or not encoded_key_ring.strip()
+    ):
+        raise ValueError("invalid key ring")
+    try:
+        encoded_key_ring_bytes = encoded_key_ring.encode("ascii")
+    except UnicodeEncodeError:
+        raise ValueError("key ring must be ASCII") from None
+    if len(encoded_key_ring_bytes) > MAX_CALENDAR_CREDENTIAL_KEYS_JSON_BYTES:
+        raise ValueError("key ring is too large")
+
+    parsed_key_ring = json.loads(
+        encoded_key_ring_bytes,
+        object_pairs_hook=_calendar_key_ring_object,
+        parse_constant=_reject_calendar_key_ring_constant,
+    )
+    if not isinstance(parsed_key_ring, dict):
+        raise ValueError("key ring must be an object")
+    if not 1 <= len(parsed_key_ring) <= MAX_CREDENTIAL_KEYS:
+        raise ValueError("invalid key count")
+    if active_key_id not in parsed_key_ring:
+        raise ValueError("active key missing")
+
+    decoded_keys: dict[str, bytes] = {}
+    for key_id, encoded_key in parsed_key_ring.items():
+        if not isinstance(encoded_key, str):
+            raise ValueError("invalid encoded key")
+        encoded_bytes = encoded_key.encode("ascii")
+        if _CANONICAL_BASE64URL_KEY_PATTERN.fullmatch(encoded_key) is None:
+            raise ValueError("invalid encoded key")
+        decoded_key = base64.b64decode(
+            encoded_bytes + b"=",
+            altchars=b"-_",
+            validate=True,
+        )
+        if len(decoded_key) != AES_256_KEY_BYTES:
+            raise ValueError("invalid key size")
+        if base64.urlsafe_b64encode(decoded_key).rstrip(b"=") != encoded_bytes:
+            raise ValueError("noncanonical encoded key")
+        decoded_keys[key_id] = decoded_key
+
+    return CalendarCredentialCipher(
+        active_key_id=active_key_id,
+        keys=decoded_keys,
     )
 
 
