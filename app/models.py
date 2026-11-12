@@ -358,6 +358,10 @@ class ClientDB(Base):
             name="ck_clients_default_duration",
         ),
         CheckConstraint("revision >= 1", name="ck_clients_revision_positive"),
+        CheckConstraint(
+            "(create_idempotency_key IS NULL) = (client_create_payload IS NULL)",
+            name="ck_clients_create_replay_complete",
+        ),
         UniqueConstraint("id", "instructor_id", name="uq_clients_id_instructor_id"),
         Index("ix_clients_instructor_name", "instructor_id", "name"),
         Index(
@@ -366,6 +370,13 @@ class ClientDB(Base):
             text("lower(name)"),
             "id",
             postgresql_where=text("status = 'active'"),
+        ),
+        Index(
+            "uq_clients_instructor_create_idempotency_key",
+            "instructor_id",
+            "create_idempotency_key",
+            unique=True,
+            postgresql_where=text("create_idempotency_key IS NOT NULL"),
         ),
     )
 
@@ -390,6 +401,8 @@ class ClientDB(Base):
         server_default=text("45"),
     )
     revision = Column(BigInteger, nullable=False, default=1, server_default=text("1"))
+    create_idempotency_key = Column(String(160), nullable=True)
+    client_create_payload = Column(JSON, nullable=True)
     status = Column(
         String,
         nullable=False,
