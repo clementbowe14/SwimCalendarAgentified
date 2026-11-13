@@ -23,6 +23,7 @@ from tests.db_test_utils import TEST_DATABASE_URL
 
 OAUTH_STATE_REVISION = "20261112_0016"
 PKCE_REVISION = "20261112_0017"
+BROWSER_BINDING_REVISION = "20261113_0018"
 TABLE_NAME = "provider_calendar_oauth_pkce_verifiers"
 UTC = datetime.timezone.utc
 
@@ -32,12 +33,15 @@ def use_test_database_for_alembic(monkeypatch):
     monkeypatch.setenv("SWIM_DATABASE_URL", TEST_DATABASE_URL)
 
 
-def test_pkce_revision_is_the_only_alembic_head_after_oauth_state_revision():
+def test_pkce_revision_remains_between_oauth_state_and_current_head():
     script = ScriptDirectory.from_config(_config())
     assert script.get_revision(PKCE_REVISION).down_revision == (
         OAUTH_STATE_REVISION
     )
-    assert script.get_heads() == [PKCE_REVISION]
+    assert script.get_revision(BROWSER_BINDING_REVISION).down_revision == (
+        PKCE_REVISION
+    )
+    assert script.get_heads() == [BROWSER_BINDING_REVISION]
 
 
 def test_schema_contains_only_a_bound_encrypted_verifier_envelope(
@@ -385,7 +389,7 @@ def test_upgrade_does_not_require_or_backfill_existing_states(
     migrated_postgres_db,
 ):
     command.downgrade(_config(), OAUTH_STATE_REVISION)
-    digest = _persist_state(suffix="no-backfill")
+    digest = _persist_state_without_binding_column(suffix="no-backfill")
 
     command.upgrade(_config(), PKCE_REVISION)
 
@@ -440,7 +444,7 @@ def test_failed_downgrade_rolls_back_index_table_row_and_revision(
         index["name"] for index in inspector.get_indexes(TABLE_NAME)
     }
     assert _count_verifiers(digest) == 1
-    assert _current_revision() == PKCE_REVISION
+    assert _current_revision() == BROWSER_BINDING_REVISION
 
 
 def test_expired_verifier_may_be_discarded_by_downgrade(
@@ -492,7 +496,7 @@ def test_active_verifier_refuses_downgrade_without_disclosing_or_losing_data(
 
     assert inspect(db.engine).has_table(TABLE_NAME)
     assert _count_verifiers(digest) == 1
-    assert _current_revision() == PKCE_REVISION
+    assert _current_revision() == BROWSER_BINDING_REVISION
 
 
 @pytest.mark.parametrize(
@@ -521,7 +525,7 @@ def test_downgrade_lock_contention_preserves_schema_row_and_revision(
 
     assert inspect(db.engine).has_table(TABLE_NAME)
     assert _count_verifiers(digest) == 1
-    assert _current_revision() == PKCE_REVISION
+    assert _current_revision() == BROWSER_BINDING_REVISION
 
 
 def test_upgrade_lock_contention_preserves_previous_schema_and_revision(
@@ -663,6 +667,33 @@ def _persist_state(
         )
         session.commit()
         return oauth_state.state_digest
+
+
+def _persist_state_without_binding_column(*, suffix: str) -> bytes:
+    created_at = datetime.datetime.now(UTC)
+    state_digest = hashlib.sha256(
+        f"pkce-state-{suffix}".encode()
+    ).digest()
+    with db.SessionLocal() as session:
+        account = _demo_account(session)
+        provider_session = _add_session(session, account, suffix=suffix)
+        session.execute(
+            text(
+                "INSERT INTO provider_calendar_oauth_states "
+                "(state_digest, account_id, session_id, provider, created_at, "
+                "expires_at) VALUES (:state_digest, :account_id, :session_id, "
+                "'google', :created_at, :expires_at)"
+            ),
+            {
+                "state_digest": state_digest,
+                "account_id": account.id,
+                "session_id": provider_session.id,
+                "created_at": created_at,
+                "expires_at": created_at + datetime.timedelta(minutes=10),
+            },
+        )
+        session.commit()
+    return state_digest
 
 
 def _persist_state_with_verifier(
