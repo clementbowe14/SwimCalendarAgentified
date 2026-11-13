@@ -6,6 +6,7 @@ commits, logs, loads deployment configuration, or persists a raw bearer value.
 
 from __future__ import annotations
 
+import base64
 import datetime
 import hashlib
 import re
@@ -46,10 +47,12 @@ __all__ = (
     "CalendarOAuthStateTransactionRequired",
     "ConsumedGoogleCalendarOAuthPKCEState",
     "ConsumedGoogleCalendarOAuthState",
+    "IssuedGoogleCalendarOAuthBrowserBoundPKCEState",
     "IssuedGoogleCalendarOAuthPKCEState",
     "IssuedGoogleCalendarOAuthState",
     "consume_google_calendar_oauth_state",
     "consume_google_calendar_oauth_state_with_pkce",
+    "issue_google_calendar_oauth_state_with_pkce_and_browser_binding",
     "issue_google_calendar_oauth_state_with_pkce",
     "issue_google_calendar_oauth_state",
 )
@@ -60,6 +63,10 @@ _STATE_ENTROPY_BYTES = 32
 _STATE_COLLISION_RETRIES = 3
 _STATE_LIFETIME = datetime.timedelta(minutes=10)
 _STATE_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}\Z")
+_BROWSER_BINDING_ENTROPY_BYTES = 32
+_BROWSER_BINDING_DIGEST_DOMAIN = (
+    b"dayweave.calendar-oauth-browser-binding.sha256.v1\x00"
+)
 
 
 class CalendarOAuthStateError(RuntimeError):
@@ -128,6 +135,19 @@ class IssuedGoogleCalendarOAuthPKCEState:
 
     def __repr__(self) -> str:
         return "IssuedGoogleCalendarOAuthPKCEState(<redacted>)"
+
+    __str__ = __repr__
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class IssuedGoogleCalendarOAuthBrowserBoundPKCEState:
+    """Authorization material plus one browser-held binding secret."""
+
+    issued_state: IssuedGoogleCalendarOAuthPKCEState
+    raw_browser_binding: str
+
+    def __repr__(self) -> str:
+        return "IssuedGoogleCalendarOAuthBrowserBoundPKCEState(<redacted>)"
 
     __str__ = __repr__
 
@@ -393,6 +413,168 @@ def _issue_google_calendar_oauth_state_with_pkce(
                 raw_state=raw_state,
                 expires_at=expires_at,
                 code_challenge=generated.code_challenge,
+            )
+    except CalendarOAuthStateError:
+        raise
+    except Exception:
+        pass
+    _raise_sanitized_persistence_error()
+
+
+def issue_google_calendar_oauth_state_with_pkce_and_browser_binding(
+    session: _Session,
+    *,
+    account_id: str,
+    session_id: str,
+    pkce_cipher: _CalendarOAuthPKCECipher,
+    now: Optional[datetime.datetime] = None,
+) -> IssuedGoogleCalendarOAuthBrowserBoundPKCEState:
+    """Atomically issue PKCE state and an independent browser binding."""
+
+    error_type = None
+    try:
+        return _issue_google_calendar_oauth_state_with_pkce_and_browser_binding(
+            session,
+            account_id=account_id,
+            session_id=session_id,
+            pkce_cipher=pkce_cipher,
+            now=now,
+        )
+    except CalendarOAuthStateTransactionRequired:
+        error_type = CalendarOAuthStateTransactionRequired
+    except CalendarOAuthStateInputError:
+        error_type = CalendarOAuthStateInputError
+    except CalendarOAuthStateSessionInvalid:
+        error_type = CalendarOAuthStateSessionInvalid
+    except Exception:
+        error_type = CalendarOAuthStatePersistenceError
+
+    del session, account_id, session_id, pkce_cipher, now
+    raise error_type() from None
+
+
+def _issue_google_calendar_oauth_state_with_pkce_and_browser_binding(
+    session: _Session,
+    *,
+    account_id: str,
+    session_id: str,
+    pkce_cipher: _CalendarOAuthPKCECipher,
+    now: Optional[datetime.datetime],
+) -> IssuedGoogleCalendarOAuthBrowserBoundPKCEState:
+    """Perform browser-bound issuance below the redaction boundary."""
+
+    _require_command_transaction(session)
+    supplied_at = _aware_utc(now) if now is not None else None
+    if not isinstance(pkce_cipher, _CalendarOAuthPKCECipher):
+        raise CalendarOAuthStateInputError()
+    try:
+        account, provider_session = _locked_owner(
+            session,
+            account_id=account_id,
+            session_id=session_id,
+            invalid_error=CalendarOAuthStateSessionInvalid,
+        )
+        issued_at = supplied_at or datetime.datetime.now(UTC)
+        session_expires_at = _validate_active_owner(
+            account,
+            provider_session,
+            effective_at=issued_at,
+            invalid_error=CalendarOAuthStateSessionInvalid,
+        )
+        expires_at = min(issued_at + _STATE_LIFETIME, session_expires_at)
+
+        for _ in range(_STATE_COLLISION_RETRIES):
+            raw_state = _candidate_raw_state()
+            if raw_state is None:
+                continue
+            state_digest = _state_digest(raw_state)
+            if _digest_exists(session, state_digest):
+                continue
+
+            browser_binding = _candidate_raw_browser_binding()
+            if browser_binding is None:
+                continue
+            raw_browser_binding, browser_binding_digest = browser_binding
+            if (
+                raw_browser_binding == raw_state
+                or browser_binding_digest == state_digest
+                or _browser_binding_digest_exists(
+                    session,
+                    browser_binding_digest,
+                )
+            ):
+                continue
+
+            generated = pkce_cipher.generate_google_calendar_pkce(
+                scope=_CalendarOAuthPKCEScope(
+                    state_digest=state_digest,
+                    account_id=account.id,
+                    session_id=provider_session.id,
+                )
+            )
+            encrypted_verifier = generated.encrypted_verifier
+            if _pkce_nonce_exists(
+                session,
+                key_id=encrypted_verifier.key_id,
+                nonce=encrypted_verifier.nonce,
+            ):
+                continue
+
+            try:
+                with session.begin_nested():
+                    session.execute(
+                        _delete(_ProviderCalendarOAuthStateDB)
+                        .where(
+                            _ProviderCalendarOAuthStateDB.account_id
+                            == account.id,
+                            _ProviderCalendarOAuthStateDB.session_id
+                            == provider_session.id,
+                        )
+                        .execution_options(synchronize_session=False)
+                    )
+                    session.execute(
+                        _ProviderCalendarOAuthStateDB.__table__.insert().values(
+                            state_digest=state_digest,
+                            account_id=account.id,
+                            session_id=provider_session.id,
+                            provider="google",
+                            created_at=issued_at,
+                            expires_at=expires_at,
+                            browser_binding_digest=browser_binding_digest,
+                        )
+                    )
+                    session.execute(
+                        _ProviderCalendarOAuthPKCEVerifierDB.__table__
+                        .insert()
+                        .values(
+                            state_digest=state_digest,
+                            verifier_version=encrypted_verifier.version,
+                            verifier_key_id=encrypted_verifier.key_id,
+                            verifier_nonce=encrypted_verifier.nonce,
+                            verifier_ciphertext=encrypted_verifier.ciphertext,
+                        )
+                    )
+            except _IntegrityError:
+                if _digest_exists(
+                    session,
+                    state_digest,
+                ) or _browser_binding_digest_exists(
+                    session,
+                    browser_binding_digest,
+                ) or _pkce_nonce_exists(
+                    session,
+                    key_id=encrypted_verifier.key_id,
+                    nonce=encrypted_verifier.nonce,
+                ):
+                    continue
+                break
+            return IssuedGoogleCalendarOAuthBrowserBoundPKCEState(
+                issued_state=IssuedGoogleCalendarOAuthPKCEState(
+                    raw_state=raw_state,
+                    expires_at=expires_at,
+                    code_challenge=generated.code_challenge,
+                ),
+                raw_browser_binding=raw_browser_binding,
             )
     except CalendarOAuthStateError:
         raise
@@ -722,6 +904,21 @@ def _digest_exists(session: _Session, state_digest: bytes) -> bool:
     )
 
 
+def _browser_binding_digest_exists(
+    session: _Session,
+    browser_binding_digest: bytes,
+) -> bool:
+    return (
+        session.query(_ProviderCalendarOAuthStateDB.state_digest)
+        .filter(
+            _ProviderCalendarOAuthStateDB.browser_binding_digest
+            == browser_binding_digest
+        )
+        .first()
+        is not None
+    )
+
+
 def _pkce_nonce_exists(
     session: _Session,
     *,
@@ -787,6 +984,29 @@ def _candidate_raw_state() -> Optional[str]:
     except (OSError, RuntimeError, ValueError):
         return None
     return candidate if _valid_raw_state(candidate) else None
+
+
+def _candidate_raw_browser_binding() -> Optional[tuple[str, bytes]]:
+    try:
+        entropy = secrets.token_bytes(_BROWSER_BINDING_ENTROPY_BYTES)
+        if (
+            not isinstance(entropy, bytes)
+            or len(entropy) != _BROWSER_BINDING_ENTROPY_BYTES
+        ):
+            return None
+        candidate = (
+            base64.urlsafe_b64encode(entropy)
+            .rstrip(b"=")
+            .decode("ascii")
+        )
+        digest = hashlib.sha256(
+            _BROWSER_BINDING_DIGEST_DOMAIN + entropy
+        ).digest()
+    except (OSError, RuntimeError, TypeError, UnicodeError, ValueError):
+        return None
+    if not _valid_raw_state(candidate):
+        return None
+    return candidate, digest
 
 
 def _valid_raw_state(value: object) -> bool:
