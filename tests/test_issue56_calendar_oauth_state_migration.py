@@ -22,7 +22,8 @@ from tests.db_test_utils import TEST_DATABASE_URL
 
 PREVIOUS_REVISION = "20261112_0015"
 OAUTH_STATE_REVISION = "20261112_0016"
-CURRENT_HEAD_REVISION = "20261112_0017"
+PKCE_REVISION = "20261112_0017"
+CURRENT_HEAD_REVISION = "20261113_0018"
 
 
 @pytest.fixture(autouse=True)
@@ -33,8 +34,11 @@ def use_test_database_for_alembic(monkeypatch):
 def test_oauth_state_revision_remains_in_linear_alembic_history():
     script = ScriptDirectory.from_config(_config())
     assert script.get_revision(OAUTH_STATE_REVISION) is not None
-    assert script.get_revision(CURRENT_HEAD_REVISION).down_revision == (
+    assert script.get_revision(PKCE_REVISION).down_revision == (
         OAUTH_STATE_REVISION
+    )
+    assert script.get_revision(CURRENT_HEAD_REVISION).down_revision == (
+        PKCE_REVISION
     )
     assert script.get_heads() == [CURRENT_HEAD_REVISION]
 
@@ -55,6 +59,7 @@ def test_schema_is_digest_only_and_binds_account_to_session(
         "provider",
         "created_at",
         "expires_at",
+        "browser_binding_digest",
     }
     assert isinstance(columns["state_digest"]["type"], LargeBinary)
     assert columns["provider"]["type"].length == 16
@@ -62,7 +67,12 @@ def test_schema_is_digest_only_and_binds_account_to_session(
     assert columns["created_at"]["default"] is not None
     assert columns["created_at"]["type"].timezone is True
     assert columns["expires_at"]["type"].timezone is True
-    assert all(column["nullable"] is False for column in columns.values())
+    assert columns["browser_binding_digest"]["nullable"] is True
+    assert all(
+        column["nullable"] is False
+        for name, column in columns.items()
+        if name != "browser_binding_digest"
+    )
 
     checks = {
         constraint["name"]
@@ -74,6 +84,7 @@ def test_schema_is_digest_only_and_binds_account_to_session(
         "ck_provider_calendar_oauth_states_digest_length",
         "ck_provider_calendar_oauth_states_provider",
         "ck_provider_calendar_oauth_states_lifetime",
+        "ck_provider_calendar_oauth_states_browser_binding_digest",
     }
     primary_key = inspector.get_pk_constraint(
         "provider_calendar_oauth_states"

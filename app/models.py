@@ -339,6 +339,14 @@ class ProviderCalendarOAuthStateDB(Base):
             "expires_at <= created_at + INTERVAL '10 minutes'",
             name="ck_provider_calendar_oauth_states_lifetime",
         ),
+        CheckConstraint(
+            "browser_binding_digest IS NULL OR "
+            "(octet_length(browser_binding_digest) = 32 "
+            "AND browser_binding_digest <> state_digest)",
+            name=(
+                "ck_provider_calendar_oauth_states_browser_binding_digest"
+            ),
+        ),
         ForeignKeyConstraint(
             ["account_id", "session_id"],
             ["provider_sessions.account_id", "provider_sessions.id"],
@@ -358,6 +366,12 @@ class ProviderCalendarOAuthStateDB(Base):
             "ix_provider_calendar_oauth_states_expires_at",
             "expires_at",
         ),
+        Index(
+            "uq_provider_calendar_oauth_states_browser_binding_digest",
+            "browser_binding_digest",
+            unique=True,
+            postgresql_where=text("browser_binding_digest IS NOT NULL"),
+        ),
     )
 
     state_digest = Column(LargeBinary(32), nullable=False)
@@ -376,6 +390,7 @@ class ProviderCalendarOAuthStateDB(Base):
         server_default=text("CURRENT_TIMESTAMP"),
     )
     expires_at = Column(DateTime(timezone=True), nullable=False)
+    browser_binding_digest = Column(LargeBinary(32), nullable=True)
 
     session = relationship(
         "ProviderSessionDB",
