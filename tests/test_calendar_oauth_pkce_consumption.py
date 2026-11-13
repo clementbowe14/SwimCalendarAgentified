@@ -154,6 +154,11 @@ def test_success_locks_decrypts_then_cascade_deletes_pair(
     ]
     assert any("provider_calendar_oauth_states" in sql for sql in locking_selects)
     assert any(
+        "provider_calendar_oauth_states" in sql
+        and "browser_binding_digest IS NULL" in sql
+        for sql in locking_selects
+    )
+    assert any(
         "provider_calendar_oauth_pkce_verifiers" in sql
         for sql in locking_selects
     )
@@ -176,6 +181,7 @@ def test_success_locks_decrypts_then_cascade_deletes_pair(
     ]
     assert len(state_deletes) == 1
     assert "RETURNING" in state_deletes[0].upper()
+    assert "browser_binding_digest IS NULL" in state_deletes[0]
     assert child_mutations == []
     assert _snapshot(account_id, session_id) is None
 
@@ -237,6 +243,45 @@ def test_bare_state_is_preserved_for_legacy_consumer(
         )
     assert consumed.session_id == session_id
     assert _owner_row_counts(account_id, session_id) == (0, 0)
+
+
+def test_pkce_consume_rejects_browser_bound_pair_before_decryption(
+    migrated_postgres_db,
+    monkeypatch,
+):
+    account_id, session_id = _active_demo_owner("bound-pkce-consume")
+    issued = _issue(account_id, session_id)
+    binding_digest = _binding_digest("pkce-consume")
+    with db.SessionLocal.begin() as session:
+        session.get(
+            ProviderCalendarOAuthStateDB,
+            _digest(issued.raw_state),
+        ).browser_binding_digest = binding_digest
+    original = _snapshot(account_id, session_id)
+    decrypt_calls = []
+
+    def fail_decrypt(*args, **kwargs):
+        decrypt_calls.append((args, kwargs))
+        raise AssertionError("bound states must not reach PKCE decryption")
+
+    monkeypatch.setattr(
+        CalendarOAuthPKCECipher,
+        "decrypt_google_calendar_verifier",
+        fail_decrypt,
+    )
+
+    with db.SessionLocal.begin() as session:
+        with pytest.raises(CalendarOAuthStateInvalid):
+            calendar_oauth_states.consume_google_calendar_oauth_state_with_pkce(
+                session,
+                raw_state=issued.raw_state,
+                pkce_cipher=OLD_CIPHER,
+                now=T0,
+            )
+        session.execute(text("SELECT 1"))
+
+    assert decrypt_calls == []
+    assert _snapshot(account_id, session_id) == original
 
 
 def test_missing_verifier_child_is_invalid_and_parent_is_preserved(
@@ -1058,6 +1103,11 @@ def _snapshot(account_id: str, session_id: str):
             "provider": state.provider,
             "created_at": state.created_at,
             "expires_at": state.expires_at,
+            "browser_binding_digest": (
+                bytes(state.browser_binding_digest)
+                if state.browser_binding_digest is not None
+                else None
+            ),
             "verifier_version": (
                 verifier.verifier_version if verifier is not None else None
             ),
@@ -1205,6 +1255,10 @@ def _store_bare_state(
 
 def _digest(raw_state: str) -> bytes:
     return hashlib.sha256(raw_state.encode("ascii")).digest()
+
+
+def _binding_digest(label: str) -> bytes:
+    return hashlib.sha256(f"test-browser-binding:{label}".encode()).digest()
 
 
 def _flip_first_byte(value: bytes) -> bytes:
