@@ -189,6 +189,10 @@ def issue_google_calendar_oauth_state(
             session,
             account_id=account.id,
             session_id=provider_session.id,
+        ) or _locked_owner_has_browser_bound_state(
+            session,
+            account_id=account.id,
+            session_id=provider_session.id,
         ):
             _raise_sanitized_persistence_error()
 
@@ -208,6 +212,8 @@ def issue_google_calendar_oauth_state(
                             == account.id,
                             _ProviderCalendarOAuthStateDB.session_id
                             == provider_session.id,
+                            _ProviderCalendarOAuthStateDB.browser_binding_digest
+                            .is_(None),
                         )
                         .execution_options(synchronize_session=False)
                     )
@@ -222,6 +228,12 @@ def issue_google_calendar_oauth_state(
                         )
                     )
             except _IntegrityError:
+                if _locked_owner_has_browser_bound_state(
+                    session,
+                    account_id=account.id,
+                    session_id=provider_session.id,
+                ):
+                    break
                 continue
             return IssuedGoogleCalendarOAuthState(
                 raw_state=raw_state,
@@ -295,6 +307,12 @@ def _issue_google_calendar_oauth_state_with_pkce(
             invalid_error=CalendarOAuthStateSessionInvalid,
         )
         expires_at = min(issued_at + _STATE_LIFETIME, session_expires_at)
+        if _locked_owner_has_browser_bound_state(
+            session,
+            account_id=account.id,
+            session_id=provider_session.id,
+        ):
+            _raise_sanitized_persistence_error()
 
         for _ in range(_STATE_COLLISION_RETRIES):
             raw_state = _candidate_raw_state()
@@ -328,6 +346,8 @@ def _issue_google_calendar_oauth_state_with_pkce(
                             == account.id,
                             _ProviderCalendarOAuthStateDB.session_id
                             == provider_session.id,
+                            _ProviderCalendarOAuthStateDB.browser_binding_digest
+                            .is_(None),
                         )
                         .execution_options(synchronize_session=False)
                     )
@@ -353,6 +373,12 @@ def _issue_google_calendar_oauth_state_with_pkce(
                         )
                     )
             except _IntegrityError:
+                if _locked_owner_has_browser_bound_state(
+                    session,
+                    account_id=account.id,
+                    session_id=provider_session.id,
+                ):
+                    break
                 if _digest_exists(
                     session,
                     state_digest,
@@ -398,6 +424,9 @@ def consume_google_calendar_oauth_state(
             .filter(
                 _ProviderCalendarOAuthStateDB.state_digest == state_digest,
                 _ProviderCalendarOAuthStateDB.provider == "google",
+                _ProviderCalendarOAuthStateDB.browser_binding_digest.is_(
+                    None
+                ),
             )
             .one_or_none()
         )
@@ -426,6 +455,9 @@ def consume_google_calendar_oauth_state(
                 _ProviderCalendarOAuthStateDB.account_id == account.id,
                 _ProviderCalendarOAuthStateDB.session_id
                 == provider_session.id,
+                _ProviderCalendarOAuthStateDB.browser_binding_digest.is_(
+                    None
+                ),
                 _ProviderCalendarOAuthStateDB.created_at <= consumed_at,
                 _ProviderCalendarOAuthStateDB.expires_at > consumed_at,
                 ~_exists().where(
@@ -508,6 +540,9 @@ def _consume_google_calendar_oauth_state_with_pkce(
             .filter(
                 _ProviderCalendarOAuthStateDB.state_digest == state_digest,
                 _ProviderCalendarOAuthStateDB.provider == "google",
+                _ProviderCalendarOAuthStateDB.browser_binding_digest.is_(
+                    None
+                ),
             )
             .one_or_none()
         )
@@ -540,6 +575,9 @@ def _consume_google_calendar_oauth_state_with_pkce(
                 _ProviderCalendarOAuthStateDB.account_id == account.id,
                 _ProviderCalendarOAuthStateDB.session_id
                 == provider_session.id,
+                _ProviderCalendarOAuthStateDB.browser_binding_digest.is_(
+                    None
+                ),
                 _ProviderCalendarOAuthStateDB.created_at <= consumed_at,
                 _ProviderCalendarOAuthStateDB.expires_at > consumed_at,
             )
@@ -591,6 +629,9 @@ def _consume_google_calendar_oauth_state_with_pkce(
                     == locked_state.account_id,
                     _ProviderCalendarOAuthStateDB.session_id
                     == locked_state.session_id,
+                    _ProviderCalendarOAuthStateDB.browser_binding_digest.is_(
+                        None
+                    ),
                     _ProviderCalendarOAuthStateDB.created_at <= consumed_at,
                     _ProviderCalendarOAuthStateDB.expires_at > consumed_at,
                     _exists().where(
@@ -718,6 +759,26 @@ def _owner_has_pkce_state(
         .first()
         is not None
     )
+
+
+def _locked_owner_has_browser_bound_state(
+    session: _Session,
+    *,
+    account_id: str,
+    session_id: str,
+) -> bool:
+    state = (
+        session.query(
+            _ProviderCalendarOAuthStateDB.browser_binding_digest,
+        )
+        .filter(
+            _ProviderCalendarOAuthStateDB.account_id == account_id,
+            _ProviderCalendarOAuthStateDB.session_id == session_id,
+        )
+        .with_for_update()
+        .one_or_none()
+    )
+    return state is not None and state.browser_binding_digest is not None
 
 
 def _candidate_raw_state() -> Optional[str]:

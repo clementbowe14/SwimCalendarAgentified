@@ -165,6 +165,7 @@ def test_atomic_issue_persists_only_bound_encrypted_verifier(
     assert stored["account_id"] == account_id
     assert stored["session_id"] == session_id
     assert stored["provider"] == "google"
+    assert stored["browser_binding_digest"] is None
     assert stored["verifier_version"] == 1
     assert stored["verifier_key_id"] == KEY_ID
     assert stored["verifier_nonce"] == nonce
@@ -287,6 +288,135 @@ def test_legacy_issue_and_consume_preserve_verifier_backed_state(
                 )
             session.execute(text("SELECT 1"))
         assert _snapshot(account_id, session_id) == original
+
+
+def test_pkce_issue_refuses_browser_bound_pair_before_generation(
+    migrated_postgres_db,
+    monkeypatch,
+):
+    account_id, session_id = _active_demo_owner("bound-pkce-issue")
+    monkeypatch.setattr(
+        calendar_oauth_states.secrets,
+        "token_urlsafe",
+        lambda size: TOKEN_A,
+    )
+    issued = _issue_pkce(account_id, session_id, now=T0)
+    binding_digest = _binding_digest("pkce-issue")
+    with db.SessionLocal.begin() as session:
+        session.get(
+            ProviderCalendarOAuthStateDB,
+            _digest(issued.raw_state),
+        ).browser_binding_digest = binding_digest
+    original = _snapshot(account_id, session_id)
+    entropy_calls = []
+    generation_calls = []
+
+    def fail_entropy(size: int) -> str:
+        entropy_calls.append(size)
+        return TOKEN_B
+
+    def fail_generation(*args, **kwargs):
+        generation_calls.append((args, kwargs))
+        raise AssertionError("bound states must not generate PKCE material")
+
+    monkeypatch.setattr(
+        calendar_oauth_states.secrets,
+        "token_urlsafe",
+        fail_entropy,
+    )
+    monkeypatch.setattr(
+        CalendarOAuthPKCECipher,
+        "generate_google_calendar_pkce",
+        fail_generation,
+    )
+
+    with db.SessionLocal.begin() as session:
+        with pytest.raises(CalendarOAuthStatePersistenceError):
+            calendar_oauth_states.issue_google_calendar_oauth_state_with_pkce(
+                session,
+                account_id=account_id,
+                session_id=session_id,
+                pkce_cipher=CIPHER,
+                now=T0 + datetime.timedelta(minutes=1),
+            )
+        session.execute(text("SELECT 1"))
+
+    assert entropy_calls == []
+    assert generation_calls == []
+    assert _snapshot(account_id, session_id) == original
+
+
+@pytest.mark.parametrize("command", ["legacy", "pkce"])
+def test_issue_race_preserves_binding_after_stale_precheck(
+    migrated_postgres_db,
+    monkeypatch,
+    command,
+):
+    account_id, session_id = _active_demo_owner(f"binding-race-{command}")
+    _store_bare_state(
+        account_id,
+        session_id,
+        TOKEN_A,
+        browser_binding_digest=_binding_digest(f"binding-race-{command}"),
+    )
+    original = _snapshot(account_id, session_id)
+    binding_checks = []
+    entropy_calls = []
+
+    def stale_then_bound(*args, **kwargs) -> bool:
+        binding_checks.append((args, kwargs))
+        return len(binding_checks) > 1
+
+    def state_candidate(size: int) -> str:
+        entropy_calls.append(size)
+        return TOKEN_B
+
+    monkeypatch.setattr(
+        calendar_oauth_states,
+        "_locked_owner_has_browser_bound_state",
+        stale_then_bound,
+    )
+    monkeypatch.setattr(
+        calendar_oauth_states.secrets,
+        "token_urlsafe",
+        state_candidate,
+    )
+
+    digest_checks = []
+    if command == "pkce":
+        def digest_exists(*args, **kwargs) -> bool:
+            digest_checks.append((args, kwargs))
+            return len(digest_checks) > 1
+
+        monkeypatch.setattr(
+            calendar_oauth_states,
+            "_digest_exists",
+            digest_exists,
+        )
+
+    with db.SessionLocal.begin() as session:
+        with pytest.raises(CalendarOAuthStatePersistenceError):
+            if command == "legacy":
+                calendar_oauth_states.issue_google_calendar_oauth_state(
+                    session,
+                    account_id=account_id,
+                    session_id=session_id,
+                    now=T0,
+                )
+            else:
+                calendar_oauth_states.issue_google_calendar_oauth_state_with_pkce(
+                    session,
+                    account_id=account_id,
+                    session_id=session_id,
+                    pkce_cipher=CIPHER,
+                    now=T0,
+                )
+        session.execute(text("SELECT 1"))
+
+    assert entropy_calls == [32]
+    assert len(binding_checks) == 2
+    assert len(digest_checks) == (1 if command == "pkce" else 0)
+    assert _snapshot(account_id, session_id) == original
 
 
 def test_state_digest_collision_retries_before_mutation(
@@ -749,25 +879,54 @@ def test_persisted_owner_binding_rejects_cross_tenant_session(
         ("pkce", "legacy_consume"),
         ("legacy_issue", "pkce"),
         ("legacy_consume", "pkce"),
+        ("binding", "legacy_issue"),
+        ("binding", "legacy_consume"),
+        ("binding", "pkce"),
+        ("binding", "pkce_consume"),
     ],
 )
 @pytest.mark.parametrize("first_commits", [True, False])
-def test_pkce_and_legacy_commands_serialize_without_partial_pairs(
+def test_oauth_commands_serialize_without_partial_or_bound_rows(
     migrated_postgres_db,
+    monkeypatch,
     first_operation,
     second_operation,
     first_commits,
 ):
     suffix = f"legacy-race-{first_operation}-{second_operation}-{first_commits}"
     account_id, session_id = _active_demo_owner(suffix)
-    if (
-        any(
+    callback_state = TOKEN_A
+    binding_digest = _binding_digest(suffix)
+    if first_operation == "binding" and second_operation in {
+        "pkce",
+        "pkce_consume",
+    }:
+        callback_state = _issue_pkce(
+            account_id,
+            session_id,
+            now=T0,
+        ).raw_state
+    elif (
+        first_operation == "binding"
+        or any(
             operation.endswith("consume")
             for operation in (first_operation, second_operation)
         )
         or first_operation == "pkce"
     ):
         _store_bare_state(account_id, session_id, TOKEN_A)
+    original = _snapshot(account_id, session_id)
+    entropy_calls = []
+    if first_operation == "binding":
+        def replacement_state(size: int) -> str:
+            entropy_calls.append(size)
+            return TOKEN_B
+
+        monkeypatch.setattr(
+            calendar_oauth_states.secrets,
+            "token_urlsafe",
+            replacement_state,
+        )
 
     first_finished = threading.Event()
     release_first = threading.Event()
@@ -776,17 +935,35 @@ def test_pkce_and_legacy_commands_serialize_without_partial_pairs(
     results = {}
 
     def run_operation(session, operation):
+        if operation == "binding":
+            session.query(ProviderAccountDB).filter_by(
+                id=account_id
+            ).with_for_update().one()
+            session.query(ProviderSessionDB).filter_by(
+                id=session_id,
+                account_id=account_id,
+            ).with_for_update().one()
+            state = session.query(ProviderCalendarOAuthStateDB).filter_by(
+                account_id=account_id,
+                session_id=session_id,
+            ).with_for_update().one()
+            state.browser_binding_digest = binding_digest
+            session.flush()
+            return "binding", binding_digest
         if operation == "pkce":
-            result = (
-                calendar_oauth_states.issue_google_calendar_oauth_state_with_pkce(
-                    session,
-                    account_id=account_id,
-                    session_id=session_id,
-                    pkce_cipher=CIPHER,
-                    now=T0,
+            try:
+                result = (
+                    calendar_oauth_states.issue_google_calendar_oauth_state_with_pkce(
+                        session,
+                        account_id=account_id,
+                        session_id=session_id,
+                        pkce_cipher=CIPHER,
+                        now=T0,
+                    )
                 )
-            )
-            return "pkce", result
+                return "pkce", result
+            except CalendarOAuthStatePersistenceError:
+                return "protected", None
         if operation == "legacy_issue":
             try:
                 result = calendar_oauth_states.issue_google_calendar_oauth_state(
@@ -799,9 +976,19 @@ def test_pkce_and_legacy_commands_serialize_without_partial_pairs(
             except CalendarOAuthStatePersistenceError:
                 return "protected", None
         try:
+            if operation == "pkce_consume":
+                result = (
+                    calendar_oauth_states.consume_google_calendar_oauth_state_with_pkce(
+                        session,
+                        raw_state=callback_state,
+                        pkce_cipher=CIPHER,
+                        now=T0,
+                    )
+                )
+                return "pkce_consumed", result
             result = calendar_oauth_states.consume_google_calendar_oauth_state(
                 session,
-                raw_state=TOKEN_A,
+                raw_state=callback_state,
                 now=T0,
             )
             return "legacy_consumed", result
@@ -852,7 +1039,48 @@ def test_pkce_and_legacy_commands_serialize_without_partial_pairs(
         first_future.result(timeout=15)
         second_outcome = second_future.result(timeout=15)
 
-    if first_operation == "pkce" and first_commits:
+    if first_operation == "binding":
+        if first_commits:
+            assert second_outcome == (
+                "protected"
+                if second_operation.endswith("issue")
+                or second_operation == "pkce"
+                else "invalid"
+            )
+            expected = dict(original)
+            expected["browser_binding_digest"] = binding_digest
+            assert _snapshot(account_id, session_id) == expected
+            assert entropy_calls == []
+        elif second_operation == "legacy_issue":
+            assert second_outcome == "legacy_issued"
+            assert _owner_row_counts(account_id, session_id) == (1, 0)
+            stored = _snapshot(account_id, session_id)
+            assert stored["state_digest"] == _digest(
+                results["second"][1].raw_state
+            )
+            assert stored["state_digest"] != original["state_digest"]
+            assert stored["browser_binding_digest"] is None
+            assert entropy_calls == [32]
+        elif second_operation == "legacy_consume":
+            assert second_outcome == "legacy_consumed"
+            assert _owner_row_counts(account_id, session_id) == (0, 0)
+            assert entropy_calls == []
+        elif second_operation == "pkce":
+            assert second_outcome == "pkce"
+            assert _owner_row_counts(account_id, session_id) == (1, 1)
+            stored = _snapshot(account_id, session_id)
+            assert stored["state_digest"] == _digest(
+                results["second"][1].raw_state
+            )
+            assert stored["state_digest"] != original["state_digest"]
+            assert stored["browser_binding_digest"] is None
+            assert stored["verifier_ciphertext"] is not None
+            assert entropy_calls == [32]
+        else:
+            assert second_outcome == "pkce_consumed"
+            assert _owner_row_counts(account_id, session_id) == (0, 0)
+            assert entropy_calls == []
+    elif first_operation == "pkce" and first_commits:
         assert second_outcome == (
             "protected" if second_operation == "legacy_issue" else "invalid"
         )
@@ -965,6 +1193,11 @@ def _snapshot(account_id: str, session_id: str):
             "provider": state.provider,
             "created_at": state.created_at,
             "expires_at": state.expires_at,
+            "browser_binding_digest": (
+                bytes(state.browser_binding_digest)
+                if state.browser_binding_digest is not None
+                else None
+            ),
             "verifier_version": (
                 verifier.verifier_version if verifier is not None else None
             ),
@@ -1124,6 +1357,8 @@ def _store_bare_state(
     account_id: str,
     session_id: str,
     raw_state: str,
+    *,
+    browser_binding_digest: bytes | None = None,
 ) -> None:
     with db.SessionLocal.begin() as session:
         session.add(
@@ -1134,12 +1369,17 @@ def _store_bare_state(
                 provider="google",
                 created_at=T0 - datetime.timedelta(minutes=1),
                 expires_at=T0 + datetime.timedelta(minutes=9),
+                browser_binding_digest=browser_binding_digest,
             )
         )
 
 
 def _digest(raw_state: str) -> bytes:
     return hashlib.sha256(raw_state.encode("ascii")).digest()
+
+
+def _binding_digest(label: str) -> bytes:
+    return hashlib.sha256(f"test-browser-binding:{label}".encode()).digest()
 
 
 def _wait_until_database_blocked(backend_pid: int) -> None:

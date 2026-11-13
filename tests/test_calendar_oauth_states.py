@@ -168,6 +168,45 @@ def test_issue_requests_32_random_bytes_and_persists_only_digest(
     )
 
 
+def test_issue_refuses_browser_bound_bare_state_before_entropy(
+    migrated_postgres_db,
+    monkeypatch,
+):
+    account_id, session_id = _active_demo_owner("bound-issue")
+    binding_digest = _binding_digest("legacy-issue")
+    _store_state(
+        account_id,
+        session_id,
+        TOKEN_A,
+        browser_binding_digest=binding_digest,
+    )
+    original = _state_snapshot(account_id, session_id)
+    entropy_calls = []
+
+    def fail_entropy(size: int) -> str:
+        entropy_calls.append(size)
+        return TOKEN_B
+
+    monkeypatch.setattr(
+        calendar_oauth_states.secrets,
+        "token_urlsafe",
+        fail_entropy,
+    )
+
+    with db.SessionLocal.begin() as session:
+        with pytest.raises(CalendarOAuthStatePersistenceError):
+            calendar_oauth_states.issue_google_calendar_oauth_state(
+                session,
+                account_id=account_id,
+                session_id=session_id,
+                now=T0,
+            )
+        session.execute(text("SELECT 1"))
+
+    assert entropy_calls == []
+    assert _state_snapshot(account_id, session_id) == original
+
+
 def test_issue_caps_expiry_to_ten_minutes_or_session_expiry(
     migrated_postgres_db,
     monkeypatch,
@@ -531,7 +570,33 @@ def test_consume_returns_only_owner_from_one_conditional_delete(
     assert len(state_dml) == 1
     assert state_dml[0].lstrip().upper().startswith("DELETE")
     assert "RETURNING" in state_dml[0].upper()
+    assert "browser_binding_digest IS NULL" in state_dml[0]
     assert _stored_states() == []
+
+
+def test_consume_rejects_browser_bound_bare_state(
+    migrated_postgres_db,
+):
+    account_id, session_id = _active_demo_owner("bound-consume")
+    binding_digest = _binding_digest("legacy-consume")
+    _store_state(
+        account_id,
+        session_id,
+        TOKEN_A,
+        browser_binding_digest=binding_digest,
+    )
+    original = _state_snapshot(account_id, session_id)
+
+    for _ in range(2):
+        with db.SessionLocal.begin() as session:
+            with pytest.raises(CalendarOAuthStateInvalid):
+                calendar_oauth_states.consume_google_calendar_oauth_state(
+                    session,
+                    raw_state=TOKEN_A,
+                    now=T0,
+                )
+            session.execute(text("SELECT 1"))
+        assert _state_snapshot(account_id, session_id) == original
 
 
 def test_replay_unknown_and_malformed_states_are_indistinguishable(
@@ -1289,6 +1354,7 @@ def _store_state(
     *,
     created_at: datetime.datetime = T0 - datetime.timedelta(minutes=1),
     expires_at: datetime.datetime = T0 + datetime.timedelta(minutes=9),
+    browser_binding_digest: bytes | None = None,
 ) -> None:
     with db.SessionLocal.begin() as session:
         session.add(
@@ -1299,8 +1365,32 @@ def _store_state(
                 provider="google",
                 created_at=created_at,
                 expires_at=expires_at,
+                browser_binding_digest=browser_binding_digest,
             )
         )
+
+
+def _state_snapshot(account_id: str, session_id: str):
+    with db.SessionLocal() as session:
+        state = session.query(ProviderCalendarOAuthStateDB).filter_by(
+            account_id=account_id,
+            session_id=session_id,
+        ).one_or_none()
+        if state is None:
+            return None
+        return {
+            "state_digest": bytes(state.state_digest),
+            "account_id": state.account_id,
+            "session_id": state.session_id,
+            "provider": state.provider,
+            "created_at": state.created_at,
+            "expires_at": state.expires_at,
+            "browser_binding_digest": (
+                bytes(state.browser_binding_digest)
+                if state.browser_binding_digest is not None
+                else None
+            ),
+        }
 
 
 def _stored_states():
@@ -1313,6 +1403,10 @@ def _stored_states():
 
 def _digest(raw_state: str) -> bytes:
     return hashlib.sha256(raw_state.encode("ascii")).digest()
+
+
+def _binding_digest(label: str) -> bytes:
+    return hashlib.sha256(f"test-browser-binding:{label}".encode()).digest()
 
 
 def _wait_until_database_blocked(backend_pid: int) -> None:
