@@ -20,6 +20,8 @@ MIN_COACH_SESSION_TTL_SECONDS = 5 * 60
 MAX_COACH_SESSION_TTL_SECONDS = 24 * 60 * 60
 CALENDAR_CREDENTIAL_ACTIVE_KEY_ID_ENV = "SWIM_CALENDAR_CREDENTIAL_ACTIVE_KEY_ID"
 CALENDAR_CREDENTIAL_KEYS_ENV = "SWIM_CALENDAR_CREDENTIAL_KEYS"
+GOOGLE_CALENDAR_OAUTH_CLIENT_ID_ENV = "SWIM_GOOGLE_CALENDAR_OAUTH_CLIENT_ID"
+GOOGLE_CALENDAR_OAUTH_REDIRECT_URI_ENV = "SWIM_GOOGLE_CALENDAR_OAUTH_REDIRECT_URI"
 MAX_CALENDAR_CREDENTIAL_KEYS_JSON_BYTES = 4 * 1024
 _CANONICAL_BASE64URL_KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 DEFAULT_CORS_ORIGINS = (
@@ -151,6 +153,18 @@ def calendar_credential_cipher_from_env():
     raise CalendarCredentialConfigurationError() from None
 
 
+def google_calendar_oauth_configuration_from_env():
+    """Build redacted Google Calendar authorization configuration."""
+
+    from app.google_calendar_oauth import GoogleCalendarOAuthConfigurationError
+
+    try:
+        return _load_google_calendar_oauth_configuration_from_env()
+    except Exception:
+        pass
+    raise GoogleCalendarOAuthConfigurationError() from None
+
+
 def routing_settings_from_env(environment: Optional[str] = None) -> RoutingSettings:
     resolved_environment = (
         environment if environment is not None else os.getenv("SWIM_ENV", "local")
@@ -276,6 +290,17 @@ def _load_calendar_credential_cipher_from_env():
     return CalendarCredentialCipher(
         active_key_id=active_key_id,
         keys=decoded_keys,
+    )
+
+
+def _load_google_calendar_oauth_configuration_from_env():
+    """Read values in a frame never attached to the public error."""
+
+    from app.google_calendar_oauth import GoogleCalendarOAuthConfiguration
+
+    return GoogleCalendarOAuthConfiguration(
+        client_id=os.getenv(GOOGLE_CALENDAR_OAUTH_CLIENT_ID_ENV),
+        redirect_uri=os.getenv(GOOGLE_CALENDAR_OAUTH_REDIRECT_URI_ENV),
     )
 
 
