@@ -11,9 +11,10 @@ import hashlib
 import re
 import secrets
 from dataclasses import dataclass
-from typing import NoReturn, Optional
+from typing import Literal, NoReturn, Optional
 
 from sqlalchemy import delete as _delete
+from sqlalchemy import exists as _exists
 from sqlalchemy.exc import (
     IntegrityError as _IntegrityError,
     SQLAlchemyError as _SQLAlchemyError,
@@ -23,8 +24,13 @@ from sqlalchemy.orm import (
     SessionTransactionOrigin as _SessionTransactionOrigin,
 )
 
+from app.calendar_oauth_pkce import (
+    CalendarOAuthPKCECipher as _CalendarOAuthPKCECipher,
+    CalendarOAuthPKCEScope as _CalendarOAuthPKCEScope,
+)
 from app.models import (
     ProviderAccountDB as _ProviderAccountDB,
+    ProviderCalendarOAuthPKCEVerifierDB as _ProviderCalendarOAuthPKCEVerifierDB,
     ProviderCalendarOAuthStateDB as _ProviderCalendarOAuthStateDB,
     ProviderSessionDB as _ProviderSessionDB,
 )
@@ -38,8 +44,10 @@ __all__ = (
     "CalendarOAuthStateSessionInvalid",
     "CalendarOAuthStateTransactionRequired",
     "ConsumedGoogleCalendarOAuthState",
+    "IssuedGoogleCalendarOAuthPKCEState",
     "IssuedGoogleCalendarOAuthState",
     "consume_google_calendar_oauth_state",
+    "issue_google_calendar_oauth_state_with_pkce",
     "issue_google_calendar_oauth_state",
 )
 
@@ -104,6 +112,24 @@ class IssuedGoogleCalendarOAuthState:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class IssuedGoogleCalendarOAuthPKCEState:
+    """Public authorization material for one verifier-backed state."""
+
+    raw_state: str
+    expires_at: datetime.datetime
+    code_challenge: str
+
+    @property
+    def code_challenge_method(self) -> Literal["S256"]:
+        return "S256"
+
+    def __repr__(self) -> str:
+        return "IssuedGoogleCalendarOAuthPKCEState(<redacted>)"
+
+    __str__ = __repr__
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class ConsumedGoogleCalendarOAuthState:
     """The persisted owner authenticated by one successful state deletion."""
 
@@ -142,6 +168,12 @@ def issue_google_calendar_oauth_state(
             invalid_error=CalendarOAuthStateSessionInvalid,
         )
         expires_at = min(issued_at + _STATE_LIFETIME, session_expires_at)
+        if _owner_has_pkce_state(
+            session,
+            account_id=account.id,
+            session_id=provider_session.id,
+        ):
+            _raise_sanitized_persistence_error()
 
         for _ in range(_STATE_COLLISION_RETRIES):
             raw_state = _candidate_raw_state()
@@ -181,6 +213,147 @@ def issue_google_calendar_oauth_state(
     except CalendarOAuthStateError:
         raise
     except _SQLAlchemyError:
+        pass
+    _raise_sanitized_persistence_error()
+
+
+def issue_google_calendar_oauth_state_with_pkce(
+    session: _Session,
+    *,
+    account_id: str,
+    session_id: str,
+    pkce_cipher: _CalendarOAuthPKCECipher,
+    now: Optional[datetime.datetime] = None,
+) -> IssuedGoogleCalendarOAuthPKCEState:
+    """Atomically replace one pending state and encrypted PKCE verifier."""
+
+    error_type = None
+    try:
+        return _issue_google_calendar_oauth_state_with_pkce(
+            session,
+            account_id=account_id,
+            session_id=session_id,
+            pkce_cipher=pkce_cipher,
+            now=now,
+        )
+    except CalendarOAuthStateTransactionRequired:
+        error_type = CalendarOAuthStateTransactionRequired
+    except CalendarOAuthStateInputError:
+        error_type = CalendarOAuthStateInputError
+    except CalendarOAuthStateSessionInvalid:
+        error_type = CalendarOAuthStateSessionInvalid
+    except Exception:
+        error_type = CalendarOAuthStatePersistenceError
+
+    del session, account_id, session_id, pkce_cipher, now
+    raise error_type() from None
+
+
+def _issue_google_calendar_oauth_state_with_pkce(
+    session: _Session,
+    *,
+    account_id: str,
+    session_id: str,
+    pkce_cipher: _CalendarOAuthPKCECipher,
+    now: Optional[datetime.datetime],
+) -> IssuedGoogleCalendarOAuthPKCEState:
+    """Perform issuance below the public traceback-redaction boundary."""
+
+    _require_command_transaction(session)
+    supplied_at = _aware_utc(now) if now is not None else None
+    if not isinstance(pkce_cipher, _CalendarOAuthPKCECipher):
+        raise CalendarOAuthStateInputError()
+    try:
+        account, provider_session = _locked_owner(
+            session,
+            account_id=account_id,
+            session_id=session_id,
+            invalid_error=CalendarOAuthStateSessionInvalid,
+        )
+        issued_at = supplied_at or datetime.datetime.now(UTC)
+        session_expires_at = _validate_active_owner(
+            account,
+            provider_session,
+            effective_at=issued_at,
+            invalid_error=CalendarOAuthStateSessionInvalid,
+        )
+        expires_at = min(issued_at + _STATE_LIFETIME, session_expires_at)
+
+        for _ in range(_STATE_COLLISION_RETRIES):
+            raw_state = _candidate_raw_state()
+            if raw_state is None:
+                continue
+            state_digest = _state_digest(raw_state)
+            if _digest_exists(session, state_digest):
+                continue
+
+            generated = pkce_cipher.generate_google_calendar_pkce(
+                scope=_CalendarOAuthPKCEScope(
+                    state_digest=state_digest,
+                    account_id=account.id,
+                    session_id=provider_session.id,
+                )
+            )
+            encrypted_verifier = generated.encrypted_verifier
+            if _pkce_nonce_exists(
+                session,
+                key_id=encrypted_verifier.key_id,
+                nonce=encrypted_verifier.nonce,
+            ):
+                continue
+
+            try:
+                with session.begin_nested():
+                    session.execute(
+                        _delete(_ProviderCalendarOAuthStateDB)
+                        .where(
+                            _ProviderCalendarOAuthStateDB.account_id
+                            == account.id,
+                            _ProviderCalendarOAuthStateDB.session_id
+                            == provider_session.id,
+                        )
+                        .execution_options(synchronize_session=False)
+                    )
+                    session.execute(
+                        _ProviderCalendarOAuthStateDB.__table__.insert().values(
+                            state_digest=state_digest,
+                            account_id=account.id,
+                            session_id=provider_session.id,
+                            provider="google",
+                            created_at=issued_at,
+                            expires_at=expires_at,
+                        )
+                    )
+                    session.execute(
+                        _ProviderCalendarOAuthPKCEVerifierDB.__table__
+                        .insert()
+                        .values(
+                            state_digest=state_digest,
+                            verifier_version=encrypted_verifier.version,
+                            verifier_key_id=encrypted_verifier.key_id,
+                            verifier_nonce=encrypted_verifier.nonce,
+                            verifier_ciphertext=encrypted_verifier.ciphertext,
+                        )
+                    )
+            except _IntegrityError:
+                if _digest_exists(
+                    session,
+                    state_digest,
+                ) or _pkce_nonce_exists(
+                    session,
+                    key_id=encrypted_verifier.key_id,
+                    nonce=encrypted_verifier.nonce,
+                ):
+                    continue
+                break
+            return IssuedGoogleCalendarOAuthPKCEState(
+                raw_state=raw_state,
+                expires_at=expires_at,
+                code_challenge=generated.code_challenge,
+            )
+    except CalendarOAuthStateError:
+        raise
+    except Exception:
         pass
     _raise_sanitized_persistence_error()
 
@@ -238,6 +411,10 @@ def consume_google_calendar_oauth_state(
                 == provider_session.id,
                 _ProviderCalendarOAuthStateDB.created_at <= consumed_at,
                 _ProviderCalendarOAuthStateDB.expires_at > consumed_at,
+                ~_exists().where(
+                    _ProviderCalendarOAuthPKCEVerifierDB.state_digest
+                    == _ProviderCalendarOAuthStateDB.state_digest
+                ),
             )
             .returning(
                 _ProviderCalendarOAuthStateDB.account_id,
@@ -315,6 +492,45 @@ def _digest_exists(session: _Session, state_digest: bytes) -> bool:
     return (
         session.query(_ProviderCalendarOAuthStateDB.state_digest)
         .filter(_ProviderCalendarOAuthStateDB.state_digest == state_digest)
+        .first()
+        is not None
+    )
+
+
+def _pkce_nonce_exists(
+    session: _Session,
+    *,
+    key_id: str,
+    nonce: bytes,
+) -> bool:
+    return (
+        session.query(_ProviderCalendarOAuthPKCEVerifierDB.state_digest)
+        .filter(
+            _ProviderCalendarOAuthPKCEVerifierDB.verifier_key_id == key_id,
+            _ProviderCalendarOAuthPKCEVerifierDB.verifier_nonce == nonce,
+        )
+        .first()
+        is not None
+    )
+
+
+def _owner_has_pkce_state(
+    session: _Session,
+    *,
+    account_id: str,
+    session_id: str,
+) -> bool:
+    return (
+        session.query(_ProviderCalendarOAuthPKCEVerifierDB.state_digest)
+        .join(
+            _ProviderCalendarOAuthStateDB,
+            _ProviderCalendarOAuthStateDB.state_digest
+            == _ProviderCalendarOAuthPKCEVerifierDB.state_digest,
+        )
+        .filter(
+            _ProviderCalendarOAuthStateDB.account_id == account_id,
+            _ProviderCalendarOAuthStateDB.session_id == session_id,
+        )
         .first()
         is not None
     )
