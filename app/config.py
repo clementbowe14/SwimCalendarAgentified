@@ -153,6 +153,18 @@ def calendar_credential_cipher_from_env():
     raise CalendarCredentialConfigurationError() from None
 
 
+def calendar_oauth_pkce_cipher_from_env():
+    """Build the redacted calendar OAuth PKCE cipher from deployment secrets."""
+
+    from app.calendar_oauth_pkce import CalendarOAuthPKCEConfigurationError
+
+    try:
+        return _load_calendar_oauth_pkce_cipher_from_env()
+    except Exception:
+        pass
+    raise CalendarOAuthPKCEConfigurationError() from None
+
+
 def google_calendar_oauth_configuration_from_env():
     """Build redacted Google Calendar authorization configuration."""
 
@@ -226,13 +238,33 @@ def _reject_calendar_key_ring_constant(_value: str) -> None:
 
 
 def _load_calendar_credential_cipher_from_env():
-    """Parse secret-bearing values in a frame never attached to public errors."""
+    """Build a credential cipher in a frame never attached to public errors."""
 
-    from app.calendar_credentials import (
-        AES_256_KEY_BYTES,
-        MAX_CREDENTIAL_KEYS,
-        CalendarCredentialCipher,
+    from app.calendar_credentials import CalendarCredentialCipher
+
+    active_key_id, decoded_keys = _load_calendar_root_key_ring_from_env()
+    return CalendarCredentialCipher(
+        active_key_id=active_key_id,
+        keys=decoded_keys,
     )
+
+
+def _load_calendar_oauth_pkce_cipher_from_env():
+    """Build a PKCE cipher in a frame never attached to public errors."""
+
+    from app.calendar_oauth_pkce import CalendarOAuthPKCECipher
+
+    active_key_id, decoded_keys = _load_calendar_root_key_ring_from_env()
+    return CalendarOAuthPKCECipher(
+        active_key_id=active_key_id,
+        root_keys=decoded_keys,
+    )
+
+
+def _load_calendar_root_key_ring_from_env() -> tuple[str, dict[str, bytes]]:
+    """Parse the shared calendar root-key environment contract."""
+
+    from app.calendar_credentials import AES_256_KEY_BYTES, MAX_CREDENTIAL_KEYS
 
     active_key_id = os.getenv(CALENDAR_CREDENTIAL_ACTIVE_KEY_ID_ENV)
     encoded_key_ring = os.getenv(CALENDAR_CREDENTIAL_KEYS_ENV)
@@ -287,10 +319,7 @@ def _load_calendar_credential_cipher_from_env():
             raise ValueError("noncanonical encoded key")
         decoded_keys[key_id] = decoded_key
 
-    return CalendarCredentialCipher(
-        active_key_id=active_key_id,
-        keys=decoded_keys,
-    )
+    return active_key_id, decoded_keys
 
 
 def _load_google_calendar_oauth_configuration_from_env():
