@@ -19,6 +19,7 @@ from app.calendar_oauth_states import (
     CalendarOAuthStateSessionInvalid,
     CalendarOAuthStateTransactionRequired,
     ConsumedGoogleCalendarOAuthState,
+    IssuedGoogleCalendarOAuthPKCEState,
     IssuedGoogleCalendarOAuthState,
 )
 from app.models import (
@@ -56,13 +57,19 @@ def test_exported_surface_results_and_commands_require_explicit_transactions(
         "CalendarOAuthStateSessionInvalid",
         "CalendarOAuthStateTransactionRequired",
         "ConsumedGoogleCalendarOAuthState",
+        "IssuedGoogleCalendarOAuthPKCEState",
         "IssuedGoogleCalendarOAuthState",
         "consume_google_calendar_oauth_state",
+        "issue_google_calendar_oauth_state_with_pkce",
         "issue_google_calendar_oauth_state",
     }
     assert not hasattr(calendar_oauth_states, "ProviderAccountDB")
     assert not hasattr(calendar_oauth_states, "ProviderSessionDB")
     assert not hasattr(calendar_oauth_states, "ProviderCalendarOAuthStateDB")
+    assert not hasattr(
+        calendar_oauth_states,
+        "ProviderCalendarOAuthPKCEVerifierDB",
+    )
     consume_parameters = set(
         inspect.signature(
             calendar_oauth_states.consume_google_calendar_oauth_state
@@ -108,6 +115,7 @@ def test_exported_surface_results_and_commands_require_explicit_transactions(
         session.close()
 
     assert isinstance(issued, IssuedGoogleCalendarOAuthState)
+    assert not isinstance(issued, IssuedGoogleCalendarOAuthPKCEState)
     assert _stored_states() == []
 
 
