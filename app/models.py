@@ -381,6 +381,66 @@ class ProviderCalendarOAuthStateDB(Base):
         "ProviderSessionDB",
         back_populates="calendar_oauth_state",
     )
+    pkce_verifier = relationship(
+        "ProviderCalendarOAuthPKCEVerifierDB",
+        back_populates="oauth_state",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
+
+
+class ProviderCalendarOAuthPKCEVerifierDB(Base):
+    __tablename__ = "provider_calendar_oauth_pkce_verifiers"
+    __table_args__ = (
+        CheckConstraint(
+            "octet_length(state_digest) = 32",
+            name="ck_provider_calendar_oauth_pkce_verifiers_digest_length",
+        ),
+        CheckConstraint(
+            "verifier_version = 1",
+            name="ck_provider_calendar_oauth_pkce_verifiers_version",
+        ),
+        CheckConstraint(
+            "verifier_key_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'",
+            name="ck_provider_calendar_oauth_pkce_verifiers_key_id",
+        ),
+        CheckConstraint(
+            "octet_length(verifier_nonce) = 12",
+            name="ck_provider_calendar_oauth_pkce_verifiers_nonce_length",
+        ),
+        CheckConstraint(
+            "octet_length(verifier_ciphertext) = 59",
+            name="ck_provider_calendar_oauth_pkce_verifiers_ciphertext_length",
+        ),
+        ForeignKeyConstraint(
+            ["state_digest"],
+            ["provider_calendar_oauth_states.state_digest"],
+            name="fk_provider_calendar_oauth_pkce_verifiers_state",
+            ondelete="CASCADE",
+        ),
+        PrimaryKeyConstraint(
+            "state_digest",
+            name="pk_provider_calendar_oauth_pkce_verifiers",
+        ),
+        Index(
+            "uq_provider_calendar_oauth_pkce_verifiers_key_nonce",
+            "verifier_key_id",
+            "verifier_nonce",
+            unique=True,
+        ),
+    )
+
+    state_digest = Column(LargeBinary(32), nullable=False)
+    verifier_version = Column(Integer, nullable=False)
+    verifier_key_id = Column(String(64), nullable=False)
+    verifier_nonce = Column(LargeBinary(12), nullable=False)
+    verifier_ciphertext = Column(LargeBinary, nullable=False)
+
+    oauth_state = relationship(
+        "ProviderCalendarOAuthStateDB",
+        back_populates="pkce_verifier",
+    )
 
 
 class AppointmentDB(Base):

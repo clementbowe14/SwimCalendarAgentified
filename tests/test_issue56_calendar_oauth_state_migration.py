@@ -22,6 +22,7 @@ from tests.db_test_utils import TEST_DATABASE_URL
 
 PREVIOUS_REVISION = "20261112_0015"
 OAUTH_STATE_REVISION = "20261112_0016"
+CURRENT_HEAD_REVISION = "20261112_0017"
 
 
 @pytest.fixture(autouse=True)
@@ -29,10 +30,13 @@ def use_test_database_for_alembic(monkeypatch):
     monkeypatch.setenv("SWIM_DATABASE_URL", TEST_DATABASE_URL)
 
 
-def test_oauth_state_revision_is_the_only_alembic_head():
-    assert ScriptDirectory.from_config(_config()).get_heads() == [
+def test_oauth_state_revision_remains_in_linear_alembic_history():
+    script = ScriptDirectory.from_config(_config())
+    assert script.get_revision(OAUTH_STATE_REVISION) is not None
+    assert script.get_revision(CURRENT_HEAD_REVISION).down_revision == (
         OAUTH_STATE_REVISION
-    ]
+    )
+    assert script.get_heads() == [CURRENT_HEAD_REVISION]
 
 
 def test_schema_is_digest_only_and_binds_account_to_session(
@@ -747,7 +751,7 @@ def test_active_state_refuses_downgrade_without_disclosing_or_losing_data(
         assert _count_state(connection, values["state_digest"]) == 1
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == OAUTH_STATE_REVISION
+        ).scalar_one() == CURRENT_HEAD_REVISION
 
 
 @pytest.mark.parametrize(
@@ -802,7 +806,7 @@ def test_downgrade_lock_contention_preserves_schema_row_and_revision(
         assert _count_state(connection, values["state_digest"]) == 1
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == OAUTH_STATE_REVISION
+        ).scalar_one() == CURRENT_HEAD_REVISION
 
 
 def test_upgrade_lock_contention_preserves_previous_schema_and_revision(
