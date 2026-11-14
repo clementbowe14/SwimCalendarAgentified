@@ -62,6 +62,7 @@ def test_exported_surface_results_and_commands_require_explicit_transactions(
         "IssuedGoogleCalendarOAuthPKCEState",
         "IssuedGoogleCalendarOAuthState",
         "consume_google_calendar_oauth_state",
+        "consume_google_calendar_oauth_state_with_pkce_and_browser_binding",
         "consume_google_calendar_oauth_state_with_pkce",
         "issue_google_calendar_oauth_state_with_pkce_and_browser_binding",
         "issue_google_calendar_oauth_state_with_pkce",
