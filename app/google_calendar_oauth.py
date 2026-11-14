@@ -17,6 +17,7 @@ __all__ = (
     "GoogleCalendarOAuthConfiguration",
     "GoogleCalendarOAuthConfigurationError",
     "GoogleCalendarOAuthError",
+    "GoogleCalendarTokenExchangeError",
 )
 
 
@@ -33,6 +34,13 @@ _DNS_LABEL_PATTERN = re.compile(
 
 class GoogleCalendarOAuthError(RuntimeError):
     """Base error for Google Calendar OAuth configuration."""
+
+
+class GoogleCalendarTokenExchangeError(GoogleCalendarOAuthError):
+    """An authorization code could not be exchanged safely."""
+
+    def __init__(self) -> None:
+        super().__init__("Google Calendar authorization could not be completed.")
 
 
 class GoogleCalendarOAuthConfigurationError(GoogleCalendarOAuthError):

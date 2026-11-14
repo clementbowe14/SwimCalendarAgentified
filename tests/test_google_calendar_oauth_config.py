@@ -8,6 +8,7 @@ from app import config, google_calendar_oauth, tools
 from app.api import create_app
 from app.config import (
     GOOGLE_CALENDAR_OAUTH_CLIENT_ID_ENV,
+    GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET_ENV,
     GOOGLE_CALENDAR_OAUTH_REDIRECT_URI_ENV,
     google_calendar_oauth_configuration_from_env,
 )
@@ -30,6 +31,7 @@ DNS_HOSTNAME_254 = ".".join(("a" * 63, "b" * 63, "c" * 63, "d" * 62))
 @pytest.fixture(autouse=True)
 def clear_google_calendar_oauth_environment(monkeypatch):
     monkeypatch.delenv(GOOGLE_CALENDAR_OAUTH_CLIENT_ID_ENV, raising=False)
+    monkeypatch.delenv(GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET_ENV, raising=False)
     monkeypatch.delenv(GOOGLE_CALENDAR_OAUTH_REDIRECT_URI_ENV, raising=False)
 
 
@@ -58,6 +60,7 @@ def test_public_oauth_configuration_surface_is_explicit():
         "GoogleCalendarOAuthConfiguration",
         "GoogleCalendarOAuthConfigurationError",
         "GoogleCalendarOAuthError",
+        "GoogleCalendarTokenExchangeError",
     )
 
 
@@ -373,7 +376,7 @@ def test_oauth_environment_is_not_activated_at_application_startup(
         tools.reset_routing_provider()
 
 
-def test_environment_names_contain_no_client_secret_contract():
+def test_environment_names_are_exact_for_authorization_and_exchange():
     exported_names = {
         name
         for name in vars(config)
@@ -382,5 +385,6 @@ def test_environment_names_contain_no_client_secret_contract():
 
     assert exported_names == {
         "GOOGLE_CALENDAR_OAUTH_CLIENT_ID_ENV",
+        "GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET_ENV",
         "GOOGLE_CALENDAR_OAUTH_REDIRECT_URI_ENV",
     }
