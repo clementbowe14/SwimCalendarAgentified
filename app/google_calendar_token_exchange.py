@@ -16,7 +16,7 @@ from app.calendar_oauth_pkce import derive_s256_code_challenge
 from app.google_calendar_authorization import GOOGLE_CALENDAR_FREEBUSY_SCOPE
 from app.google_calendar_oauth import (
     GoogleCalendarOAuthConfiguration as _GoogleCalendarOAuthConfiguration,
-    GoogleCalendarOAuthError,
+    GoogleCalendarTokenExchangeError,
 )
 
 
@@ -39,13 +39,6 @@ _MAX_ACCESS_TOKEN_BYTES = 16 * 1024
 _MAX_SCOPE_BYTES = 4 * 1024
 _MAX_RESPONSE_BODY_BYTES = 64 * 1024
 _MAX_EXPIRES_IN_SECONDS = 2_147_483_647
-
-
-class GoogleCalendarTokenExchangeError(GoogleCalendarOAuthError):
-    """An authorization code could not be exchanged safely."""
-
-    def __init__(self) -> None:
-        super().__init__("Google Calendar authorization could not be completed.")
 
 
 class _SealedSecretValue:

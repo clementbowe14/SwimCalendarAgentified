@@ -4,7 +4,7 @@ import math
 import os
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import NoReturn, Optional
 from urllib.parse import urlsplit
 
 from app.routing import RoutingProviderNotConfigured
@@ -21,6 +21,9 @@ MAX_COACH_SESSION_TTL_SECONDS = 24 * 60 * 60
 CALENDAR_CREDENTIAL_ACTIVE_KEY_ID_ENV = "SWIM_CALENDAR_CREDENTIAL_ACTIVE_KEY_ID"
 CALENDAR_CREDENTIAL_KEYS_ENV = "SWIM_CALENDAR_CREDENTIAL_KEYS"
 GOOGLE_CALENDAR_OAUTH_CLIENT_ID_ENV = "SWIM_GOOGLE_CALENDAR_OAUTH_CLIENT_ID"
+GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET_ENV = (
+    "SWIM_GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET"
+)
 GOOGLE_CALENDAR_OAUTH_REDIRECT_URI_ENV = "SWIM_GOOGLE_CALENDAR_OAUTH_REDIRECT_URI"
 MAX_CALENDAR_CREDENTIAL_KEYS_JSON_BYTES = 4 * 1024
 _CANONICAL_BASE64URL_KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}\Z")
@@ -177,6 +180,16 @@ def google_calendar_oauth_configuration_from_env():
     raise GoogleCalendarOAuthConfigurationError() from None
 
 
+def google_calendar_token_exchange_configuration_from_env():
+    """Build redacted Google Calendar token-exchange configuration."""
+
+    try:
+        return _load_google_calendar_token_exchange_configuration_from_env()
+    except Exception:
+        pass
+    _raise_google_calendar_token_exchange_error()
+
+
 def routing_settings_from_env(environment: Optional[str] = None) -> RoutingSettings:
     resolved_environment = (
         environment if environment is not None else os.getenv("SWIM_ENV", "local")
@@ -331,6 +344,36 @@ def _load_google_calendar_oauth_configuration_from_env():
         client_id=os.getenv(GOOGLE_CALENDAR_OAUTH_CLIENT_ID_ENV),
         redirect_uri=os.getenv(GOOGLE_CALENDAR_OAUTH_REDIRECT_URI_ENV),
     )
+
+
+def _load_google_calendar_token_exchange_configuration_from_env():
+    """Read the confidential exchange values outside public tracebacks."""
+
+    from app.google_calendar_token_exchange import (
+        GoogleCalendarTokenExchangeConfiguration,
+    )
+
+    return GoogleCalendarTokenExchangeConfiguration(
+        authorization_configuration=(
+            _load_google_calendar_oauth_configuration_from_env()
+        ),
+        client_secret=os.getenv(GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET_ENV),
+    )
+
+
+def _raise_google_calendar_token_exchange_error() -> NoReturn:
+    """Raise a fixed error after clearing ambient exception context."""
+
+    from app.google_calendar_oauth import GoogleCalendarTokenExchangeError
+
+    error = GoogleCalendarTokenExchangeError()
+    try:
+        raise error from None
+    except GoogleCalendarTokenExchangeError as raised:
+        raised.__cause__ = None
+        raised.__context__ = None
+        raised.__suppress_context__ = True
+        raise
 
 
 def _routing_bool_env(name: str, default: bool) -> bool:
