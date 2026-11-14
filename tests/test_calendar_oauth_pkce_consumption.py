@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import dataclasses
 import datetime
 import hashlib
@@ -37,6 +38,11 @@ UTC = datetime.timezone.utc
 T0 = datetime.datetime(2026, 11, 13, 14, 0, tzinfo=UTC)
 TOKEN_A = "A" * 43
 TOKEN_B = "B" * 43
+BROWSER_BYTES_A = b"b" * 32
+BROWSER_A = base64.urlsafe_b64encode(BROWSER_BYTES_A).rstrip(b"=").decode()
+BROWSER_DIGEST_DOMAIN = (
+    b"dayweave.calendar-oauth-browser-binding.sha256.v1\x00"
+)
 OLD_KEY_ID = "pkce-consume-old"
 NEW_KEY_ID = "pkce-consume-new"
 OLD_ROOT_KEY = b"o" * 32
@@ -109,6 +115,350 @@ def test_public_contract_requires_explicit_transaction_and_safe_inputs(
             session.execute(text("SELECT 1"))
     finally:
         session.close()
+
+
+def test_bound_public_contract_requires_two_bearers_and_safe_inputs(
+    migrated_postgres_db,
+):
+    command = (
+        calendar_oauth_states
+        .consume_google_calendar_oauth_state_with_pkce_and_browser_binding
+    )
+    signature = inspect.signature(command)
+
+    assert list(signature.parameters) == [
+        "session",
+        "raw_state",
+        "raw_browser_binding",
+        "pkce_cipher",
+        "now",
+    ]
+    assert signature.parameters["session"].kind is (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD
+    )
+    assert signature.parameters["session"].default is inspect.Parameter.empty
+    for name in ("raw_state", "raw_browser_binding", "pkce_cipher", "now"):
+        assert signature.parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+    for name in ("raw_state", "raw_browser_binding", "pkce_cipher"):
+        assert signature.parameters[name].default is inspect.Parameter.empty
+    assert signature.parameters["now"].default is None
+
+    session = db.SessionLocal()
+    try:
+        with pytest.raises(TypeError):
+            command(
+                session,
+                raw_state=TOKEN_A,
+                pkce_cipher=OLD_CIPHER,
+                now=T0,
+            )
+        with pytest.raises(CalendarOAuthStateTransactionRequired):
+            command(
+                session,
+                raw_state=TOKEN_A,
+                raw_browser_binding=BROWSER_A,
+                pkce_cipher=OLD_CIPHER,
+                now=T0,
+            )
+
+        session.get(ProviderAccountDB, _demo_account_id())
+        with pytest.raises(CalendarOAuthStateTransactionRequired):
+            command(
+                session,
+                raw_state=TOKEN_A,
+                raw_browser_binding=BROWSER_A,
+                pkce_cipher=OLD_CIPHER,
+                now=T0,
+            )
+        session.rollback()
+
+        with session.begin():
+            with pytest.raises(CalendarOAuthStateInputError):
+                command(
+                    session,
+                    raw_state=TOKEN_A,
+                    raw_browser_binding=BROWSER_A,
+                    pkce_cipher=object(),
+                    now=T0,
+                )
+            with pytest.raises(CalendarOAuthStateInputError):
+                command(
+                    session,
+                    raw_state=TOKEN_A,
+                    raw_browser_binding=BROWSER_A,
+                    pkce_cipher=OLD_CIPHER,
+                    now=T0.replace(tzinfo=None),
+                )
+            session.execute(text("SELECT 1"))
+    finally:
+        session.close()
+
+
+def test_bound_success_uses_both_digests_then_cascade_deletes_pair(
+    migrated_postgres_db,
+):
+    runtime_now = datetime.datetime.now(UTC)
+    account_id = _demo_account_id()
+    session_id = _add_session(
+        account_id,
+        "bound-success-default-clock",
+        created_at=runtime_now - datetime.timedelta(hours=1),
+        expires_at=runtime_now + datetime.timedelta(hours=1),
+    )
+    issued = _issue_bound(account_id, session_id, now=runtime_now)
+    before = _snapshot(account_id, session_id)
+    statements = []
+    parameters = []
+
+    def capture_statement(
+        connection,
+        cursor,
+        statement,
+        values,
+        context,
+        executemany,
+    ):
+        statements.append(statement)
+        parameters.append(values)
+
+    event.listen(db.engine, "before_cursor_execute", capture_statement)
+    try:
+        with db.SessionLocal.begin() as session:
+            consumed = (
+                calendar_oauth_states
+                .consume_google_calendar_oauth_state_with_pkce_and_browser_binding(
+                    session,
+                    raw_state=issued.issued_state.raw_state,
+                    raw_browser_binding=issued.raw_browser_binding,
+                    pkce_cipher=OLD_CIPHER,
+                )
+            )
+    finally:
+        event.remove(db.engine, "before_cursor_execute", capture_statement)
+
+    assert type(consumed) is ConsumedGoogleCalendarOAuthPKCEState
+    assert consumed.account_id == account_id
+    assert consumed.session_id == session_id
+    assert derive_s256_code_challenge(consumed.code_verifier) == (
+        issued.issued_state.code_challenge
+    )
+    assert before["browser_binding_digest"] == (
+        _raw_browser_binding_digest(issued.raw_browser_binding)
+    )
+
+    locking_selects = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("SELECT")
+        and "FOR UPDATE" in statement.upper()
+    ]
+    lock_order = []
+    for statement in locking_selects:
+        for table in (
+            "provider_accounts",
+            "provider_sessions",
+            "provider_calendar_oauth_states",
+            "provider_calendar_oauth_pkce_verifiers",
+        ):
+            if table in statement and table not in lock_order:
+                lock_order.append(table)
+    assert lock_order == [
+        "provider_accounts",
+        "provider_sessions",
+        "provider_calendar_oauth_states",
+        "provider_calendar_oauth_pkce_verifiers",
+    ]
+    state_queries = [
+        statement
+        for statement in statements
+        if "provider_calendar_oauth_states" in statement
+    ]
+    assert len(
+        [
+            statement
+            for statement in state_queries
+            if "browser_binding_digest =" in statement
+        ]
+    ) >= 3
+    state_deletes = [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith("DELETE")
+        and "provider_calendar_oauth_states" in statement
+    ]
+    assert len(state_deletes) == 1
+    assert "RETURNING" in state_deletes[0].upper()
+    assert "browser_binding_digest =" in state_deletes[0]
+    assert "EXISTS" in state_deletes[0].upper()
+    assert not any(
+        statement.lstrip().upper().startswith(
+            (
+                "DELETE FROM PROVIDER_CALENDAR_OAUTH_PKCE_VERIFIERS",
+                "UPDATE PROVIDER_CALENDAR_OAUTH_PKCE_VERIFIERS",
+                "INSERT INTO PROVIDER_CALENDAR_OAUTH_PKCE_VERIFIERS",
+            )
+        )
+        for statement in statements
+    )
+    rendered_statements = "\n".join(statements)
+    assert issued.issued_state.raw_state not in rendered_statements
+    assert issued.raw_browser_binding not in rendered_statements
+    decoded_binding = base64.b64decode(
+        issued.raw_browser_binding.encode("ascii") + b"=",
+        altchars=b"-_",
+        validate=True,
+    )
+    for value in _sql_parameter_leaves(parameters):
+        if isinstance(value, str):
+            assert issued.issued_state.raw_state not in value
+            assert issued.raw_browser_binding not in value
+        elif isinstance(value, (bytes, bytearray, memoryview)):
+            persisted = bytes(value)
+            for secret in (
+                issued.issued_state.raw_state.encode("ascii"),
+                issued.raw_browser_binding.encode("ascii"),
+                decoded_binding,
+            ):
+                assert secret not in persisted
+    assert _snapshot(account_id, session_id) is None
+
+    with pytest.raises(CalendarOAuthStateInvalid):
+        _consume_bound(
+            issued.issued_state.raw_state,
+            issued.raw_browser_binding,
+        )
+
+
+def test_bound_binding_rejections_are_uniform_and_non_destructive(
+    migrated_postgres_db,
+    monkeypatch,
+):
+    account_id, session_id = _active_demo_owner("bound-invalid")
+    issued = _issue_bound(account_id, session_id)
+    original = _snapshot(account_id, session_id)
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    final_index = alphabet.index(issued.raw_browser_binding[-1])
+    assert final_index % 4 == 0
+    noncanonical_alias = (
+        issued.raw_browser_binding[:-1] + alphabet[final_index + 1]
+    )
+    wrong_binding = (
+        ("A" if issued.raw_browser_binding[0] != "A" else "B")
+        + issued.raw_browser_binding[1:]
+    )
+    unknown_state = (
+        ("A" if issued.issued_state.raw_state[0] != "A" else "B")
+        + issued.issued_state.raw_state[1:]
+    )
+    assert base64.b64decode(
+        noncanonical_alias.encode("ascii") + b"=",
+        altchars=b"-_",
+        validate=True,
+    ) == base64.b64decode(
+        issued.raw_browser_binding.encode("ascii") + b"=",
+        altchars=b"-_",
+        validate=True,
+    )
+    decrypt_calls = []
+    real_decrypt = CalendarOAuthPKCECipher.decrypt_google_calendar_verifier
+
+    def record_decrypt(*args, **kwargs):
+        decrypt_calls.append((args, kwargs))
+        raise AssertionError("invalid browser bindings must fail first")
+
+    monkeypatch.setattr(
+        CalendarOAuthPKCECipher,
+        "decrypt_google_calendar_verifier",
+        record_decrypt,
+    )
+    cases = [
+        (issued.issued_state.raw_state, None),
+        (issued.issued_state.raw_state, BROWSER_A.encode("ascii")),
+        (issued.issued_state.raw_state, "short"),
+        (issued.issued_state.raw_state, issued.raw_browser_binding + "="),
+        (issued.issued_state.raw_state, " " + issued.raw_browser_binding),
+        (issued.issued_state.raw_state, "é" * 43),
+        (issued.issued_state.raw_state, "!" * 43),
+        (issued.issued_state.raw_state, noncanonical_alias),
+        (issued.issued_state.raw_state, wrong_binding),
+        (issued.issued_state.raw_state, issued.issued_state.raw_state),
+        ("short", issued.raw_browser_binding),
+        (unknown_state, issued.raw_browser_binding),
+    ]
+    rendered = []
+    command = (
+        calendar_oauth_states
+        .consume_google_calendar_oauth_state_with_pkce_and_browser_binding
+    )
+    for raw_state, raw_browser_binding in cases:
+        with db.SessionLocal.begin() as session:
+            with pytest.raises(CalendarOAuthStateInvalid) as exc_info:
+                command(
+                    session,
+                    raw_state=raw_state,
+                    raw_browser_binding=raw_browser_binding,
+                    pkce_cipher=OLD_CIPHER,
+                    now=T0,
+                )
+            session.execute(text("SELECT 1"))
+        rendered.append(
+            (type(exc_info.value), str(exc_info.value), repr(exc_info.value))
+        )
+
+    assert len(set(rendered)) == 1
+    assert decrypt_calls == []
+    assert _snapshot(account_id, session_id) == original
+
+    monkeypatch.setattr(
+        CalendarOAuthPKCECipher,
+        "decrypt_google_calendar_verifier",
+        real_decrypt,
+    )
+    consumed = _consume_bound(
+        issued.issued_state.raw_state,
+        issued.raw_browser_binding,
+    )
+    assert consumed.session_id == session_id
+
+
+def test_bound_consumer_rejects_swapped_and_unbound_authorizations(
+    migrated_postgres_db,
+):
+    first_account, first_session = _active_demo_owner("bound-swap-first")
+    second_account, second_session = _add_owner("bound-swap-second")
+    first = _issue_bound(first_account, first_session)
+    second = _issue_bound(second_account, second_session)
+    first_before = _snapshot(first_account, first_session)
+    second_before = _snapshot(second_account, second_session)
+
+    with pytest.raises(CalendarOAuthStateInvalid):
+        _consume_bound(
+            first.issued_state.raw_state,
+            second.raw_browser_binding,
+        )
+    with pytest.raises(CalendarOAuthStateInvalid):
+        _consume_bound(
+            second.issued_state.raw_state,
+            first.raw_browser_binding,
+        )
+
+    assert _snapshot(first_account, first_session) == first_before
+    assert _snapshot(second_account, second_session) == second_before
+    assert _consume_bound(
+        first.issued_state.raw_state,
+        first.raw_browser_binding,
+    ).session_id == first_session
+    assert _consume_bound(
+        second.issued_state.raw_state,
+        second.raw_browser_binding,
+    ).session_id == second_session
+
+    unbound_account, unbound_session = _add_owner("bound-rejects-unbound")
+    unbound = _issue(unbound_account, unbound_session)
+    with pytest.raises(CalendarOAuthStateInvalid):
+        _consume_bound(unbound.raw_state, BROWSER_A)
+    assert _owner_row_counts(unbound_account, unbound_session) == (1, 1)
+    assert _consume(unbound.raw_state).session_id == unbound_session
 
 
 def test_success_locks_decrypts_then_cascade_deletes_pair(
@@ -284,12 +634,20 @@ def test_pkce_consume_rejects_browser_bound_pair_before_decryption(
     assert _snapshot(account_id, session_id) == original
 
 
+@pytest.mark.parametrize("flow_kind", ["unbound", "bound"])
 def test_missing_verifier_child_is_invalid_and_parent_is_preserved(
     migrated_postgres_db,
     monkeypatch,
+    flow_kind,
 ):
-    account_id, session_id = _active_demo_owner("missing-child")
-    issued = _issue(account_id, session_id)
+    account_id, session_id = _active_demo_owner(
+        f"missing-child-{flow_kind}"
+    )
+    issued, raw_browser_binding = _issue_flow(
+        flow_kind,
+        account_id,
+        session_id,
+    )
     with db.SessionLocal.begin() as session:
         session.query(ProviderCalendarOAuthPKCEVerifierDB).filter_by(
             state_digest=_digest(issued.raw_state)
@@ -304,29 +662,40 @@ def test_missing_verifier_child_is_invalid_and_parent_is_preserved(
         fail_decrypt,
     )
     with pytest.raises(CalendarOAuthStateInvalid):
-        _consume(issued.raw_state)
+        _consume_flow(issued, raw_browser_binding)
     assert _owner_row_counts(account_id, session_id) == (1, 0)
 
 
 @pytest.mark.parametrize(
-    "case",
+    ("flow_kind", "case"),
     [
-        "disabled",
-        "revoked",
-        "session_expired",
-        "session_future",
-        "version_stale",
-        "state_expired",
-        "state_future",
+        ("unbound", "disabled"),
+        ("unbound", "revoked"),
+        ("unbound", "session_expired"),
+        ("unbound", "session_future"),
+        ("unbound", "version_stale"),
+        ("unbound", "state_expired"),
+        ("unbound", "state_future"),
+        ("bound", "disabled"),
+        ("bound", "revoked"),
+        ("bound", "state_expired"),
+        ("bound", "state_future"),
     ],
 )
 def test_inactive_owner_and_state_time_fail_before_decryption(
     migrated_postgres_db,
     monkeypatch,
+    flow_kind,
     case,
 ):
-    account_id, session_id = _active_demo_owner(f"inactive-{case}")
-    issued = _issue(account_id, session_id)
+    account_id, session_id = _active_demo_owner(
+        f"inactive-{flow_kind}-{case}"
+    )
+    issued, raw_browser_binding = _issue_flow(
+        flow_kind,
+        account_id,
+        session_id,
+    )
     with db.SessionLocal.begin() as session:
         account = session.get(ProviderAccountDB, account_id)
         provider_session = session.get(ProviderSessionDB, session_id)
@@ -360,7 +729,7 @@ def test_inactive_owner_and_state_time_fail_before_decryption(
         fail_decrypt,
     )
     with pytest.raises(CalendarOAuthStateInvalid) as exc_info:
-        _consume(issued.raw_state)
+        _consume_flow(issued, raw_browser_binding)
     assert str(exc_info.value) == "Calendar authorization state is invalid."
     assert _owner_row_counts(account_id, session_id) == (1, 1)
 
@@ -401,16 +770,29 @@ def test_exact_state_and_session_expiry_boundary(
 
 
 @pytest.mark.parametrize(
-    "failure",
-    ["ciphertext", "nonce", "unknown_key", "wrong_root"],
+    ("flow_kind", "failure"),
+    [
+        ("unbound", "ciphertext"),
+        ("unbound", "nonce"),
+        ("unbound", "unknown_key"),
+        ("unbound", "wrong_root"),
+        ("bound", "wrong_root"),
+    ],
 )
 def test_envelope_or_key_failure_is_recoverable_and_non_destructive(
     migrated_postgres_db,
+    flow_kind,
     failure,
     caplog,
 ):
-    account_id, session_id = _active_demo_owner(f"decrypt-{failure}")
-    issued = _issue(account_id, session_id)
+    account_id, session_id = _active_demo_owner(
+        f"decrypt-{flow_kind}-{failure}"
+    )
+    issued, raw_browser_binding = _issue_flow(
+        flow_kind,
+        account_id,
+        session_id,
+    )
     state_digest = _digest(issued.raw_state)
     cipher = OLD_CIPHER
 
@@ -439,7 +821,11 @@ def test_envelope_or_key_failure_is_recoverable_and_non_destructive(
     caplog.set_level("DEBUG")
 
     with pytest.raises(CalendarOAuthStatePersistenceError) as exc_info:
-        _consume(issued.raw_state, cipher=cipher)
+        _consume_flow(
+            issued,
+            raw_browser_binding,
+            cipher=cipher,
+        )
 
     assert str(exc_info.value) == (
         "Calendar authorization state could not be persisted."
@@ -454,9 +840,20 @@ def test_envelope_or_key_failure_is_recoverable_and_non_destructive(
         before["verifier_key_id"],
         before["verifier_nonce"].hex(),
         before["verifier_ciphertext"].hex(),
+        raw_browser_binding or "not-a-bound-flow",
+        (
+            repr(before["browser_binding_digest"])
+            if before["browser_binding_digest"] is not None
+            else "not-a-browser-digest"
+        ),
     )
     assert caplog.text == ""
     assert _snapshot(account_id, session_id) == before
+    if flow_kind == "bound":
+        consumed = _consume_flow(issued, raw_browser_binding)
+        assert derive_s256_code_challenge(consumed.code_verifier) == (
+            issued.code_challenge
+        )
 
 
 def test_retained_key_rotation_recovers_after_early_key_removal(
@@ -487,23 +884,37 @@ def test_retained_key_rotation_recovers_after_early_key_removal(
     assert _owner_row_counts(account_id, session_id) == (0, 0)
 
 
-@pytest.mark.parametrize("target_kind", ["same_account", "other_account"])
+@pytest.mark.parametrize(
+    ("flow_kind", "target_kind"),
+    [
+        ("unbound", "same_account"),
+        ("unbound", "other_account"),
+        ("bound", "other_account"),
+    ],
+)
 def test_persisted_owner_transplant_fails_aad_and_preserves_pair(
     migrated_postgres_db,
+    flow_kind,
     target_kind,
 ):
     source_account, source_session = _active_demo_owner(
-        f"aad-source-{target_kind}"
+        f"aad-source-{flow_kind}-{target_kind}"
     )
-    issued = _issue(source_account, source_session)
+    issued, raw_browser_binding = _issue_flow(
+        flow_kind,
+        source_account,
+        source_session,
+    )
     if target_kind == "same_account":
         target_account = source_account
         target_session = _add_session(
             target_account,
-            "aad-target-same-account",
+            f"aad-target-{flow_kind}-same-account",
         )
     else:
-        target_account, target_session = _add_owner("aad-target-other")
+        target_account, target_session = _add_owner(
+            f"aad-target-{flow_kind}-other"
+        )
 
     with db.SessionLocal.begin() as session:
         state = session.get(
@@ -515,27 +926,32 @@ def test_persisted_owner_transplant_fails_aad_and_preserves_pair(
     before = _snapshot(target_account, target_session)
 
     with pytest.raises(CalendarOAuthStatePersistenceError):
-        _consume(issued.raw_state)
+        _consume_flow(issued, raw_browser_binding)
 
     assert _snapshot(target_account, target_session) == before
     assert _owner_row_counts(source_account, source_session) == (0, 0)
 
 
+@pytest.mark.parametrize("flow_kind", ["unbound", "bound"])
 def test_caller_rollback_restores_pair_and_verifier(
     migrated_postgres_db,
+    flow_kind,
 ):
-    account_id, session_id = _active_demo_owner("rollback")
-    issued = _issue(account_id, session_id)
+    account_id, session_id = _active_demo_owner(f"rollback-{flow_kind}")
+    issued, raw_browser_binding = _issue_flow(
+        flow_kind,
+        account_id,
+        session_id,
+    )
     before = _snapshot(account_id, session_id)
 
     session = db.SessionLocal()
     transaction = session.begin()
     try:
-        first = calendar_oauth_states.consume_google_calendar_oauth_state_with_pkce(
+        first = _consume_flow_in_session(
             session,
-            raw_state=issued.raw_state,
-            pkce_cipher=OLD_CIPHER,
-            now=T0,
+            issued,
+            raw_browser_binding,
         )
         assert session.get(
             ProviderCalendarOAuthStateDB,
@@ -546,28 +962,32 @@ def test_caller_rollback_restores_pair_and_verifier(
         session.close()
 
     assert _snapshot(account_id, session_id) == before
-    second = _consume(issued.raw_state)
+    second = _consume_flow(issued, raw_browser_binding)
     assert second.code_verifier == first.code_verifier
     assert _owner_row_counts(account_id, session_id) == (0, 0)
 
 
-def test_concurrent_consumers_commit_exactly_once(migrated_postgres_db):
-    account_id, session_id = _active_demo_owner("concurrent")
-    issued = _issue(account_id, session_id)
+@pytest.mark.parametrize("flow_kind", ["unbound", "bound"])
+def test_concurrent_consumers_commit_exactly_once(
+    migrated_postgres_db,
+    flow_kind,
+):
+    account_id, session_id = _active_demo_owner(f"concurrent-{flow_kind}")
+    issued, raw_browser_binding = _issue_flow(
+        flow_kind,
+        account_id,
+        session_id,
+    )
     barrier = threading.Barrier(2)
 
     def consume():
         try:
             with db.SessionLocal.begin() as session:
                 barrier.wait(timeout=5)
-                result = (
-                    calendar_oauth_states
-                    .consume_google_calendar_oauth_state_with_pkce(
-                        session,
-                        raw_state=issued.raw_state,
-                        pkce_cipher=OLD_CIPHER,
-                        now=T0,
-                    )
+                result = _consume_flow_in_session(
+                    session,
+                    issued,
+                    raw_browser_binding,
                 )
             return "consumed", result.code_verifier
         except CalendarOAuthStateInvalid:
@@ -594,14 +1014,20 @@ def test_concurrent_consumers_commit_exactly_once(migrated_postgres_db):
 
 
 @pytest.mark.parametrize("first_commits", [True, False])
+@pytest.mark.parametrize("flow_kind", ["unbound", "bound"])
 def test_waiting_consumer_observes_first_commit_or_rollback(
     migrated_postgres_db,
     first_commits,
+    flow_kind,
 ):
     account_id, session_id = _active_demo_owner(
-        f"waiting-{first_commits}"
+        f"waiting-{flow_kind}-{first_commits}"
     )
-    issued = _issue(account_id, session_id)
+    issued, raw_browser_binding = _issue_flow(
+        flow_kind,
+        account_id,
+        session_id,
+    )
     first_consumed = threading.Event()
     release_first = threading.Event()
     second_pid_ready = threading.Event()
@@ -611,14 +1037,10 @@ def test_waiting_consumer_observes_first_commit_or_rollback(
         session = db.SessionLocal()
         transaction = session.begin()
         try:
-            result = (
-                calendar_oauth_states
-                .consume_google_calendar_oauth_state_with_pkce(
-                    session,
-                    raw_state=issued.raw_state,
-                    pkce_cipher=OLD_CIPHER,
-                    now=T0,
-                )
+            result = _consume_flow_in_session(
+                session,
+                issued,
+                raw_browser_binding,
             )
             first_consumed.set()
             assert release_first.wait(timeout=10)
@@ -640,14 +1062,10 @@ def test_waiting_consumer_observes_first_commit_or_rollback(
             ).scalar_one()
             second_pid_ready.set()
             try:
-                result = (
-                    calendar_oauth_states
-                    .consume_google_calendar_oauth_state_with_pkce(
-                        session,
-                        raw_state=issued.raw_state,
-                        pkce_cipher=OLD_CIPHER,
-                        now=T0,
-                    )
+                result = _consume_flow_in_session(
+                    session,
+                    issued,
+                    raw_browser_binding,
                 )
                 transaction.commit()
                 return "consumed", result.code_verifier
@@ -678,16 +1096,22 @@ def test_waiting_consumer_observes_first_commit_or_rollback(
 
 @pytest.mark.parametrize("first_operation", ["issue", "consume"])
 @pytest.mark.parametrize("first_commits", [True, False])
+@pytest.mark.parametrize("flow_kind", ["unbound", "bound"])
 def test_replacement_and_consume_serialize_without_reviving_old_state(
     migrated_postgres_db,
     monkeypatch,
     first_operation,
     first_commits,
+    flow_kind,
 ):
     account_id, session_id = _active_demo_owner(
-        f"replacement-race-{first_operation}-{first_commits}"
+        f"replacement-{flow_kind}-{first_operation}-{first_commits}"
     )
-    original = _issue(account_id, session_id)
+    original, raw_browser_binding = _issue_flow(
+        flow_kind,
+        account_id,
+        session_id,
+    )
     monkeypatch.setattr(
         calendar_oauth_states.secrets,
         "token_urlsafe",
@@ -699,20 +1123,18 @@ def test_replacement_and_consume_serialize_without_reviving_old_state(
     second_pid = {}
 
     def issue(session):
-        return calendar_oauth_states.issue_google_calendar_oauth_state_with_pkce(
+        return _issue_flow_in_session(
+            flow_kind,
             session,
-            account_id=account_id,
-            session_id=session_id,
-            pkce_cipher=OLD_CIPHER,
-            now=T0,
+            account_id,
+            session_id,
         )
 
     def consume(session):
-        return calendar_oauth_states.consume_google_calendar_oauth_state_with_pkce(
+        return _consume_flow_in_session(
             session,
-            raw_state=original.raw_state,
-            pkce_cipher=OLD_CIPHER,
-            now=T0,
+            original,
+            raw_browser_binding,
         )
 
     def first_command():
@@ -729,7 +1151,7 @@ def test_replacement_and_consume_serialize_without_reviving_old_state(
             else:
                 transaction.rollback()
             if first_operation == "issue":
-                assert result.raw_state == TOKEN_B
+                assert result[0].raw_state == TOKEN_B
             else:
                 assert (
                     derive_s256_code_challenge(result.code_verifier)
@@ -755,7 +1177,7 @@ def test_replacement_and_consume_serialize_without_reviving_old_state(
                 except CalendarOAuthStateInvalid:
                     outcome = "invalid"
             else:
-                assert issue(session).raw_state == TOKEN_B
+                assert issue(session)[0].raw_state == TOKEN_B
                 outcome = "issued"
             transaction.commit()
             return outcome
@@ -786,20 +1208,29 @@ def test_replacement_and_consume_serialize_without_reviving_old_state(
     else:
         assert final_pair["state_digest"] == _digest(TOKEN_B)
         assert final_pair["verifier_key_id"] == OLD_KEY_ID
+        assert (final_pair["browser_binding_digest"] is not None) == (
+            flow_kind == "bound"
+        )
         assert _owner_row_counts(account_id, session_id) == (1, 1)
 
 
 @pytest.mark.parametrize("first_operation", ["revoke", "consume"])
 @pytest.mark.parametrize("first_commits", [True, False])
+@pytest.mark.parametrize("flow_kind", ["unbound", "bound"])
 def test_revocation_and_consume_serialize_without_deadlock(
     migrated_postgres_db,
     first_operation,
     first_commits,
+    flow_kind,
 ):
     account_id, session_id = _active_demo_owner(
-        f"revocation-race-{first_operation}-{first_commits}"
+        f"revocation-{flow_kind}-{first_operation}-{first_commits}"
     )
-    issued = _issue(account_id, session_id)
+    issued, raw_browser_binding = _issue_flow(
+        flow_kind,
+        account_id,
+        session_id,
+    )
     first_finished = threading.Event()
     release_first = threading.Event()
     second_pid_ready = threading.Event()
@@ -824,11 +1255,10 @@ def test_revocation_and_consume_serialize_without_deadlock(
         session.flush()
 
     def consume(session):
-        return calendar_oauth_states.consume_google_calendar_oauth_state_with_pkce(
+        return _consume_flow_in_session(
             session,
-            raw_state=issued.raw_state,
-            pkce_cipher=OLD_CIPHER,
-            now=T0,
+            issued,
+            raw_browser_binding,
         )
 
     def first_command():
@@ -907,13 +1337,19 @@ def test_revocation_and_consume_serialize_without_deadlock(
     )
 
 
+@pytest.mark.parametrize("flow_kind", ["unbound", "bound"])
 def test_post_decryption_failure_redacts_every_sensitive_value(
     migrated_postgres_db,
     monkeypatch,
     caplog,
+    flow_kind,
 ):
-    account_id, session_id = _active_demo_owner("redaction")
-    issued = _issue(account_id, session_id)
+    account_id, session_id = _active_demo_owner(f"redaction-{flow_kind}")
+    issued, raw_browser_binding = _issue_flow(
+        flow_kind,
+        account_id,
+        session_id,
+    )
     snapshot = _snapshot(account_id, session_id)
     plaintext_verifier = "V" * 43
     exception_secret = "delete-failure-private-detail"
@@ -943,11 +1379,10 @@ def test_post_decryption_failure_redacts_every_sensitive_value(
     monkeypatch.setattr(session, "execute", fail_delete)
     try:
         with pytest.raises(CalendarOAuthStatePersistenceError) as exc_info:
-            calendar_oauth_states.consume_google_calendar_oauth_state_with_pkce(
+            _consume_flow_in_session(
                 session,
-                raw_state=issued.raw_state,
-                pkce_cipher=OLD_CIPHER,
-                now=T0,
+                issued,
+                raw_browser_binding,
             )
         session.execute(text("SELECT 1"))
         transaction.rollback()
@@ -968,18 +1403,37 @@ def test_post_decryption_failure_redacts_every_sensitive_value(
         snapshot["verifier_ciphertext"].hex(),
         OLD_ROOT_KEY.hex(),
         exception_secret,
+        raw_browser_binding or "not-a-bound-flow",
+        (
+            snapshot["browser_binding_digest"].hex()
+            if snapshot["browser_binding_digest"] is not None
+            else "not-a-browser-digest"
+        ),
+        (
+            repr(snapshot["browser_binding_digest"])
+            if snapshot["browser_binding_digest"] is not None
+            else "not-browser-digest-bytes"
+        ),
     )
     assert caplog.text == ""
     assert _snapshot(account_id, session_id) == snapshot
 
 
+@pytest.mark.parametrize("flow_kind", ["unbound", "bound"])
 def test_post_delete_failure_rolls_back_savepoint_before_outer_commit(
     migrated_postgres_db,
     monkeypatch,
     caplog,
+    flow_kind,
 ):
-    account_id, session_id = _active_demo_owner("post-delete-failure")
-    issued = _issue(account_id, session_id)
+    account_id, session_id = _active_demo_owner(
+        f"post-delete-failure-{flow_kind}"
+    )
+    issued, raw_browser_binding = _issue_flow(
+        flow_kind,
+        account_id,
+        session_id,
+    )
     snapshot = _snapshot(account_id, session_id)
     plaintext_verifier = "W" * 43
     exception_secret = "result-proxy-private-detail"
@@ -1016,11 +1470,10 @@ def test_post_delete_failure_rolls_back_savepoint_before_outer_commit(
     monkeypatch.setattr(session, "execute", fail_after_delete)
     try:
         with pytest.raises(CalendarOAuthStatePersistenceError) as exc_info:
-            calendar_oauth_states.consume_google_calendar_oauth_state_with_pkce(
+            _consume_flow_in_session(
                 session,
-                raw_state=issued.raw_state,
-                pkce_cipher=OLD_CIPHER,
-                now=T0,
+                issued,
+                raw_browser_binding,
             )
         transaction.commit()
     finally:
@@ -1038,6 +1491,17 @@ def test_post_delete_failure_rolls_back_savepoint_before_outer_commit(
         snapshot["verifier_nonce"].hex(),
         snapshot["verifier_ciphertext"].hex(),
         exception_secret,
+        raw_browser_binding or "not-a-bound-flow",
+        (
+            snapshot["browser_binding_digest"].hex()
+            if snapshot["browser_binding_digest"] is not None
+            else "not-a-browser-digest"
+        ),
+        (
+            repr(snapshot["browser_binding_digest"])
+            if snapshot["browser_binding_digest"] is not None
+            else "not-browser-digest-bytes"
+        ),
     )
     assert caplog.text == ""
     assert _snapshot(account_id, session_id) == snapshot
@@ -1060,6 +1524,26 @@ def _issue(
         )
 
 
+def _issue_bound(
+    account_id: str,
+    session_id: str,
+    *,
+    now: datetime.datetime = T0,
+    cipher: CalendarOAuthPKCECipher = OLD_CIPHER,
+):
+    with db.SessionLocal.begin() as session:
+        return (
+            calendar_oauth_states
+            .issue_google_calendar_oauth_state_with_pkce_and_browser_binding(
+                session,
+                account_id=account_id,
+                session_id=session_id,
+                pkce_cipher=cipher,
+                now=now,
+            )
+        )
+
+
 def _consume(
     raw_state,
     *,
@@ -1073,6 +1557,112 @@ def _consume(
             pkce_cipher=cipher,
             now=now,
         )
+
+
+def _consume_bound(
+    raw_state,
+    raw_browser_binding,
+    *,
+    now: datetime.datetime = T0,
+    cipher: CalendarOAuthPKCECipher = OLD_CIPHER,
+):
+    with db.SessionLocal.begin() as session:
+        return (
+            calendar_oauth_states
+            .consume_google_calendar_oauth_state_with_pkce_and_browser_binding(
+                session,
+                raw_state=raw_state,
+                raw_browser_binding=raw_browser_binding,
+                pkce_cipher=cipher,
+                now=now,
+            )
+        )
+
+
+def _issue_flow(
+    flow_kind: str,
+    account_id: str,
+    session_id: str,
+):
+    with db.SessionLocal.begin() as session:
+        return _issue_flow_in_session(
+            flow_kind,
+            session,
+            account_id,
+            session_id,
+        )
+
+
+def _consume_flow(
+    issued,
+    raw_browser_binding,
+    *,
+    now: datetime.datetime = T0,
+    cipher: CalendarOAuthPKCECipher = OLD_CIPHER,
+):
+    with db.SessionLocal.begin() as session:
+        return _consume_flow_in_session(
+            session,
+            issued,
+            raw_browser_binding,
+            now=now,
+            cipher=cipher,
+        )
+
+
+def _issue_flow_in_session(
+    flow_kind: str,
+    session,
+    account_id: str,
+    session_id: str,
+):
+    if flow_kind == "bound":
+        bound = (
+            calendar_oauth_states
+            .issue_google_calendar_oauth_state_with_pkce_and_browser_binding(
+                session,
+                account_id=account_id,
+                session_id=session_id,
+                pkce_cipher=OLD_CIPHER,
+                now=T0,
+            )
+        )
+        return bound.issued_state, bound.raw_browser_binding
+    issued = calendar_oauth_states.issue_google_calendar_oauth_state_with_pkce(
+        session,
+        account_id=account_id,
+        session_id=session_id,
+        pkce_cipher=OLD_CIPHER,
+        now=T0,
+    )
+    return issued, None
+
+
+def _consume_flow_in_session(
+    session,
+    issued,
+    raw_browser_binding,
+    *,
+    now: datetime.datetime = T0,
+    cipher: CalendarOAuthPKCECipher = OLD_CIPHER,
+):
+    if raw_browser_binding is not None:
+        return (
+            calendar_oauth_states
+            .consume_google_calendar_oauth_state_with_pkce_and_browser_binding(
+                session,
+                raw_state=issued.raw_state,
+                raw_browser_binding=raw_browser_binding,
+                pkce_cipher=cipher,
+                now=now,
+            )
+        )
+    return calendar_oauth_states.consume_google_calendar_oauth_state_with_pkce(
+        session,
+        raw_state=issued.raw_state,
+        pkce_cipher=cipher,
+        now=now,
+    )
 
 
 def _snapshot(account_id: str, session_id: str):
@@ -1261,6 +1851,26 @@ def _binding_digest(label: str) -> bytes:
     return hashlib.sha256(f"test-browser-binding:{label}".encode()).digest()
 
 
+def _raw_browser_binding_digest(raw_browser_binding: str) -> bytes:
+    entropy = base64.b64decode(
+        raw_browser_binding.encode("ascii") + b"=",
+        altchars=b"-_",
+        validate=True,
+    )
+    return hashlib.sha256(BROWSER_DIGEST_DOMAIN + entropy).digest()
+
+
+def _sql_parameter_leaves(value):
+    if isinstance(value, dict):
+        for nested in value.values():
+            yield from _sql_parameter_leaves(nested)
+    elif isinstance(value, (list, tuple, set)):
+        for nested in value:
+            yield from _sql_parameter_leaves(nested)
+    else:
+        yield value
+
+
 def _flip_first_byte(value: bytes) -> bytes:
     copied = bytes(value)
     return bytes([copied[0] ^ 1]) + copied[1:]
@@ -1299,6 +1909,10 @@ def _assert_error_safe(error: Exception, *forbidden: str) -> None:
         current = current.tb_next
     assert "_consume_google_calendar_oauth_state_with_pkce" not in (
         repository_frames
+    )
+    assert (
+        "_consume_google_calendar_oauth_state_with_pkce_and_browser_binding"
+        not in repository_frames
     )
     rendered_locals = repr(repository_locals)
     for value in forbidden:
