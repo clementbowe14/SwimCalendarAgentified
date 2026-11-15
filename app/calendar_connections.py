@@ -46,6 +46,7 @@ __all__ = (
 
 UTC = datetime.timezone.utc
 _CONNECTION_ID_PATTERN = re.compile(r"calconn_[0-9a-f]{32}\Z")
+_POSTGRESQL_BIGINT_MAX = 9_223_372_036_854_775_807
 
 CalendarConnectionState = Literal[
     "disconnected",
@@ -106,7 +107,11 @@ def get_google_calendar_connection_status(
 
     try:
         account = _provider_account(session, account_id=account_id, lock=False)
-        row = _connection_for_account(session, account.id)
+        row = _connection_for_account(
+            session,
+            account.id,
+            refresh=False,
+        )
         return _status(row)
     except CalendarConnectionError:
         raise
@@ -126,10 +131,16 @@ def replace_google_calendar_connection(
     """Atomically replace the current connection with a fresh encrypted row."""
 
     _require_command_transaction(session)
+    _require_no_pending_lifecycle_mutations(session)
     supplied_at = _aware_utc(now) if now is not None else None
     try:
         account = _provider_account(session, account_id=account_id, lock=True)
-        existing = _connection_for_account(session, account.id)
+        next_revision = _next_calendar_connection_revision(account)
+        existing = _connection_for_account(
+            session,
+            account.id,
+            refresh=True,
+        )
         replaced_at = supplied_at or datetime.datetime.now(UTC)
         if existing is not None and replaced_at < _aware_utc(existing.updated_at):
             raise CalendarConnectionInputError()
@@ -151,6 +162,7 @@ def replace_google_calendar_connection(
             session.delete(existing)
             session.flush()
 
+        account.calendar_connection_revision = next_revision
         replacement = _ProviderCalendarConnectionDB(
             id=connection_id,
             account_id=account.id,
@@ -183,12 +195,17 @@ def mark_google_calendar_authorization_required(
     """Mark only the connection observed by a failed credential use."""
 
     _require_command_transaction(session)
+    _require_no_pending_lifecycle_mutations(session)
     if not _valid_connection_id(expected_connection_id):
         raise CalendarConnectionInputError()
     supplied_at = _aware_utc(now) if now is not None else None
     try:
         account = _provider_account(session, account_id=account_id, lock=True)
-        row = _connection_for_account(session, account.id)
+        row = _connection_for_account(
+            session,
+            account.id,
+            refresh=True,
+        )
         if row is None or row.id != expected_connection_id:
             return _status(row)
         if row.authorization_required_at is not None:
@@ -216,12 +233,19 @@ def disconnect_google_calendar(
     """Idempotently remove one provider account's encrypted connection."""
 
     _require_command_transaction(session)
+    _require_no_pending_lifecycle_mutations(session)
     try:
         account = _provider_account(session, account_id=account_id, lock=True)
-        row = _connection_for_account(session, account.id)
+        next_revision = _next_calendar_connection_revision(account)
+        row = _connection_for_account(
+            session,
+            account.id,
+            refresh=True,
+        )
+        account.calendar_connection_revision = next_revision
         if row is not None:
             session.delete(row)
-            session.flush()
+        session.flush()
         return _status(None)
     except CalendarConnectionError:
         raise
@@ -241,11 +265,11 @@ def _provider_account(
     query = (
         session.query(_ProviderAccountDB)
         .filter(_ProviderAccountDB.id == account_id)
-        .populate_existing()
     )
     if lock:
-        query = query.with_for_update()
-    account = query.one_or_none()
+        query = query.populate_existing().with_for_update()
+    with session.no_autoflush:
+        account = query.one_or_none()
     if account is None:
         raise CalendarConnectionOwnerNotFound()
     return account
@@ -254,12 +278,29 @@ def _provider_account(
 def _connection_for_account(
     session: _Session,
     account_id: str,
+    *,
+    refresh: bool,
 ) -> Optional[_ProviderCalendarConnectionDB]:
-    return (
-        session.query(_ProviderCalendarConnectionDB)
-        .filter(_ProviderCalendarConnectionDB.account_id == account_id)
-        .one_or_none()
+    query = session.query(_ProviderCalendarConnectionDB).filter(
+        _ProviderCalendarConnectionDB.account_id == account_id
     )
+    if refresh:
+        query = query.populate_existing()
+    with session.no_autoflush:
+        return query.one_or_none()
+
+
+def _next_calendar_connection_revision(
+    account: _ProviderAccountDB,
+) -> int:
+    current = account.calendar_connection_revision
+    if (
+        type(current) is not int
+        or current < 0
+        or current >= _POSTGRESQL_BIGINT_MAX
+    ):
+        raise CalendarConnectionPersistenceError()
+    return current + 1
 
 
 def _unused_envelope(
@@ -321,6 +362,18 @@ def _require_command_transaction(session: _Session) -> None:
         or transaction.origin is not _SessionTransactionOrigin.BEGIN
     ):
         raise CalendarConnectionTransactionRequired()
+
+
+def _require_no_pending_lifecycle_mutations(session: _Session) -> None:
+    for collection in (session.new, session.dirty, session.deleted):
+        if any(
+            isinstance(
+                value,
+                (_ProviderAccountDB, _ProviderCalendarConnectionDB),
+            )
+            for value in collection
+        ):
+            raise CalendarConnectionPersistenceError()
 
 
 def _raise_sanitized_persistence_error() -> NoReturn:
