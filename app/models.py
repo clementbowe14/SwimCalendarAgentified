@@ -152,6 +152,10 @@ class ProviderAccountDB(Base):
     __tablename__ = "provider_accounts"
     __table_args__ = (
         CheckConstraint("session_version >= 1", name="ck_provider_accounts_session_version"),
+        CheckConstraint(
+            "calendar_connection_revision >= 0",
+            name="ck_provider_accounts_calendar_connection_revision_nonnegative",
+        ),
         UniqueConstraint("instructor_id", name="uq_provider_accounts_instructor_id"),
         UniqueConstraint("email_normalized", name="uq_provider_accounts_email_normalized"),
     )
@@ -162,6 +166,12 @@ class ProviderAccountDB(Base):
     password_hash = Column(Text, nullable=False)
     is_demo = Column(Boolean, nullable=False, default=False, server_default="false")
     session_version = Column(Integer, nullable=False, default=1, server_default="1")
+    calendar_connection_revision = Column(
+        BigInteger,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
     disabled_at = Column(DateTime(timezone=True), nullable=True)
     password_changed_at = Column(
         DateTime(timezone=True),
