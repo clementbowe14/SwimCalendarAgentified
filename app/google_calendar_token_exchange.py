@@ -194,6 +194,28 @@ def _exchange_google_calendar_authorization_code(
     code_verifier: object,
     transport: object,
 ) -> GoogleCalendarTokenExchangeResult:
+    fields = _prepare_google_calendar_authorization_code_exchange(
+        configuration=configuration,
+        authorization_code=authorization_code,
+        code_verifier=code_verifier,
+    )
+    post_form = getattr(transport, "post_form", None)
+    if not callable(post_form):
+        raise ValueError("invalid transport")
+    response = post_form(
+        url=GOOGLE_CALENDAR_TOKEN_ENDPOINT,
+        fields=fields,
+        timeout_seconds=_TOKEN_EXCHANGE_TIMEOUT_SECONDS,
+    )
+    return _complete_google_calendar_authorization_code_exchange(response)
+
+
+def _prepare_google_calendar_authorization_code_exchange(
+    *,
+    configuration: object,
+    authorization_code: object,
+    code_verifier: object,
+) -> tuple[tuple[str, str], ...]:
     client_id, redirect_uri, client_secret = _revalidated_exchange_configuration(
         configuration
     )
@@ -204,11 +226,7 @@ def _exchange_google_calendar_authorization_code(
     if type(code_verifier) is not str:
         raise ValueError("invalid verifier")
     derive_s256_code_challenge(code_verifier)
-
-    post_form = getattr(transport, "post_form", None)
-    if not callable(post_form):
-        raise ValueError("invalid transport")
-    fields = (
+    return (
         ("code", code),
         ("client_id", client_id),
         ("client_secret", client_secret),
@@ -216,11 +234,11 @@ def _exchange_google_calendar_authorization_code(
         ("grant_type", "authorization_code"),
         ("code_verifier", code_verifier),
     )
-    response = post_form(
-        url=GOOGLE_CALENDAR_TOKEN_ENDPOINT,
-        fields=fields,
-        timeout_seconds=_TOKEN_EXCHANGE_TIMEOUT_SECONDS,
-    )
+
+
+def _complete_google_calendar_authorization_code_exchange(
+    response: object,
+) -> GoogleCalendarTokenExchangeResult:
     refresh_token = _validated_refresh_token(response)
     return _new_exchange_result(refresh_token=refresh_token)
 
