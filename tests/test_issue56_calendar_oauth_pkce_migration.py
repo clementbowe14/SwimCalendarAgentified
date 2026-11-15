@@ -33,7 +33,7 @@ def use_test_database_for_alembic(monkeypatch):
     monkeypatch.setenv("SWIM_DATABASE_URL", TEST_DATABASE_URL)
 
 
-def test_pkce_revision_remains_between_oauth_state_and_current_head():
+def test_pkce_revision_remains_before_browser_binding_revision():
     script = ScriptDirectory.from_config(_config())
     assert script.get_revision(PKCE_REVISION).down_revision == (
         OAUTH_STATE_REVISION
@@ -41,7 +41,6 @@ def test_pkce_revision_remains_between_oauth_state_and_current_head():
     assert script.get_revision(BROWSER_BINDING_REVISION).down_revision == (
         PKCE_REVISION
     )
-    assert script.get_heads() == [BROWSER_BINDING_REVISION]
 
 
 def test_schema_contains_only_a_bound_encrypted_verifier_envelope(
@@ -427,6 +426,7 @@ def test_failed_downgrade_rolls_back_index_table_row_and_revision(
         created_at=now - datetime.timedelta(minutes=11),
         expires_at=now - datetime.timedelta(minutes=1),
     )
+    original_revision = _current_revision()
     original_drop_table = Operations.drop_table
 
     def fail_pkce_table_drop(self, table_name, *args, **kwargs):
@@ -444,7 +444,7 @@ def test_failed_downgrade_rolls_back_index_table_row_and_revision(
         index["name"] for index in inspector.get_indexes(TABLE_NAME)
     }
     assert _count_verifiers(digest) == 1
-    assert _current_revision() == BROWSER_BINDING_REVISION
+    assert _current_revision() == original_revision
 
 
 def test_expired_verifier_may_be_discarded_by_downgrade(
@@ -483,6 +483,7 @@ def test_active_verifier_refuses_downgrade_without_disclosing_or_losing_data(
             ),
             {"digest": digest},
         ).mappings().one()
+    original_revision = _current_revision()
 
     with pytest.raises(RuntimeError, match="authorization attempt is active") as exc_info:
         command.downgrade(_config(), OAUTH_STATE_REVISION)
@@ -496,7 +497,7 @@ def test_active_verifier_refuses_downgrade_without_disclosing_or_losing_data(
 
     assert inspect(db.engine).has_table(TABLE_NAME)
     assert _count_verifiers(digest) == 1
-    assert _current_revision() == BROWSER_BINDING_REVISION
+    assert _current_revision() == original_revision
 
 
 @pytest.mark.parametrize(
@@ -510,6 +511,7 @@ def test_downgrade_lock_contention_preserves_schema_row_and_revision(
     digest = _persist_state_with_verifier(
         suffix=f"downgrade-lock-{locked_table}"
     )
+    original_revision = _current_revision()
 
     with db.engine.connect() as locking_connection:
         locking_transaction = locking_connection.begin()
@@ -525,7 +527,7 @@ def test_downgrade_lock_contention_preserves_schema_row_and_revision(
 
     assert inspect(db.engine).has_table(TABLE_NAME)
     assert _count_verifiers(digest) == 1
-    assert _current_revision() == BROWSER_BINDING_REVISION
+    assert _current_revision() == original_revision
 
 
 def test_upgrade_lock_contention_preserves_previous_schema_and_revision(
@@ -674,10 +676,34 @@ def _persist_state_without_binding_column(*, suffix: str) -> bytes:
     state_digest = hashlib.sha256(
         f"pkce-state-{suffix}".encode()
     ).digest()
-    with db.SessionLocal() as session:
-        account = _demo_account(session)
-        provider_session = _add_session(session, account, suffix=suffix)
-        session.execute(
+    session_id = f"sess_pkce_{suffix}"
+    with db.engine.begin() as connection:
+        account = connection.execute(
+            text(
+                "SELECT id, session_version FROM provider_accounts "
+                "WHERE instructor_id = 'inst_001'"
+            )
+        ).mappings().one()
+        connection.execute(
+            text(
+                "INSERT INTO provider_sessions "
+                "(id, account_id, token_digest, session_version, created_at, "
+                "expires_at, revoked_at, revocation_reason) "
+                "VALUES (:session_id, :account_id, :token_digest, "
+                ":session_version, :created_at, :expires_at, NULL, NULL)"
+            ),
+            {
+                "session_id": session_id,
+                "account_id": account["id"],
+                "token_digest": hashlib.sha256(
+                    f"pkce-session-token-{suffix}".encode()
+                ).digest(),
+                "session_version": account["session_version"],
+                "created_at": created_at - datetime.timedelta(minutes=1),
+                "expires_at": created_at + datetime.timedelta(hours=1),
+            },
+        )
+        connection.execute(
             text(
                 "INSERT INTO provider_calendar_oauth_states "
                 "(state_digest, account_id, session_id, provider, created_at, "
@@ -686,13 +712,12 @@ def _persist_state_without_binding_column(*, suffix: str) -> bytes:
             ),
             {
                 "state_digest": state_digest,
-                "account_id": account.id,
-                "session_id": provider_session.id,
+                "account_id": account["id"],
+                "session_id": session_id,
                 "created_at": created_at,
                 "expires_at": created_at + datetime.timedelta(minutes=10),
             },
         )
-        session.commit()
     return state_digest
 
 

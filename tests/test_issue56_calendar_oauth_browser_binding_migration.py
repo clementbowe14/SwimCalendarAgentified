@@ -28,12 +28,11 @@ def use_test_database_for_alembic(monkeypatch):
     monkeypatch.setenv("SWIM_DATABASE_URL", TEST_DATABASE_URL)
 
 
-def test_browser_binding_revision_is_the_only_alembic_head():
+def test_browser_binding_revision_remains_in_linear_alembic_history():
     script = ScriptDirectory.from_config(_config())
     assert script.get_revision(BINDING_REVISION).down_revision == (
         PKCE_REVISION
     )
-    assert script.get_heads() == [BINDING_REVISION]
 
 
 def test_schema_adds_one_optional_digest_with_fixed_invariants(
@@ -258,6 +257,7 @@ def test_active_binding_refuses_downgrade_without_disclosure_or_loss(
         suffix="active-binding",
         browser_binding_digest=binding_digest,
     )
+    original_revision = _current_revision()
 
     with pytest.raises(RuntimeError, match="authorization attempt is active") as raised:
         command.downgrade(_config(), PKCE_REVISION)
@@ -270,7 +270,7 @@ def test_active_binding_refuses_downgrade_without_disclosure_or_loss(
     ):
         assert private not in message
 
-    assert _current_revision() == BINDING_REVISION
+    assert _current_revision() == original_revision
     assert _stored_binding(state_digest) == binding_digest
 
 
@@ -315,6 +315,7 @@ def test_failed_downgrade_rolls_back_schema_row_and_revision(
         created_at=now - datetime.timedelta(minutes=11),
         expires_at=now - datetime.timedelta(minutes=1),
     )
+    original_revision = _current_revision()
     original_drop_column = Operations.drop_column
 
     def fail_binding_column_drop(self, table_name, column_name, *args, **kwargs):
@@ -343,7 +344,7 @@ def test_failed_downgrade_rolls_back_schema_row_and_revision(
         index["name"] for index in inspector.get_indexes(TABLE_NAME)
     }
     assert _stored_binding(state_digest) == binding_digest
-    assert _current_revision() == BINDING_REVISION
+    assert _current_revision() == original_revision
 
 
 def test_upgrade_lock_contention_preserves_previous_schema_and_revision(
@@ -382,6 +383,7 @@ def test_downgrade_lock_contention_preserves_binding_and_revision(
         suffix="locked-binding",
         browser_binding_digest=binding_digest,
     )
+    original_revision = _current_revision()
 
     with db.engine.connect() as locking_connection:
         transaction = locking_connection.begin()
@@ -399,7 +401,7 @@ def test_downgrade_lock_contention_preserves_binding_and_revision(
             transaction.rollback()
 
     assert _stored_binding(state_digest) == binding_digest
-    assert _current_revision() == BINDING_REVISION
+    assert _current_revision() == original_revision
 
 
 def _insert_state(

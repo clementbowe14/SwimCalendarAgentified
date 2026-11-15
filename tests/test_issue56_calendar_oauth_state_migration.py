@@ -23,7 +23,7 @@ from tests.db_test_utils import TEST_DATABASE_URL
 PREVIOUS_REVISION = "20261112_0015"
 OAUTH_STATE_REVISION = "20261112_0016"
 PKCE_REVISION = "20261112_0017"
-CURRENT_HEAD_REVISION = "20261113_0018"
+BROWSER_BINDING_REVISION = "20261113_0018"
 
 
 @pytest.fixture(autouse=True)
@@ -37,10 +37,9 @@ def test_oauth_state_revision_remains_in_linear_alembic_history():
     assert script.get_revision(PKCE_REVISION).down_revision == (
         OAUTH_STATE_REVISION
     )
-    assert script.get_revision(CURRENT_HEAD_REVISION).down_revision == (
+    assert script.get_revision(BROWSER_BINDING_REVISION).down_revision == (
         PKCE_REVISION
     )
-    assert script.get_heads() == [CURRENT_HEAD_REVISION]
 
 
 def test_schema_is_digest_only_and_binds_account_to_session(
@@ -748,6 +747,7 @@ def test_active_state_refuses_downgrade_without_disclosing_or_losing_data(
         session_id = provider_session.id
         session.add(ProviderCalendarOAuthStateDB(**values))
         session.commit()
+    original_revision = _database_revision()
 
     with pytest.raises(RuntimeError, match="authorization attempt is active") as exc_info:
         command.downgrade(_config(), PREVIOUS_REVISION)
@@ -762,7 +762,7 @@ def test_active_state_refuses_downgrade_without_disclosing_or_losing_data(
         assert _count_state(connection, values["state_digest"]) == 1
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == CURRENT_HEAD_REVISION
+        ).scalar_one() == original_revision
 
 
 @pytest.mark.parametrize(
@@ -790,6 +790,7 @@ def test_downgrade_lock_contention_preserves_schema_row_and_revision(
         )
         session.add(ProviderCalendarOAuthStateDB(**values))
         session.commit()
+    original_revision = _database_revision()
 
     with db.engine.connect() as locking_connection:
         locking_transaction = locking_connection.begin()
@@ -817,7 +818,7 @@ def test_downgrade_lock_contention_preserves_schema_row_and_revision(
         assert _count_state(connection, values["state_digest"]) == 1
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == CURRENT_HEAD_REVISION
+        ).scalar_one() == original_revision
 
 
 def test_upgrade_lock_contention_preserves_previous_schema_and_revision(
@@ -940,6 +941,13 @@ def _count_state(connection, digest: bytes) -> int:
         ),
         {"digest": digest},
     ).scalar_one()
+
+
+def _database_revision() -> str:
+    with db.engine.connect() as connection:
+        return connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one()
 
 
 def _config() -> Config:
