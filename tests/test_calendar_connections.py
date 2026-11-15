@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import datetime
 import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields
 
 import pytest
+from sqlalchemy import event, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app import calendar_connections, calendar_credentials, db
 from app.calendar_connections import (
@@ -36,6 +39,7 @@ CIPHER = CalendarCredentialCipher(
     keys={KEY_ID: b"r" * 32},
 )
 T0 = datetime.datetime(2026, 11, 12, 14, 0, tzinfo=UTC)
+POSTGRESQL_BIGINT_MAX = 9_223_372_036_854_775_807
 
 
 def test_status_projection_is_disconnected_and_owner_errors_are_identifier_free(
@@ -90,11 +94,78 @@ def test_status_projection_is_disconnected_and_owner_errors_are_identifier_free(
     assert missing_id not in repr(exc_info.value)
 
 
+def test_status_read_preserves_pending_account_security_changes(
+    migrated_postgres_db,
+):
+    account_id, _ = _demo_owner()
+    session = db.SessionLocal()
+    transaction = session.begin()
+    try:
+        account = session.get(ProviderAccountDB, account_id)
+        original_session_version = account.session_version
+        account.disabled_at = T0
+        account.session_version += 1
+
+        status = calendar_connections.get_google_calendar_connection_status(
+            session,
+            account_id=account_id,
+        )
+
+        assert status.state == "disconnected"
+        assert account.disabled_at == T0
+        assert account.session_version == original_session_version + 1
+        assert account in session.dirty
+        transaction.rollback()
+    finally:
+        session.close()
+
+    with db.SessionLocal() as session:
+        persisted = session.get(ProviderAccountDB, account_id)
+        assert persisted.disabled_at is None
+        assert persisted.session_version == original_session_version
+
+
+def test_status_read_preserves_pending_connection_changes(
+    migrated_postgres_db,
+):
+    account_id, _ = _demo_owner()
+    _replace(account_id, token="pending-status-connection", now=T0)
+    pending_mark = T0 + datetime.timedelta(minutes=1)
+
+    session = db.SessionLocal()
+    transaction = session.begin()
+    try:
+        connection = session.query(ProviderCalendarConnectionDB).filter_by(
+            account_id=account_id
+        ).one()
+        connection.authorization_required_at = pending_mark
+        connection.updated_at = pending_mark
+
+        status = calendar_connections.get_google_calendar_connection_status(
+            session,
+            account_id=account_id,
+        )
+
+        assert status.state == "authorization_required"
+        assert status.authorization_required_at == pending_mark
+        assert status.updated_at == pending_mark
+        assert connection in session.dirty
+        transaction.rollback()
+    finally:
+        session.close()
+
+    persisted = _stored_envelope(account_id)
+    assert persisted["authorization_required_at"] is None
+    assert persisted["updated_at"] == T0
+    assert _stored_revision(account_id) == 1
+
+
 def test_replace_persists_only_an_encrypted_owner_bound_envelope(
     migrated_postgres_db,
 ):
     token = "distinctive-repository-refresh-token"
     account_id, instructor_id = _demo_owner()
+    assert _stored_revision(account_id) == 0
 
     status = _replace(account_id, token=token, now=T0)
 
@@ -105,6 +176,7 @@ def test_replace_persists_only_an_encrypted_owner_bound_envelope(
     assert status.authorization_required_at is None
     assert token not in repr(status)
     assert KEY_ID not in repr(status)
+    assert _stored_revision(account_id) == 1
 
     with db.SessionLocal() as session:
         row = session.query(ProviderCalendarConnectionDB).filter_by(
@@ -171,6 +243,106 @@ def test_locked_replace_refreshes_cached_owner_before_building_aad(
                 ),
             )
 
+    assert _stored_revision(account_id) == 1
+
+
+def test_locked_replace_refreshes_a_cached_connection_after_competing_update(
+    migrated_postgres_db,
+):
+    account_id, _ = _demo_owner()
+    _replace(account_id, token="cached-connection", now=T0)
+    original = _stored_envelope(account_id)
+    marked_at = T0 + datetime.timedelta(minutes=2)
+
+    session = db.SessionLocal()
+    transaction = session.begin()
+    try:
+        cached = session.query(ProviderCalendarConnectionDB).filter_by(
+            account_id=account_id
+        ).one()
+        assert cached.id == original["id"]
+        assert cached.authorization_required_at is None
+
+        with db.SessionLocal.begin() as other_session:
+            marked = (
+                calendar_connections.mark_google_calendar_authorization_required(
+                    other_session,
+                    account_id=account_id,
+                    expected_connection_id=original["id"],
+                    now=marked_at,
+                )
+            )
+        assert marked.authorization_required_at == marked_at
+
+        with pytest.raises(
+            calendar_connections.CalendarConnectionInputError
+        ):
+            calendar_connections.replace_google_calendar_connection(
+                session,
+                account_id=account_id,
+                refresh_token="must-not-replace-newer-state",
+                cipher=CIPHER,
+                now=T0 + datetime.timedelta(minutes=1),
+            )
+        transaction.rollback()
+    finally:
+        session.close()
+
+    final = _stored_envelope(account_id)
+    assert final["id"] == original["id"]
+    assert final["nonce"] == original["nonce"]
+    assert final["ciphertext"] == original["ciphertext"]
+    assert final["authorization_required_at"] == marked_at
+    assert _stored_revision(account_id) == 1
+
+
+def test_locked_recovery_mark_refreshes_a_cached_competing_update(
+    migrated_postgres_db,
+):
+    account_id, _ = _demo_owner()
+    _replace(account_id, token="cached-recovery-mark", now=T0)
+    connection_id = _stored_envelope(account_id)["id"]
+    first_marked_at = T0 + datetime.timedelta(minutes=1)
+
+    session = db.SessionLocal()
+    transaction = session.begin()
+    try:
+        cached = session.query(ProviderCalendarConnectionDB).filter_by(
+            account_id=account_id
+        ).one()
+        assert cached.authorization_required_at is None
+
+        with db.SessionLocal.begin() as other_session:
+            first = (
+                calendar_connections.mark_google_calendar_authorization_required(
+                    other_session,
+                    account_id=account_id,
+                    expected_connection_id=connection_id,
+                    now=first_marked_at,
+                )
+            )
+        assert first.authorization_required_at == first_marked_at
+
+        repeated = (
+            calendar_connections.mark_google_calendar_authorization_required(
+                session,
+                account_id=account_id,
+                expected_connection_id=connection_id,
+                now=T0 + datetime.timedelta(minutes=2),
+            )
+        )
+        assert repeated.authorization_required_at == first_marked_at
+        assert repeated.updated_at == first_marked_at
+        transaction.rollback()
+    finally:
+        session.close()
+
+    final = _stored_envelope(account_id)
+    assert final["id"] == connection_id
+    assert final["authorization_required_at"] == first_marked_at
+    assert final["updated_at"] == first_marked_at
+    assert _stored_revision(account_id) == 1
+
 
 def test_replacement_rotates_identity_nonce_and_clears_recovery(
     migrated_postgres_db,
@@ -178,6 +350,7 @@ def test_replacement_rotates_identity_nonce_and_clears_recovery(
     account_id, _ = _demo_owner()
     _replace(account_id, token="same-token", now=T0)
     old = _stored_envelope(account_id)
+    assert _stored_revision(account_id) == 1
 
     with db.SessionLocal.begin() as session:
         marked = calendar_connections.mark_google_calendar_authorization_required(
@@ -187,6 +360,7 @@ def test_replacement_rotates_identity_nonce_and_clears_recovery(
             now=T0 + datetime.timedelta(minutes=1),
         )
     assert marked.state == "authorization_required"
+    assert _stored_revision(account_id) == 1
 
     replacement = _replace(
         account_id,
@@ -201,6 +375,7 @@ def test_replacement_rotates_identity_nonce_and_clears_recovery(
     assert new["nonce"] != old["nonce"]
     assert new["ciphertext"] != old["ciphertext"]
     assert new["authorization_required_at"] is None
+    assert _stored_revision(account_id) == 2
     with db.SessionLocal() as session:
         assert session.query(ProviderCalendarConnectionDB).filter_by(
             account_id=account_id
@@ -245,6 +420,8 @@ def test_old_and_cross_tenant_nonce_collisions_fail_before_mutation(
     )
     assert _stored_envelope(first_id) == first_old
     assert _stored_envelope(second_id) == second_old
+    assert _stored_revision(first_id) == 1
+    assert _stored_revision(second_id) == 1
 
     monkeypatch.setattr(
         calendar_credentials.os,
@@ -268,6 +445,8 @@ def test_old_and_cross_tenant_nonce_collisions_fail_before_mutation(
     )
     assert _stored_envelope(first_id) == first_old
     assert _stored_envelope(second_id) == second_old
+    assert _stored_revision(first_id) == 1
+    assert _stored_revision(second_id) == 1
     _assert_log_safe(
         caplog.text,
         "first-new",
@@ -358,9 +537,11 @@ def test_cross_account_nonce_race_uses_unique_index_and_restores_loser(
         account_id for account_id, outcome in outcomes if outcome == "connected"
     )
     assert _stored_envelope(loser_id) == originals[loser_id]
+    assert _stored_revision(loser_id) == 1
     winner = _stored_envelope(winner_id)
     assert winner["id"] != originals[winner_id]["id"]
     assert winner["nonce"] == shared_nonce
+    assert _stored_revision(winner_id) == 2
 
 
 def test_database_failure_preserves_old_connection_and_hides_secret(
@@ -372,6 +553,7 @@ def test_database_failure_preserves_old_connection_and_hides_secret(
     token = "credential-that-must-survive"
     _replace(account_id, token=token, now=T0)
     original = _stored_envelope(account_id)
+    original_revision = _stored_revision(account_id)
 
     class InvalidUuid:
         hex = "g" * 32
@@ -391,6 +573,7 @@ def test_database_failure_preserves_old_connection_and_hides_secret(
         KEY_ID,
     )
     assert _stored_envelope(account_id) == original
+    assert _stored_revision(account_id) == original_revision
 
     monkeypatch.undo()
     _replace(
@@ -399,6 +582,7 @@ def test_database_failure_preserves_old_connection_and_hides_secret(
         now=T0 + datetime.timedelta(minutes=2),
     )
     assert _stored_envelope(account_id)["id"] != original["id"]
+    assert _stored_revision(account_id) == original_revision + 1
 
 
 def test_encryption_failure_and_caller_rollback_preserve_prior_connection(
@@ -407,6 +591,7 @@ def test_encryption_failure_and_caller_rollback_preserve_prior_connection(
     account_id, _ = _demo_owner()
     _replace(account_id, token="original-token", now=T0)
     original = _stored_envelope(account_id)
+    original_revision = _stored_revision(account_id)
 
     with pytest.raises(CalendarCredentialInputError):
         _replace(
@@ -415,6 +600,7 @@ def test_encryption_failure_and_caller_rollback_preserve_prior_connection(
             now=T0 + datetime.timedelta(minutes=1),
         )
     assert _stored_envelope(account_id) == original
+    assert _stored_revision(account_id) == original_revision
 
     session = db.SessionLocal()
     transaction = session.begin()
@@ -430,6 +616,7 @@ def test_encryption_failure_and_caller_rollback_preserve_prior_connection(
     finally:
         session.close()
     assert _stored_envelope(account_id) == original
+    assert _stored_revision(account_id) == original_revision
 
 
 def test_recovery_mark_is_idempotent_and_stale_mark_cannot_poison_replacement(
@@ -457,6 +644,7 @@ def test_recovery_mark_is_idempotent_and_stale_mark_cannot_poison_replacement(
     assert first.authorization_required_at == first_mark
     assert repeated.authorization_required_at == first_mark
     assert repeated.updated_at == first_mark
+    assert _stored_revision(account_id) == 1
 
     _replace(
         account_id,
@@ -473,6 +661,7 @@ def test_recovery_mark_is_idempotent_and_stale_mark_cannot_poison_replacement(
         )
     assert stale.state == "connected"
     assert _stored_envelope(account_id) == replacement
+    assert _stored_revision(account_id) == 2
 
     with db.SessionLocal.begin() as session:
         calendar_connections.disconnect_google_calendar(
@@ -487,6 +676,7 @@ def test_recovery_mark_is_idempotent_and_stale_mark_cannot_poison_replacement(
             now=first_mark + datetime.timedelta(minutes=4),
         )
     assert disconnected.state == "disconnected"
+    assert _stored_revision(account_id) == 3
 
 
 def test_disconnect_is_idempotent_and_tenant_scoped(migrated_postgres_db):
@@ -496,13 +686,14 @@ def test_disconnect_is_idempotent_and_tenant_scoped(migrated_postgres_db):
     _replace(second_id, token="second-token", now=T0)
     second_before = _stored_envelope(second_id)
 
-    for _ in range(2):
+    for expected_revision in (2, 3):
         with db.SessionLocal.begin() as session:
             status = calendar_connections.disconnect_google_calendar(
                 session,
                 account_id=first_id,
             )
         assert status.state == "disconnected"
+        assert _stored_revision(first_id) == expected_revision
 
     with db.SessionLocal() as session:
         assert session.get(ProviderAccountDB, first_id) is not None
@@ -510,6 +701,7 @@ def test_disconnect_is_idempotent_and_tenant_scoped(migrated_postgres_db):
             account_id=first_id
         ).one_or_none() is None
     assert _stored_envelope(second_id) == second_before
+    assert _stored_revision(second_id) == 1
 
     with db.SessionLocal.begin() as session:
         unchanged = calendar_connections.mark_google_calendar_authorization_required(
@@ -520,6 +712,165 @@ def test_disconnect_is_idempotent_and_tenant_scoped(migrated_postgres_db):
         )
     assert unchanged.state == "disconnected"
     assert _stored_envelope(second_id) == second_before
+    assert _stored_revision(first_id) == 3
+    assert _stored_revision(second_id) == 1
+
+
+def test_disconnect_rollback_restores_connected_and_disconnected_states(
+    migrated_postgres_db,
+):
+    account_id, _ = _demo_owner()
+    _replace(account_id, token="disconnect-rollback", now=T0)
+    original = _stored_envelope(account_id)
+
+    session = db.SessionLocal()
+    transaction = session.begin()
+    try:
+        status = calendar_connections.disconnect_google_calendar(
+            session,
+            account_id=account_id,
+        )
+        assert status.state == "disconnected"
+        assert session.get(
+            ProviderAccountDB,
+            account_id,
+        ).calendar_connection_revision == 2
+        transaction.rollback()
+    finally:
+        session.close()
+    assert _stored_envelope(account_id) == original
+    assert _stored_revision(account_id) == 1
+
+    with db.SessionLocal.begin() as session:
+        calendar_connections.disconnect_google_calendar(
+            session,
+            account_id=account_id,
+        )
+    assert _stored_envelope(account_id, required=False) is None
+    assert _stored_revision(account_id) == 2
+
+    session = db.SessionLocal()
+    transaction = session.begin()
+    try:
+        status = calendar_connections.disconnect_google_calendar(
+            session,
+            account_id=account_id,
+        )
+        assert status.state == "disconnected"
+        assert session.get(
+            ProviderAccountDB,
+            account_id,
+        ).calendar_connection_revision == 3
+        transaction.rollback()
+    finally:
+        session.close()
+    assert _stored_envelope(account_id, required=False) is None
+    assert _stored_revision(account_id) == 2
+
+
+def test_disconnect_flush_failure_restores_connection_and_revision(
+    migrated_postgres_db,
+    monkeypatch,
+):
+    account_id, _ = _demo_owner()
+    _replace(account_id, token="disconnect-flush-failure", now=T0)
+    original = _stored_envelope(account_id)
+
+    session = db.SessionLocal()
+    transaction = session.begin()
+
+    def fail_flush(*args, **kwargs):
+        raise SQLAlchemyError("forced disconnect flush failure")
+
+    monkeypatch.setattr(session, "flush", fail_flush)
+    try:
+        with pytest.raises(CalendarConnectionPersistenceError) as raised:
+            calendar_connections.disconnect_google_calendar(
+                session,
+                account_id=account_id,
+            )
+        _assert_error_safe(raised.value, account_id)
+        transaction.rollback()
+    finally:
+        session.close()
+
+    assert _stored_envelope(account_id) == original
+    assert _stored_revision(account_id) == 1
+
+
+def test_last_available_revision_increment_succeeds_then_exhaustion_fails(
+    migrated_postgres_db,
+):
+    account_id, _ = _demo_owner()
+    _set_revision(account_id, POSTGRESQL_BIGINT_MAX - 1)
+
+    with db.SessionLocal.begin() as session:
+        status = calendar_connections.disconnect_google_calendar(
+            session,
+            account_id=account_id,
+        )
+
+    assert status.state == "disconnected"
+    assert _stored_revision(account_id) == POSTGRESQL_BIGINT_MAX
+    with pytest.raises(CalendarConnectionPersistenceError) as raised:
+        with db.SessionLocal.begin() as session:
+            calendar_connections.disconnect_google_calendar(
+                session,
+                account_id=account_id,
+            )
+    _assert_error_safe(raised.value, account_id)
+    assert _stored_revision(account_id) == POSTGRESQL_BIGINT_MAX
+    assert _stored_envelope(account_id, required=False) is None
+
+    with db.SessionLocal() as session:
+        status = calendar_connections.get_google_calendar_connection_status(
+            session,
+            account_id=account_id,
+        )
+    with db.SessionLocal.begin() as session:
+        recovery = calendar_connections.mark_google_calendar_authorization_required(
+            session,
+            account_id=account_id,
+            expected_connection_id="calconn_" + "1" * 32,
+            now=T0,
+        )
+    assert status.state == "disconnected"
+    assert recovery.state == "disconnected"
+    assert _stored_revision(account_id) == POSTGRESQL_BIGINT_MAX
+
+
+@pytest.mark.parametrize("operation", ["replace", "disconnect"])
+def test_revision_exhaustion_preserves_existing_connection(
+    migrated_postgres_db,
+    operation,
+):
+    account_id, _ = _demo_owner()
+    _replace(account_id, token="before-exhaustion", now=T0)
+    original = _stored_envelope(account_id)
+    _set_revision(account_id, POSTGRESQL_BIGINT_MAX)
+
+    with pytest.raises(CalendarConnectionPersistenceError) as raised:
+        if operation == "replace":
+            _replace(
+                account_id,
+                token="exhaustion-secret",
+                now=T0 + datetime.timedelta(minutes=1),
+            )
+        else:
+            with db.SessionLocal.begin() as session:
+                calendar_connections.disconnect_google_calendar(
+                    session,
+                    account_id=account_id,
+                )
+
+    _assert_error_safe(
+        raised.value,
+        account_id,
+        "exhaustion-secret",
+        str(POSTGRESQL_BIGINT_MAX),
+    )
+    assert _stored_revision(account_id) == POSTGRESQL_BIGINT_MAX
+    assert _stored_envelope(account_id) == original
 
 
 def test_commands_require_a_caller_owned_transaction(migrated_postgres_db):
@@ -559,6 +910,84 @@ def test_commands_require_a_caller_owned_transaction(migrated_postgres_db):
     finally:
         session.close()
     assert _stored_envelope(account_id, required=False) is None
+    assert _stored_revision(account_id) == 0
+
+
+def test_pending_lifecycle_mutation_is_rejected_before_command_lock(
+    migrated_postgres_db,
+):
+    account_id, _ = _demo_owner()
+    session = db.SessionLocal()
+    transaction = session.begin()
+    try:
+        account = session.get(ProviderAccountDB, account_id)
+        account.calendar_connection_revision = 12
+        with pytest.raises(CalendarConnectionPersistenceError) as raised:
+            calendar_connections.disconnect_google_calendar(
+                session,
+                account_id=account_id,
+            )
+        _assert_error_safe(raised.value, account_id, "12")
+        transaction.rollback()
+    finally:
+        session.close()
+
+    assert _stored_revision(account_id) == 0
+    assert _stored_envelope(account_id, required=False) is None
+
+
+def test_unrelated_pending_write_flushes_after_provider_account_lock(
+    migrated_postgres_db,
+):
+    account_id, _ = _demo_owner()
+    statements = []
+
+    def record_statement(
+        connection,
+        cursor,
+        statement,
+        parameters,
+        context,
+        executemany,
+    ):
+        statements.append(statement.lower())
+
+    event.listen(db.engine, "before_cursor_execute", record_statement)
+    try:
+        with db.SessionLocal.begin() as session:
+            session.add(
+                InstructorDB(
+                    id="inst_calendar_repository_pending-unrelated",
+                    name="Pending Unrelated Instructor",
+                    main_address="1 Pending Way",
+                    lat=30.2,
+                    lng=-97.2,
+                    work_start_time="08:00",
+                    work_end_time="17:00",
+                    timezone="America/Chicago",
+                )
+            )
+            status = calendar_connections.disconnect_google_calendar(
+                session,
+                account_id=account_id,
+            )
+    finally:
+        event.remove(db.engine, "before_cursor_execute", record_statement)
+
+    account_lock_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "from provider_accounts" in statement
+        and "for update" in statement
+    )
+    instructor_insert_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if statement.lstrip().startswith("insert into instructors")
+    )
+    assert status.state == "disconnected"
+    assert account_lock_index < instructor_insert_index
+    assert _stored_revision(account_id) == 1
 
 
 def test_concurrent_replacements_serialize_to_one_valid_connection(
@@ -599,6 +1028,7 @@ def test_concurrent_replacements_serialize_to_one_valid_connection(
             ),
         )
     assert final_token in {"concurrent-token-1", "concurrent-token-2"}
+    assert _stored_revision(account_id) == 2
 
 
 def test_replacement_and_stale_recovery_race_leaves_replacement_healthy(
@@ -639,6 +1069,82 @@ def test_replacement_and_stale_recovery_race_leaves_replacement_healthy(
     final = _stored_envelope(account_id)
     assert final["id"] != original_id
     assert final["authorization_required_at"] is None
+    assert _stored_revision(account_id) == 2
+
+
+@pytest.mark.parametrize("first_operation", ["replace", "disconnect"])
+def test_replacement_and_disconnect_serialize_without_lost_revision(
+    migrated_postgres_db,
+    first_operation,
+):
+    account_id, _ = _demo_owner()
+    _replace(account_id, token="before-mixed-command-race", now=T0)
+    first_has_lock = threading.Event()
+    allow_first_commit = threading.Event()
+    second_backend_ready = threading.Event()
+    second_backend_pid = []
+
+    def run(
+        operation: str,
+        *,
+        wait_before_commit: bool,
+        report_backend: bool = False,
+    ):
+        with db.SessionLocal.begin() as session:
+            if report_backend:
+                second_backend_pid.append(
+                    session.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                )
+                second_backend_ready.set()
+            if operation == "replace":
+                status = calendar_connections.replace_google_calendar_connection(
+                    session,
+                    account_id=account_id,
+                    refresh_token="mixed-command-replacement",
+                    cipher=CIPHER,
+                    now=T0 + datetime.timedelta(minutes=1),
+                )
+            else:
+                status = calendar_connections.disconnect_google_calendar(
+                    session,
+                    account_id=account_id,
+                )
+            if wait_before_commit:
+                first_has_lock.set()
+                assert allow_first_commit.wait(timeout=5)
+            return status
+
+    second_operation = (
+        "disconnect" if first_operation == "replace" else "replace"
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(
+            run,
+            first_operation,
+            wait_before_commit=True,
+        )
+        assert first_has_lock.wait(timeout=5)
+        second_future = executor.submit(
+            run,
+            second_operation,
+            wait_before_commit=False,
+            report_backend=True,
+        )
+        assert second_backend_ready.wait(timeout=5)
+        _wait_until_database_blocked(second_backend_pid[0])
+        allow_first_commit.set()
+        first_status = first_future.result(timeout=10)
+        second_status = second_future.result(timeout=10)
+
+    assert first_status.state == (
+        "connected" if first_operation == "replace" else "disconnected"
+    )
+    assert second_status.state == (
+        "connected" if second_operation == "replace" else "disconnected"
+    )
+    assert _stored_revision(account_id) == 3
+    final = _stored_envelope(account_id, required=False)
+    assert (final is not None) is (second_operation == "replace")
 
 
 def test_concurrent_disconnects_are_both_idempotent(migrated_postgres_db):
@@ -664,6 +1170,7 @@ def test_concurrent_disconnects_are_both_idempotent(migrated_postgres_db):
         "disconnected",
     ]
     assert _stored_envelope(account_id, required=False) is None
+    assert _stored_revision(account_id) == 3
 
 
 def _replace(
@@ -742,6 +1249,36 @@ def _stored_envelope(account_id: str, *, required: bool = True):
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }
+
+
+def _stored_revision(account_id: str) -> int:
+    with db.SessionLocal() as session:
+        account = session.get(ProviderAccountDB, account_id)
+        assert account is not None
+        return account.calendar_connection_revision
+
+
+def _set_revision(account_id: str, revision: int) -> None:
+    with db.SessionLocal.begin() as session:
+        account = session.get(ProviderAccountDB, account_id)
+        assert account is not None
+        account.calendar_connection_revision = revision
+
+
+def _wait_until_database_blocked(backend_pid: int) -> None:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with db.engine.connect() as connection:
+            blocked = connection.execute(
+                text(
+                    "SELECT cardinality(pg_blocking_pids(:backend_pid)) > 0"
+                ),
+                {"backend_pid": backend_pid},
+            ).scalar_one()
+        if blocked:
+            return
+        time.sleep(0.01)
+    raise AssertionError("The competing database operation did not block.")
 
 
 def _envelope(row: ProviderCalendarConnectionDB) -> EncryptedCalendarCredential:
