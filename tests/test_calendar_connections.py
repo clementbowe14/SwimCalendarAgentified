@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import threading
 import time
 import traceback
@@ -8,8 +9,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields
 
 import pytest
-from sqlalchemy import event, text
+from sqlalchemy import create_engine, event, inspect as sqlalchemy_inspect, text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from app import calendar_connections, calendar_credentials, db
 from app.calendar_connections import (
@@ -25,10 +27,19 @@ from app.calendar_credentials import (
     CalendarCredentialScope,
     EncryptedCalendarCredential,
 )
+from app.calendar_oauth_pkce import CalendarOAuthPKCECipher
+from app.calendar_oauth_states import (
+    CalendarOAuthStateInvalid,
+    consume_google_calendar_oauth_state_with_pkce_and_browser_binding,
+    issue_google_calendar_oauth_state_with_pkce_and_browser_binding,
+)
 from app.models import (
     InstructorDB,
     ProviderAccountDB,
     ProviderCalendarConnectionDB,
+    ProviderCalendarOAuthPKCEVerifierDB,
+    ProviderCalendarOAuthStateDB,
+    ProviderSessionDB,
 )
 
 
@@ -37,6 +48,10 @@ KEY_ID = "repository-key-2026"
 CIPHER = CalendarCredentialCipher(
     active_key_id=KEY_ID,
     keys={KEY_ID: b"r" * 32},
+)
+OAUTH_PKCE_CIPHER = CalendarOAuthPKCECipher(
+    active_key_id="oauth-state-cancellation-key",
+    root_keys={"oauth-state-cancellation-key": b"p" * 32},
 )
 T0 = datetime.datetime(2026, 11, 12, 14, 0, tzinfo=UTC)
 POSTGRESQL_BIGINT_MAX = 9_223_372_036_854_775_807
@@ -252,6 +267,8 @@ def test_locked_replace_refreshes_a_cached_connection_after_competing_update(
     account_id, _ = _demo_owner()
     _replace(account_id, token="cached-connection", now=T0)
     original = _stored_envelope(account_id)
+    _issue_pending_oauth_state(account_id, "stale-timestamp")
+    original_oauth_rows = _stored_oauth_rows(account_id)
     marked_at = T0 + datetime.timedelta(minutes=2)
 
     session = db.SessionLocal()
@@ -294,6 +311,7 @@ def test_locked_replace_refreshes_a_cached_connection_after_competing_update(
     assert final["ciphertext"] == original["ciphertext"]
     assert final["authorization_required_at"] == marked_at
     assert _stored_revision(account_id) == 1
+    assert _stored_oauth_rows(account_id) == original_oauth_rows
 
 
 def test_locked_recovery_mark_refreshes_a_cached_competing_update(
@@ -393,6 +411,8 @@ def test_old_and_cross_tenant_nonce_collisions_fail_before_mutation(
     _replace(second_id, token="second-token", now=T0)
     first_old = _stored_envelope(first_id)
     second_old = _stored_envelope(second_id)
+    _issue_pending_oauth_state(first_id, "nonce-collision")
+    original_oauth_rows = _stored_oauth_rows(first_id)
 
     class FixedUuid:
         hex = "a" * 32
@@ -422,6 +442,7 @@ def test_old_and_cross_tenant_nonce_collisions_fail_before_mutation(
     assert _stored_envelope(second_id) == second_old
     assert _stored_revision(first_id) == 1
     assert _stored_revision(second_id) == 1
+    assert _stored_oauth_rows(first_id) == original_oauth_rows
 
     monkeypatch.setattr(
         calendar_credentials.os,
@@ -447,6 +468,7 @@ def test_old_and_cross_tenant_nonce_collisions_fail_before_mutation(
     assert _stored_envelope(second_id) == second_old
     assert _stored_revision(first_id) == 1
     assert _stored_revision(second_id) == 1
+    assert _stored_oauth_rows(first_id) == original_oauth_rows
     _assert_log_safe(
         caplog.text,
         "first-new",
@@ -554,6 +576,8 @@ def test_database_failure_preserves_old_connection_and_hides_secret(
     _replace(account_id, token=token, now=T0)
     original = _stored_envelope(account_id)
     original_revision = _stored_revision(account_id)
+    _issue_pending_oauth_state(account_id, "replacement-database-failure")
+    original_oauth_rows = _stored_oauth_rows(account_id)
 
     class InvalidUuid:
         hex = "g" * 32
@@ -574,6 +598,7 @@ def test_database_failure_preserves_old_connection_and_hides_secret(
     )
     assert _stored_envelope(account_id) == original
     assert _stored_revision(account_id) == original_revision
+    assert _stored_oauth_rows(account_id) == original_oauth_rows
 
     monkeypatch.undo()
     _replace(
@@ -583,6 +608,10 @@ def test_database_failure_preserves_old_connection_and_hides_secret(
     )
     assert _stored_envelope(account_id)["id"] != original["id"]
     assert _stored_revision(account_id) == original_revision + 1
+    assert _stored_oauth_rows(
+        account_id,
+        tracked_digests=original_oauth_rows["states"],
+    ) == {"states": set(), "verifiers": set()}
 
 
 def test_encryption_failure_and_caller_rollback_preserve_prior_connection(
@@ -716,6 +745,705 @@ def test_disconnect_is_idempotent_and_tenant_scoped(migrated_postgres_db):
     assert _stored_revision(second_id) == 1
 
 
+@pytest.mark.parametrize("operation", ["replace", "disconnect"])
+def test_lifecycle_changes_cancel_all_pending_oauth_states_for_account(
+    migrated_postgres_db,
+    operation,
+):
+    account_id, _ = _demo_owner()
+    other_account_id, _ = _add_owner(f"oauth-cancel-{operation}")
+    _issue_pending_oauth_state(account_id, f"{operation}-first")
+    _issue_pending_oauth_state(account_id, f"{operation}-second")
+    _issue_pending_oauth_state(
+        other_account_id,
+        f"{operation}-other-tenant",
+    )
+    own_before = _stored_oauth_rows(account_id)
+    other_before = _stored_oauth_rows(other_account_id)
+    assert len(own_before["states"]) == 2
+    assert own_before["verifiers"] == own_before["states"]
+    assert len(other_before["states"]) == 1
+    assert other_before["verifiers"] == other_before["states"]
+
+    if operation == "replace":
+        status = _replace(
+            account_id,
+            token="oauth-state-cancellation-replacement",
+            now=T0 + datetime.timedelta(minutes=1),
+        )
+    else:
+        with db.SessionLocal.begin() as session:
+            status = calendar_connections.disconnect_google_calendar(
+                session,
+                account_id=account_id,
+            )
+
+    assert status.state == (
+        "connected" if operation == "replace" else "disconnected"
+    )
+    assert _stored_oauth_rows(
+        account_id,
+        tracked_digests=own_before["states"],
+    ) == {
+        "states": set(),
+        "verifiers": set(),
+    }
+    assert _stored_oauth_rows(other_account_id) == other_before
+    assert _stored_revision(account_id) == 1
+    assert _stored_revision(other_account_id) == 0
+
+
+@pytest.mark.parametrize("operation", ["replace", "disconnect"])
+def test_lifecycle_cancellation_detaches_cached_state_and_verifier(
+    migrated_postgres_db,
+    operation,
+):
+    account_id, _ = _demo_owner()
+    issued = _issue_pending_oauth_state(account_id, f"cached-{operation}")
+    state_digest = hashlib.sha256(
+        issued.issued_state.raw_state.encode("ascii")
+    ).digest()
+
+    with db.SessionLocal.begin() as session:
+        state = session.get(ProviderCalendarOAuthStateDB, state_digest)
+        verifier = session.get(
+            ProviderCalendarOAuthPKCEVerifierDB,
+            state_digest,
+        )
+        assert state is not None
+        assert verifier is not None
+        assert sqlalchemy_inspect(state).persistent
+        assert sqlalchemy_inspect(verifier).persistent
+
+        if operation == "replace":
+            calendar_connections.replace_google_calendar_connection(
+                session,
+                account_id=account_id,
+                refresh_token="cached-state-replacement",
+                cipher=CIPHER,
+                now=T0 + datetime.timedelta(minutes=1),
+            )
+        else:
+            calendar_connections.disconnect_google_calendar(
+                session,
+                account_id=account_id,
+            )
+
+        assert sqlalchemy_inspect(state).deleted
+        assert sqlalchemy_inspect(verifier).deleted
+        assert session.get(
+            ProviderCalendarOAuthStateDB,
+            state_digest,
+        ) is None
+        assert session.get(
+            ProviderCalendarOAuthPKCEVerifierDB,
+            state_digest,
+        ) is None
+
+        state.expires_at += datetime.timedelta(seconds=1)
+        verifier.verifier_key_id = "detached-cached-key"
+        session.flush()
+
+    assert sqlalchemy_inspect(state).detached
+    assert sqlalchemy_inspect(verifier).detached
+    assert _stored_oauth_rows(
+        account_id,
+        tracked_digests={state_digest},
+    ) == {"states": set(), "verifiers": set()}
+    assert _stored_revision(account_id) == 1
+
+
+@pytest.mark.parametrize("operation", ["replace", "disconnect"])
+def test_lifecycle_cancellation_detaches_state_consumed_after_cache(
+    migrated_postgres_db,
+    operation,
+):
+    account_id, _ = _demo_owner()
+    issued = _issue_pending_oauth_state(
+        account_id,
+        f"consumed-after-cache-{operation}",
+    )
+    state_digest = hashlib.sha256(
+        issued.issued_state.raw_state.encode("ascii")
+    ).digest()
+
+    with db.SessionLocal.begin() as lifecycle_session:
+        state = lifecycle_session.get(
+            ProviderCalendarOAuthStateDB,
+            state_digest,
+        )
+        verifier = lifecycle_session.get(
+            ProviderCalendarOAuthPKCEVerifierDB,
+            state_digest,
+        )
+        assert state is not None
+        assert verifier is not None
+
+        with db.SessionLocal.begin() as consumer_session:
+            consumed = (
+                consume_google_calendar_oauth_state_with_pkce_and_browser_binding(
+                    consumer_session,
+                    raw_state=issued.issued_state.raw_state,
+                    raw_browser_binding=issued.raw_browser_binding,
+                    pkce_cipher=OAUTH_PKCE_CIPHER,
+                    now=T0 + datetime.timedelta(minutes=1),
+                )
+            )
+        assert consumed.account_id == account_id
+        assert sqlalchemy_inspect(state).persistent
+        assert sqlalchemy_inspect(verifier).persistent
+
+        if operation == "replace":
+            calendar_connections.replace_google_calendar_connection(
+                lifecycle_session,
+                account_id=account_id,
+                refresh_token="consumed-cached-state-replacement",
+                cipher=CIPHER,
+                now=T0 + datetime.timedelta(minutes=2),
+            )
+        else:
+            calendar_connections.disconnect_google_calendar(
+                lifecycle_session,
+                account_id=account_id,
+            )
+
+        assert sqlalchemy_inspect(state).detached
+        assert sqlalchemy_inspect(verifier).detached
+        state.expires_at += datetime.timedelta(seconds=1)
+        verifier.verifier_key_id = "detached-consumed-cached-key"
+        lifecycle_session.flush()
+
+    assert _stored_oauth_rows(
+        account_id,
+        tracked_digests={state_digest},
+    ) == {"states": set(), "verifiers": set()}
+    assert _stored_revision(account_id) == 1
+
+
+@pytest.mark.parametrize("operation", ["replace", "disconnect"])
+def test_lifecycle_cancellation_detaches_orphaned_cached_verifier(
+    migrated_postgres_db,
+    operation,
+):
+    account_id, _ = _demo_owner()
+    other_account_id, _ = _add_owner(f"cached-verifier-other-{operation}")
+    issued = _issue_pending_oauth_state(
+        account_id,
+        f"orphaned-cached-verifier-{operation}",
+    )
+    other_issued = _issue_pending_oauth_state(
+        other_account_id,
+        f"live-cross-account-verifier-{operation}",
+    )
+    state_digest = hashlib.sha256(
+        issued.issued_state.raw_state.encode("ascii")
+    ).digest()
+    other_state_digest = hashlib.sha256(
+        other_issued.issued_state.raw_state.encode("ascii")
+    ).digest()
+
+    with db.SessionLocal.begin() as lifecycle_session:
+        verifier = lifecycle_session.get(
+            ProviderCalendarOAuthPKCEVerifierDB,
+            state_digest,
+        )
+        other_verifier = lifecycle_session.get(
+            ProviderCalendarOAuthPKCEVerifierDB,
+            other_state_digest,
+        )
+        assert verifier is not None
+        assert other_verifier is not None
+        assert "oauth_state" in sqlalchemy_inspect(verifier).unloaded
+        assert "oauth_state" in sqlalchemy_inspect(other_verifier).unloaded
+
+        with db.SessionLocal.begin() as consumer_session:
+            consumed = (
+                consume_google_calendar_oauth_state_with_pkce_and_browser_binding(
+                    consumer_session,
+                    raw_state=issued.issued_state.raw_state,
+                    raw_browser_binding=issued.raw_browser_binding,
+                    pkce_cipher=OAUTH_PKCE_CIPHER,
+                    now=T0 + datetime.timedelta(minutes=1),
+                )
+            )
+        assert consumed.account_id == account_id
+        assert sqlalchemy_inspect(verifier).persistent
+
+        if operation == "replace":
+            calendar_connections.replace_google_calendar_connection(
+                lifecycle_session,
+                account_id=account_id,
+                refresh_token="orphaned-cached-verifier-replacement",
+                cipher=CIPHER,
+                now=T0 + datetime.timedelta(minutes=2),
+            )
+        else:
+            calendar_connections.disconnect_google_calendar(
+                lifecycle_session,
+                account_id=account_id,
+            )
+
+        assert sqlalchemy_inspect(verifier).detached
+        assert sqlalchemy_inspect(other_verifier).persistent
+        verifier.verifier_key_id = "detached-orphaned-cached-key"
+        lifecycle_session.flush()
+
+    assert _stored_oauth_rows(
+        account_id,
+        tracked_digests={state_digest},
+    ) == {"states": set(), "verifiers": set()}
+    assert _stored_oauth_rows(other_account_id) == {
+        "states": {other_state_digest},
+        "verifiers": {other_state_digest},
+    }
+    assert _stored_revision(account_id) == 1
+    assert _stored_revision(other_account_id) == 0
+
+
+@pytest.mark.parametrize("operation", ["replace", "disconnect"])
+def test_lifecycle_cancellation_handles_expired_cache_after_consumption(
+    migrated_postgres_db,
+    operation,
+):
+    account_id, _ = _demo_owner()
+    issued = _issue_pending_oauth_state(
+        account_id,
+        f"expired-cache-after-consumption-{operation}",
+    )
+    state_digest = hashlib.sha256(
+        issued.issued_state.raw_state.encode("ascii")
+    ).digest()
+
+    lifecycle_session = db.SessionLocal()
+    try:
+        with lifecycle_session.begin():
+            state = lifecycle_session.get(
+                ProviderCalendarOAuthStateDB,
+                state_digest,
+            )
+            verifier = lifecycle_session.get(
+                ProviderCalendarOAuthPKCEVerifierDB,
+                state_digest,
+            )
+            assert state is not None
+            assert verifier is not None
+
+        assert sqlalchemy_inspect(state).expired
+        assert sqlalchemy_inspect(verifier).expired
+
+        with db.SessionLocal.begin() as consumer_session:
+            consumed = (
+                consume_google_calendar_oauth_state_with_pkce_and_browser_binding(
+                    consumer_session,
+                    raw_state=issued.issued_state.raw_state,
+                    raw_browser_binding=issued.raw_browser_binding,
+                    pkce_cipher=OAUTH_PKCE_CIPHER,
+                    now=T0 + datetime.timedelta(minutes=1),
+                )
+            )
+        assert consumed.account_id == account_id
+
+        with lifecycle_session.begin():
+            if operation == "replace":
+                calendar_connections.replace_google_calendar_connection(
+                    lifecycle_session,
+                    account_id=account_id,
+                    refresh_token="expired-cached-state-replacement",
+                    cipher=CIPHER,
+                    now=T0 + datetime.timedelta(minutes=2),
+                )
+            else:
+                calendar_connections.disconnect_google_calendar(
+                    lifecycle_session,
+                    account_id=account_id,
+                )
+
+            assert sqlalchemy_inspect(state).detached
+            assert sqlalchemy_inspect(verifier).detached
+            state.expires_at = T0 + datetime.timedelta(minutes=9)
+            verifier.verifier_key_id = "detached-expired-cached-key"
+            lifecycle_session.flush()
+    finally:
+        lifecycle_session.close()
+
+    assert _stored_oauth_rows(
+        account_id,
+        tracked_digests={state_digest},
+    ) == {"states": set(), "verifiers": set()}
+    assert _stored_revision(account_id) == 1
+
+
+@pytest.mark.parametrize("operation", ["replace", "disconnect"])
+def test_lifecycle_cancellation_rolls_back_with_connection_and_revision(
+    migrated_postgres_db,
+    operation,
+):
+    account_id, _ = _demo_owner()
+    _replace(account_id, token="before-oauth-cancellation-rollback", now=T0)
+    original_connection = _stored_envelope(account_id)
+    issued = _issue_pending_oauth_state(account_id, f"{operation}-rollback")
+    state_digest = hashlib.sha256(
+        issued.issued_state.raw_state.encode("ascii")
+    ).digest()
+    original_oauth_rows = _stored_oauth_rows(account_id)
+
+    session = db.SessionLocal()
+    transaction = session.begin()
+    try:
+        state = session.get(ProviderCalendarOAuthStateDB, state_digest)
+        verifier = session.get(
+            ProviderCalendarOAuthPKCEVerifierDB,
+            state_digest,
+        )
+        assert state is not None
+        assert verifier is not None
+        if operation == "replace":
+            status = calendar_connections.replace_google_calendar_connection(
+                session,
+                account_id=account_id,
+                refresh_token="rolled-back-oauth-state-replacement",
+                cipher=CIPHER,
+                now=T0 + datetime.timedelta(minutes=1),
+            )
+        else:
+            status = calendar_connections.disconnect_google_calendar(
+                session,
+                account_id=account_id,
+            )
+        assert status.state == (
+            "connected" if operation == "replace" else "disconnected"
+        )
+        assert sqlalchemy_inspect(state).deleted
+        assert sqlalchemy_inspect(verifier).deleted
+        assert session.query(ProviderCalendarOAuthStateDB).filter_by(
+            account_id=account_id
+        ).count() == 0
+        assert (
+            session.query(ProviderCalendarOAuthPKCEVerifierDB)
+            .join(
+                ProviderCalendarOAuthStateDB,
+                ProviderCalendarOAuthStateDB.state_digest
+                == ProviderCalendarOAuthPKCEVerifierDB.state_digest,
+            )
+            .filter(ProviderCalendarOAuthStateDB.account_id == account_id)
+            .count()
+            == 0
+        )
+        assert session.get(
+            ProviderAccountDB,
+            account_id,
+        ).calendar_connection_revision == 2
+        transaction.rollback()
+        assert sqlalchemy_inspect(state).persistent
+        assert sqlalchemy_inspect(verifier).persistent
+        assert session.get(
+            ProviderCalendarOAuthStateDB,
+            state_digest,
+        ) is state
+        assert session.get(
+            ProviderCalendarOAuthPKCEVerifierDB,
+            state_digest,
+        ) is verifier
+    finally:
+        session.close()
+
+    assert _stored_envelope(account_id) == original_connection
+    assert _stored_revision(account_id) == 1
+    assert _stored_oauth_rows(account_id) == original_oauth_rows
+
+
+def test_replacement_preflight_failure_preserves_pending_oauth_state(
+    migrated_postgres_db,
+):
+    account_id, _ = _demo_owner()
+    _issue_pending_oauth_state(account_id, "preflight-failure")
+    original_oauth_rows = _stored_oauth_rows(account_id)
+
+    with pytest.raises(CalendarCredentialInputError):
+        _replace(
+            account_id,
+            token="   ",
+            now=T0 + datetime.timedelta(minutes=1),
+        )
+
+    assert _stored_oauth_rows(account_id) == original_oauth_rows
+    assert _stored_revision(account_id) == 0
+    assert _stored_envelope(account_id, required=False) is None
+
+
+@pytest.mark.parametrize("pending_model", ["state", "verifier"])
+def test_pending_oauth_mutation_is_rejected_before_lifecycle_lock(
+    migrated_postgres_db,
+    pending_model,
+):
+    account_id, _ = _demo_owner()
+    _issue_pending_oauth_state(account_id, f"pending-{pending_model}")
+    original_oauth_rows = _stored_oauth_rows(account_id)
+
+    session = db.SessionLocal()
+    transaction = session.begin()
+    try:
+        if pending_model == "state":
+            value = session.query(ProviderCalendarOAuthStateDB).filter_by(
+                account_id=account_id
+            ).one()
+            value.expires_at += datetime.timedelta(seconds=1)
+        else:
+            value = (
+                session.query(ProviderCalendarOAuthPKCEVerifierDB)
+                .join(
+                    ProviderCalendarOAuthStateDB,
+                    ProviderCalendarOAuthStateDB.state_digest
+                    == ProviderCalendarOAuthPKCEVerifierDB.state_digest,
+                )
+                .filter(
+                    ProviderCalendarOAuthStateDB.account_id == account_id
+                )
+                .one()
+            )
+            value.verifier_key_id = "pending-oauth-key"
+
+        with pytest.raises(CalendarConnectionPersistenceError) as raised:
+            calendar_connections.disconnect_google_calendar(
+                session,
+                account_id=account_id,
+            )
+        _assert_error_safe(raised.value, account_id, "pending-oauth-key")
+        transaction.rollback()
+    finally:
+        session.close()
+
+    assert _stored_oauth_rows(account_id) == original_oauth_rows
+    assert _stored_revision(account_id) == 0
+
+
+@pytest.mark.parametrize(
+    ("first_operation", "lifecycle_operation"),
+    [
+        ("issue", "disconnect"),
+        ("disconnect", "disconnect"),
+        ("issue", "replace"),
+        ("replace", "replace"),
+    ],
+)
+def test_issuance_and_lifecycle_change_serialize_on_expected_account_lock(
+    migrated_postgres_db,
+    first_operation,
+    lifecycle_operation,
+):
+    account_id, _ = _demo_owner()
+    session_id = _add_active_provider_session(
+        account_id,
+        f"issuance-disconnect-{first_operation}",
+    )
+    first_ready = threading.Event()
+    allow_first_commit = threading.Event()
+    second_backend_ready = threading.Event()
+    first_backend_pid = []
+    second_backend_pid = []
+
+    def run(operation: str, *, wait_before_commit: bool, report_second: bool):
+        with db.SessionLocal.begin() as session:
+            backend_pid = session.execute(
+                text("SELECT pg_backend_pid()")
+            ).scalar_one()
+            if report_second:
+                second_backend_pid.append(backend_pid)
+                second_backend_ready.set()
+            else:
+                first_backend_pid.append(backend_pid)
+
+            if operation == "issue":
+                result = (
+                    issue_google_calendar_oauth_state_with_pkce_and_browser_binding(
+                        session,
+                        account_id=account_id,
+                        session_id=session_id,
+                        pkce_cipher=OAUTH_PKCE_CIPHER,
+                        now=T0,
+                    )
+                )
+            elif operation == "disconnect":
+                result = calendar_connections.disconnect_google_calendar(
+                    session,
+                    account_id=account_id,
+                )
+            else:
+                result = (
+                    calendar_connections.replace_google_calendar_connection(
+                        session,
+                        account_id=account_id,
+                        refresh_token="issuance-lifecycle-replacement",
+                        cipher=CIPHER,
+                        now=T0 + datetime.timedelta(minutes=1),
+                    )
+                )
+
+            if wait_before_commit:
+                first_ready.set()
+                assert allow_first_commit.wait(timeout=5)
+            return result
+
+    second_operation = (
+        lifecycle_operation if first_operation == "issue" else "issue"
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(
+            run,
+            first_operation,
+            wait_before_commit=True,
+            report_second=False,
+        )
+        assert first_ready.wait(timeout=5)
+        second_future = executor.submit(
+            run,
+            second_operation,
+            wait_before_commit=False,
+            report_second=True,
+        )
+        assert second_backend_ready.wait(timeout=5)
+        try:
+            _wait_until_blocked_by(
+                second_backend_pid[0],
+                first_backend_pid[0],
+            )
+        finally:
+            allow_first_commit.set()
+        first_result = first_future.result(timeout=10)
+        second_result = second_future.result(timeout=10)
+
+    issued = first_result if first_operation == "issue" else second_result
+    issued_digest = hashlib.sha256(
+        issued.issued_state.raw_state.encode("ascii")
+    ).digest()
+    final_rows = _stored_oauth_rows(
+        account_id,
+        tracked_digests={issued_digest},
+    )
+    assert _stored_revision(account_id) == 1
+    if first_operation == "issue":
+        assert final_rows == {"states": set(), "verifiers": set()}
+    else:
+        assert len(final_rows["states"]) == 1
+        assert final_rows["verifiers"] == final_rows["states"]
+
+
+@pytest.mark.parametrize(
+    ("first_operation", "lifecycle_operation"),
+    [
+        ("consume", "disconnect"),
+        ("disconnect", "disconnect"),
+        ("consume", "replace"),
+        ("replace", "replace"),
+    ],
+)
+def test_consumption_and_lifecycle_change_serialize_on_expected_account_lock(
+    migrated_postgres_db,
+    first_operation,
+    lifecycle_operation,
+):
+    account_id, _ = _demo_owner()
+    issued = _issue_pending_oauth_state(
+        account_id,
+        f"consume-lifecycle-{first_operation}-{lifecycle_operation}",
+    )
+    state_digest = hashlib.sha256(
+        issued.issued_state.raw_state.encode("ascii")
+    ).digest()
+    first_ready = threading.Event()
+    allow_first_commit = threading.Event()
+    second_backend_ready = threading.Event()
+    first_backend_pid = []
+    second_backend_pid = []
+
+    def run(operation: str, *, wait_before_commit: bool, report_second: bool):
+        with db.SessionLocal.begin() as session:
+            backend_pid = session.execute(
+                text("SELECT pg_backend_pid()")
+            ).scalar_one()
+            if report_second:
+                second_backend_pid.append(backend_pid)
+                second_backend_ready.set()
+            else:
+                first_backend_pid.append(backend_pid)
+
+            if operation == "consume":
+                try:
+                    consume_google_calendar_oauth_state_with_pkce_and_browser_binding(
+                        session,
+                        raw_state=issued.issued_state.raw_state,
+                        raw_browser_binding=issued.raw_browser_binding,
+                        pkce_cipher=OAUTH_PKCE_CIPHER,
+                        now=T0 + datetime.timedelta(minutes=1),
+                    )
+                    result = "consumed"
+                except CalendarOAuthStateInvalid:
+                    result = "invalid"
+            elif operation == "disconnect":
+                result = calendar_connections.disconnect_google_calendar(
+                    session,
+                    account_id=account_id,
+                )
+            else:
+                result = (
+                    calendar_connections.replace_google_calendar_connection(
+                        session,
+                        account_id=account_id,
+                        refresh_token="consumption-lifecycle-replacement",
+                        cipher=CIPHER,
+                        now=T0 + datetime.timedelta(minutes=1),
+                    )
+                )
+
+            if wait_before_commit:
+                first_ready.set()
+                assert allow_first_commit.wait(timeout=5)
+            return result
+
+    second_operation = (
+        lifecycle_operation if first_operation == "consume" else "consume"
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(
+            run,
+            first_operation,
+            wait_before_commit=True,
+            report_second=False,
+        )
+        assert first_ready.wait(timeout=5)
+        second_future = executor.submit(
+            run,
+            second_operation,
+            wait_before_commit=False,
+            report_second=True,
+        )
+        assert second_backend_ready.wait(timeout=5)
+        try:
+            _wait_until_blocked_by(
+                second_backend_pid[0],
+                first_backend_pid[0],
+            )
+        finally:
+            allow_first_commit.set()
+        first_result = first_future.result(timeout=10)
+        second_result = second_future.result(timeout=10)
+
+    consume_result = (
+        first_result if first_operation == "consume" else second_result
+    )
+    assert consume_result == (
+        "consumed" if first_operation == "consume" else "invalid"
+    )
+    assert _stored_oauth_rows(
+        account_id,
+        tracked_digests={state_digest},
+    ) == {"states": set(), "verifiers": set()}
+    assert _stored_revision(account_id) == 1
+    assert (
+        _stored_envelope(account_id, required=False) is not None
+    ) is (lifecycle_operation == "replace")
+
+
 def test_disconnect_rollback_restores_connected_and_disconnected_states(
     migrated_postgres_db,
 ):
@@ -775,6 +1503,8 @@ def test_disconnect_flush_failure_restores_connection_and_revision(
     account_id, _ = _demo_owner()
     _replace(account_id, token="disconnect-flush-failure", now=T0)
     original = _stored_envelope(account_id)
+    _issue_pending_oauth_state(account_id, "disconnect-flush-failure")
+    original_oauth_rows = _stored_oauth_rows(account_id)
 
     session = db.SessionLocal()
     transaction = session.begin()
@@ -796,6 +1526,7 @@ def test_disconnect_flush_failure_restores_connection_and_revision(
 
     assert _stored_envelope(account_id) == original
     assert _stored_revision(account_id) == 1
+    assert _stored_oauth_rows(account_id) == original_oauth_rows
 
 
 def test_last_available_revision_increment_succeeds_then_exhaustion_fails(
@@ -848,6 +1579,8 @@ def test_revision_exhaustion_preserves_existing_connection(
     _replace(account_id, token="before-exhaustion", now=T0)
     original = _stored_envelope(account_id)
     _set_revision(account_id, POSTGRESQL_BIGINT_MAX)
+    _issue_pending_oauth_state(account_id, f"exhaustion-{operation}")
+    original_oauth_rows = _stored_oauth_rows(account_id)
 
     with pytest.raises(CalendarConnectionPersistenceError) as raised:
         if operation == "replace":
@@ -871,6 +1604,7 @@ def test_revision_exhaustion_preserves_existing_connection(
     )
     assert _stored_revision(account_id) == POSTGRESQL_BIGINT_MAX
     assert _stored_envelope(account_id) == original
+    assert _stored_oauth_rows(account_id) == original_oauth_rows
 
 
 def test_commands_require_a_caller_owned_transaction(migrated_postgres_db):
@@ -913,6 +1647,38 @@ def test_commands_require_a_caller_owned_transaction(migrated_postgres_db):
     assert _stored_revision(account_id) == 0
 
 
+@pytest.mark.parametrize(
+    "split_model",
+    [
+        ProviderCalendarConnectionDB,
+        ProviderCalendarOAuthStateDB,
+        ProviderCalendarOAuthPKCEVerifierDB,
+    ],
+)
+def test_lifecycle_commands_reject_split_binds_before_sql(split_model):
+    primary_engine = create_engine("sqlite+pysqlite:///:memory:")
+    split_engine = create_engine("sqlite+pysqlite:///:memory:")
+    session = Session(
+        bind=primary_engine,
+        binds={split_model: split_engine},
+    )
+    try:
+        with session.begin():
+            with pytest.raises(CalendarConnectionPersistenceError) as raised:
+                calendar_connections.disconnect_google_calendar(
+                    session,
+                    account_id="acct_split_bind_private",
+                )
+        _assert_error_safe(
+            raised.value,
+            "acct_split_bind_private",
+        )
+    finally:
+        session.close()
+        primary_engine.dispose()
+        split_engine.dispose()
+
+
 def test_pending_lifecycle_mutation_is_rejected_before_command_lock(
     migrated_postgres_db,
 ):
@@ -921,13 +1687,13 @@ def test_pending_lifecycle_mutation_is_rejected_before_command_lock(
     transaction = session.begin()
     try:
         account = session.get(ProviderAccountDB, account_id)
-        account.calendar_connection_revision = 12
+        account.calendar_connection_revision = 8_765_432_109
         with pytest.raises(CalendarConnectionPersistenceError) as raised:
             calendar_connections.disconnect_google_calendar(
                 session,
                 account_id=account_id,
             )
-        _assert_error_safe(raised.value, account_id, "12")
+        _assert_error_safe(raised.value, account_id, "8765432109")
         transaction.rollback()
     finally:
         session.close()
@@ -1232,6 +1998,73 @@ def _add_instructor(suffix: str) -> str:
     return instructor_id
 
 
+def _add_active_provider_session(account_id: str, suffix: str) -> str:
+    session_id = f"sess_calendar_repository_{suffix}"
+    with db.SessionLocal.begin() as session:
+        account = session.get(ProviderAccountDB, account_id)
+        assert account is not None
+        session.add(
+            ProviderSessionDB(
+                id=session_id,
+                account_id=account_id,
+                token_digest=hashlib.sha256(
+                    f"calendar-repository-session-{suffix}".encode("ascii")
+                ).digest(),
+                session_version=account.session_version,
+                created_at=T0 - datetime.timedelta(minutes=1),
+                expires_at=T0 + datetime.timedelta(hours=1),
+            )
+        )
+    return session_id
+
+
+def _issue_pending_oauth_state(account_id: str, suffix: str):
+    session_id = _add_active_provider_session(account_id, suffix)
+    with db.SessionLocal.begin() as session:
+        return issue_google_calendar_oauth_state_with_pkce_and_browser_binding(
+            session,
+            account_id=account_id,
+            session_id=session_id,
+            pkce_cipher=OAUTH_PKCE_CIPHER,
+            now=T0,
+        )
+
+
+def _stored_oauth_rows(
+    account_id: str,
+    *,
+    tracked_digests: set[bytes] | None = None,
+) -> dict[str, set[bytes]]:
+    with db.SessionLocal() as session:
+        states = {
+            bytes(value)
+            for (value,) in session.query(
+                ProviderCalendarOAuthStateDB.state_digest
+            )
+            .filter(
+                ProviderCalendarOAuthStateDB.account_id == account_id
+            )
+            .all()
+        }
+        verifier_scope = states | set(tracked_digests or ())
+        if verifier_scope:
+            verifiers = {
+                bytes(value)
+                for (value,) in session.query(
+                    ProviderCalendarOAuthPKCEVerifierDB.state_digest
+                )
+                .filter(
+                    ProviderCalendarOAuthPKCEVerifierDB.state_digest.in_(
+                        verifier_scope
+                    )
+                )
+                .all()
+            }
+        else:
+            verifiers = set()
+    return {"states": states, "verifiers": verifiers}
+
+
 def _stored_envelope(account_id: str, *, required: bool = True):
     with db.SessionLocal() as session:
         row = session.query(ProviderCalendarConnectionDB).filter_by(
@@ -1279,6 +2112,27 @@ def _wait_until_database_blocked(backend_pid: int) -> None:
             return
         time.sleep(0.01)
     raise AssertionError("The competing database operation did not block.")
+
+
+def _wait_until_blocked_by(backend_pid: int, blocker_pid: int) -> None:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with db.engine.connect() as connection:
+            blocked = connection.execute(
+                text(
+                    "SELECT :blocker_pid = ANY("
+                    "pg_blocking_pids(:backend_pid)"
+                    ")"
+                ),
+                {
+                    "backend_pid": backend_pid,
+                    "blocker_pid": blocker_pid,
+                },
+            ).scalar_one()
+        if blocked:
+            return
+        time.sleep(0.01)
+    raise AssertionError("The expected database operation did not block.")
 
 
 def _envelope(row: ProviderCalendarConnectionDB) -> EncryptedCalendarCredential:
