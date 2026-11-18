@@ -15,6 +15,7 @@ from app.calendar_credentials import (
     CalendarCredentialScope,
     MAX_REFRESH_TOKEN_BYTES,
 )
+from app.calendar_oauth_pkce import derive_s256_code_challenge
 from app.google_calendar_authorization import GOOGLE_CALENDAR_FREEBUSY_SCOPE
 from app.google_calendar_oauth import (
     GOOGLE_CALENDAR_CALLBACK_PATH,
@@ -169,6 +170,8 @@ def test_public_surface_signatures_and_redacted_immutable_values():
     with pytest.raises(AttributeError):
         result.refresh_token = "replacement"
     with pytest.raises(AttributeError):
+        result.pkce_code_challenge = "replacement"
+    with pytest.raises(AttributeError):
         response.body = b"replacement"
     with pytest.raises(AttributeError):
         configuration._client_secret = "replacement"
@@ -202,9 +205,18 @@ def test_secret_value_types_reject_subclassing():
             type("UnsafeSecretSubclass", (base,), {})
 
 
-def test_result_cannot_be_forged_through_public_constructor():
+@pytest.mark.parametrize("include_binding", [False, True])
+def test_result_cannot_be_forged_through_public_constructor(
+    include_binding,
+):
+    arguments = {"refresh_token": REFRESH_TOKEN}
+    if include_binding:
+        arguments["pkce_code_challenge"] = derive_s256_code_challenge(
+            CODE_VERIFIER
+        )
+
     with pytest.raises(GoogleCalendarTokenExchangeError) as raised:
-        GoogleCalendarTokenExchangeResult(refresh_token=REFRESH_TOKEN)
+        GoogleCalendarTokenExchangeResult(**arguments)
 
     assert str(raised.value) == (
         "Google Calendar authorization could not be completed."
@@ -216,12 +228,16 @@ def test_result_cannot_be_forged_through_public_constructor():
     assert REFRESH_TOKEN not in values
 
 
-def test_success_posts_one_exact_fixed_request_and_returns_only_refresh_token():
+def test_success_posts_one_exact_fixed_request_and_binds_result_to_verifier():
     transport = RecordingTransport()
 
     result = _exchange(transport=transport)
 
     assert result.refresh_token == REFRESH_TOKEN
+    assert result.pkce_code_challenge == derive_s256_code_challenge(
+        CODE_VERIFIER
+    )
+    assert result.pkce_code_challenge != CODE_VERIFIER
     assert len(transport.calls) == 1
     url, fields, timeout_seconds = transport.calls[0]
     assert url == GOOGLE_CALENDAR_TOKEN_ENDPOINT
@@ -257,6 +273,55 @@ def test_success_posts_one_exact_fixed_request_and_returns_only_refresh_token():
         REFRESH_TOKEN,
     ):
         assert forbidden not in request_text
+
+
+def test_distinct_verifiers_produce_distinct_result_bindings():
+    other_verifier = "A" * 43
+
+    first = _exchange(code_verifier=CODE_VERIFIER)
+    second = _exchange(code_verifier=other_verifier)
+
+    assert first.pkce_code_challenge == derive_s256_code_challenge(
+        CODE_VERIFIER
+    )
+    assert second.pkce_code_challenge == derive_s256_code_challenge(
+        other_verifier
+    )
+    assert first.pkce_code_challenge != second.pkce_code_challenge
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [CODE_VERIFIER, "A" * 43, None, RuntimeError("private derivation failure")],
+)
+def test_malformed_pkce_derivation_fails_before_transport(
+    monkeypatch,
+    outcome,
+):
+    transport = RecordingTransport()
+
+    def derive(_verifier):
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(
+        token_exchange,
+        "derive_s256_code_challenge",
+        derive,
+    )
+
+    with pytest.raises(GoogleCalendarTokenExchangeError) as raised:
+        _exchange(transport=transport)
+
+    assert transport.calls == []
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    rendered = "".join(traceback.format_exception(raised.value))
+    _, values = _module_traceback(raised.value)
+    output = " ".join((str(raised.value), rendered, values))
+    assert CODE_VERIFIER not in output
+    assert "private derivation failure" not in output
 
 
 @pytest.mark.parametrize(
@@ -769,7 +834,8 @@ def test_parser_failure_is_sanitized_without_private_frames(monkeypatch, caplog)
             client_secret="invalid\nsecret",
         ),
         lambda: GoogleCalendarTokenExchangeResult(
-            refresh_token=REFRESH_TOKEN
+            refresh_token=REFRESH_TOKEN,
+            pkce_code_challenge=derive_s256_code_challenge(CODE_VERIFIER),
         ),
         lambda: _exchange(authorization_code="invalid\ncode"),
     ],

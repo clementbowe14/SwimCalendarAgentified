@@ -17,12 +17,15 @@ contract, or frontend behavior.
 is an async, keyword-only service accepting the existing exact
 `GoogleCalendarTokenExchangeConfiguration`, one authorization code, and one PKCE verifier. It
 returns the existing sealed `GoogleCalendarTokenExchangeResult` containing only the validated
-refresh token.
+refresh token and the exact PKCE S256 code challenge derived from the verifier used in that
+exchange. The challenge survives the concrete network path so a later finalizer can bind the
+credential to its committed callback claim.
 
-The existing synchronous transport-injected exchange and concrete synchronous HTTPX adapter remain
-unchanged for compatibility and focused protocol testing. The new service owns its exact private
-async HTTPX path; callers cannot inject a transport, endpoint, timeout, retry policy, redirect
-policy, proxy, client, event hook, or response parser.
+The existing synchronous transport-injected exchange and concrete synchronous HTTPX adapter retain
+their network behavior and remain available for compatibility and focused protocol testing; their
+sealed result now carries the same PKCE binding. The new service owns its exact private async HTTPX
+path; callers cannot inject a transport, endpoint, timeout, retry policy, redirect policy, proxy,
+client, event hook, or response parser.
 
 Input validation and form preparation complete before a timeout scope or network object is created.
 The authorization code, client secret, verifier, and form remain bounded by the existing exchange
@@ -94,6 +97,7 @@ configuration, code, and verifier references.
 Pure tests use in-memory async HTTPX transports and streams and never contact Google. They cover:
 
 - success through the existing strict response validator;
+- preservation of the exact verifier-derived PKCE code challenge;
 - exact one-attempt async request and network policy;
 - invalid input rejection before timeout or network construction;
 - cancellation of a stalled request and stalled response stream;
@@ -105,8 +109,9 @@ Pure tests use in-memory async HTTPX transports and streams and never contact Go
 - isolation between concurrent calls and recovery on a later call; and
 - runtime-inert imports, application construction, and startup.
 
-Existing OAuth configuration, authorization, PKCE, token-exchange, concrete sync transport,
-credential, route, and API-contract suites remain unchanged.
+Existing OAuth configuration, authorization, PKCE, credential, route, and API-contract suites remain
+unchanged. Token-exchange and concrete synchronous transport coverage is extended only to verify the
+binding while preserving their existing network behavior.
 
 ## Deferred slices
 

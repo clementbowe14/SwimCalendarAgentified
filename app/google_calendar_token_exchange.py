@@ -7,7 +7,11 @@ OAuth state consumption and releasing every database lock.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import re
+import secrets
 from decimal import Decimal
 from typing import NoReturn, Protocol, final
 
@@ -39,6 +43,7 @@ _MAX_ACCESS_TOKEN_BYTES = 16 * 1024
 _MAX_SCOPE_BYTES = 4 * 1024
 _MAX_RESPONSE_BODY_BYTES = 64 * 1024
 _MAX_EXPIRES_IN_SECONDS = 2_147_483_647
+_PKCE_BASE64URL_32_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 
 
 class _SealedSecretValue:
@@ -146,17 +151,23 @@ class GoogleCalendarTokenTransport(Protocol):
 
 @final
 class GoogleCalendarTokenExchangeResult(_SealedSecretValue):
-    """Validated offline credential; access-token material is discarded."""
+    """Validated offline credential bound to its exact PKCE exchange."""
 
-    __slots__ = ("refresh_token",)
+    __slots__ = ("refresh_token", "pkce_code_challenge")
 
     refresh_token: str
+    pkce_code_challenge: str
 
     def __init_subclass__(cls, **_kwargs: object) -> NoReturn:
         raise TypeError("OAuth secret values cannot be subclassed.")
 
-    def __init__(self, *, refresh_token: object) -> None:
-        del refresh_token
+    def __init__(
+        self,
+        *,
+        refresh_token: object,
+        pkce_code_challenge: object = None,
+    ) -> None:
+        del refresh_token, pkce_code_challenge
         _raise_token_exchange_error()
 
     def __repr__(self) -> str:
@@ -194,10 +205,12 @@ def _exchange_google_calendar_authorization_code(
     code_verifier: object,
     transport: object,
 ) -> GoogleCalendarTokenExchangeResult:
-    fields = _prepare_google_calendar_authorization_code_exchange(
-        configuration=configuration,
-        authorization_code=authorization_code,
-        code_verifier=code_verifier,
+    fields, pkce_code_challenge = (
+        _prepare_google_calendar_authorization_code_exchange(
+            configuration=configuration,
+            authorization_code=authorization_code,
+            code_verifier=code_verifier,
+        )
     )
     post_form = getattr(transport, "post_form", None)
     if not callable(post_form):
@@ -207,7 +220,10 @@ def _exchange_google_calendar_authorization_code(
         fields=fields,
         timeout_seconds=_TOKEN_EXCHANGE_TIMEOUT_SECONDS,
     )
-    return _complete_google_calendar_authorization_code_exchange(response)
+    return _complete_google_calendar_authorization_code_exchange(
+        response,
+        pkce_code_challenge=pkce_code_challenge,
+    )
 
 
 def _prepare_google_calendar_authorization_code_exchange(
@@ -215,7 +231,7 @@ def _prepare_google_calendar_authorization_code_exchange(
     configuration: object,
     authorization_code: object,
     code_verifier: object,
-) -> tuple[tuple[str, str], ...]:
+) -> tuple[tuple[tuple[str, str], ...], str]:
     client_id, redirect_uri, client_secret = _revalidated_exchange_configuration(
         configuration
     )
@@ -223,24 +239,74 @@ def _prepare_google_calendar_authorization_code_exchange(
         authorization_code,
         maximum_bytes=_MAX_AUTHORIZATION_CODE_BYTES,
     )
-    if type(code_verifier) is not str:
-        raise ValueError("invalid verifier")
-    derive_s256_code_challenge(code_verifier)
+    trusted_verifier = _validated_code_verifier(code_verifier)
+    pkce_code_challenge = _verified_pkce_code_challenge(
+        derive_s256_code_challenge(trusted_verifier),
+        code_verifier=trusted_verifier,
+    )
     return (
-        ("code", code),
-        ("client_id", client_id),
-        ("client_secret", client_secret),
-        ("redirect_uri", redirect_uri),
-        ("grant_type", "authorization_code"),
-        ("code_verifier", code_verifier),
+        (
+            ("code", code),
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("redirect_uri", redirect_uri),
+            ("grant_type", "authorization_code"),
+            ("code_verifier", trusted_verifier),
+        ),
+        pkce_code_challenge,
     )
 
 
 def _complete_google_calendar_authorization_code_exchange(
     response: object,
+    *,
+    pkce_code_challenge: object,
 ) -> GoogleCalendarTokenExchangeResult:
+    trusted_challenge = _validated_pkce_code_challenge(pkce_code_challenge)
     refresh_token = _validated_refresh_token(response)
-    return _new_exchange_result(refresh_token=refresh_token)
+    return _new_exchange_result(
+        refresh_token=refresh_token,
+        pkce_code_challenge=trusted_challenge,
+    )
+
+
+def _validated_code_verifier(value: object) -> str:
+    if (
+        type(value) is not str
+        or _PKCE_BASE64URL_32_PATTERN.fullmatch(value) is None
+    ):
+        raise ValueError("invalid verifier")
+    return value
+
+
+def _validated_pkce_code_challenge(value: object) -> str:
+    if (
+        type(value) is not str
+        or _PKCE_BASE64URL_32_PATTERN.fullmatch(value) is None
+    ):
+        raise ValueError("invalid PKCE code challenge")
+    return value
+
+
+def _verified_pkce_code_challenge(
+    value: object,
+    *,
+    code_verifier: str,
+) -> str:
+    challenge = _validated_pkce_code_challenge(value)
+    expected = (
+        base64.urlsafe_b64encode(
+            hashlib.sha256(code_verifier.encode("ascii")).digest()
+        )
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    if challenge == code_verifier or not secrets.compare_digest(
+        challenge,
+        expected,
+    ):
+        raise ValueError("invalid PKCE code challenge")
+    return challenge
 
 
 def _validated_configuration_values(
@@ -388,9 +454,14 @@ def _finite_json_decimal(value: str) -> Decimal:
     return parsed
 
 
-def _new_exchange_result(*, refresh_token: str) -> GoogleCalendarTokenExchangeResult:
+def _new_exchange_result(
+    *,
+    refresh_token: str,
+    pkce_code_challenge: str,
+) -> GoogleCalendarTokenExchangeResult:
     result = object.__new__(GoogleCalendarTokenExchangeResult)
     object.__setattr__(result, "refresh_token", refresh_token)
+    object.__setattr__(result, "pkce_code_challenge", pkce_code_challenge)
     return result
 
 

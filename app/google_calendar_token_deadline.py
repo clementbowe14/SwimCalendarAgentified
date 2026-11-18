@@ -56,10 +56,12 @@ async def _exchange_google_calendar_authorization_code_with_deadline(
     authorization_code: object,
     code_verifier: object,
 ) -> GoogleCalendarTokenExchangeResult:
-    fields = _prepare_google_calendar_authorization_code_exchange(
-        configuration=configuration,
-        authorization_code=authorization_code,
-        code_verifier=code_verifier,
+    fields, pkce_code_challenge = (
+        _prepare_google_calendar_authorization_code_exchange(
+            configuration=configuration,
+            authorization_code=authorization_code,
+            code_verifier=code_verifier,
+        )
     )
     deadline = _monotonic_time() + _TOKEN_EXCHANGE_DEADLINE_SECONDS
     timeout_scope = _new_deadline_scope(deadline=deadline)
@@ -70,7 +72,10 @@ async def _exchange_google_calendar_authorization_code_with_deadline(
             timeout_seconds=_TOKEN_EXCHANGE_TIMEOUT_SECONDS,
             deadline=deadline,
         )
-        result = _complete_google_calendar_authorization_code_exchange(response)
+        result = _complete_google_calendar_authorization_code_exchange(
+            response,
+            pkce_code_challenge=pkce_code_challenge,
+        )
 
     if timeout_scope.cancel_called or _monotonic_time() >= deadline:
         raise TimeoutError("token exchange exceeded its deadline")

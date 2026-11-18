@@ -712,8 +712,6 @@ def test_adapter_composes_with_strict_token_exchange(monkeypatch):
         ),
         client_secret=CLIENT_SECRET,
     )
-    assert derive_s256_code_challenge(CODE_VERIFIER)
-
     result = exchange_google_calendar_authorization_code(
         configuration=configuration,
         authorization_code=AUTHORIZATION_CODE,
@@ -722,6 +720,9 @@ def test_adapter_composes_with_strict_token_exchange(monkeypatch):
     )
 
     assert result.refresh_token == REFRESH_TOKEN
+    assert result.pkce_code_challenge == derive_s256_code_challenge(
+        CODE_VERIFIER
+    )
     assert len(network_transport.requests) == 1
 
 
