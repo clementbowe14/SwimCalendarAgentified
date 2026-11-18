@@ -28,11 +28,23 @@ https://oauth2.googleapis.com/token
 The ordered form allowlist contains exactly `code`, `client_id`, `client_secret`, `redirect_uri`,
 `grant_type=authorization_code`, and `code_verifier`. The endpoint cannot be supplied by a caller,
 and no secret is placed in a URL or header. The transport contract must not follow redirects or
-retry; a later concrete adapter will enforce those network properties.
+retry; the concrete synchronous and deadline-backed HTTPX adapters enforce those network properties.
 
 The exchange returns an immutable, builder-only, redacted `GoogleCalendarTokenExchangeResult`
-containing only the validated refresh token. Access-token material, expiry, scopes, raw JSON, and
-provider diagnostics are discarded.
+containing the validated refresh token and the exact PKCE S256 code challenge derived from the verifier
+used in that exchange. The challenge is a non-secret binding value already sent in the authorization
+request; the raw verifier is not copied into the result. Access-token material, expiry, scopes, raw
+JSON, and provider diagnostics are discarded.
+
+Before network access, the exchange independently recomputes S256 from the exact validated verifier
+placed in the form and compares it with the canonical PKCE helper's output. Raw-verifier, constant,
+malformed, and exceptional collaborator outputs fail before the one-time authorization code is sent.
+This deliberate defense keeps a future refactor or malformed collaborator from weakening the binding
+or copying the verifier into the result.
+
+The future callback finalizer must derive the same PKCE code challenge from its committed callback
+claim and compare it with the result before persistence. This prevents concurrent callback results
+from being crossed and installing one provider account's refresh credential for another account.
 
 ## Response validation
 
@@ -62,7 +74,8 @@ private helper frames absent from the exported traceback.
 The client secret, authorization code, verifier, access token, refresh token, response body, error
 description, and transport exception details never appear in result/configuration/response string
 representations, exported exception messages, causes, contexts, traceback locals, or module logs.
-The module performs no logging.
+The result's PKCE code challenge is one-way, contains no raw verifier, and remains redacted with
+the sealed result. The module performs no logging.
 
 There are no automatic retries. After the callback has committed state consumption, any exchange
 failure starts a fresh authorization attempt rather than reviving state or risking a duplicate code
@@ -81,7 +94,8 @@ configuration/code/verifier validation, successful minimal output, response boun
 exact least-privilege scope, provider and transport failures, constructor hardening, immutability,
 and secret-free representations, errors, tracebacks, frame locals, and logs. Existing OAuth
 configuration, authorization-request, PKCE, credential, and connection suites remain unchanged.
-Tests also cover ambient exception chains and rejection by standard and application serializers.
+Tests also cover exact verifier-result binding, distinct code challenges for distinct verifiers, ambient
+exception chains, and rejection by standard and application serializers.
 
 ## References
 
@@ -92,11 +106,11 @@ Tests also cover ambient exception chains and rejection by standard and applicat
 
 ## Deferred slices
 
-1. Load the client secret at call time and add a bounded, non-redirecting concrete HTTP adapter.
+1. Add a fresh-transaction callback finalizer that compares the claim-derived PKCE code challenge before
+   encrypting and atomically replacing the Google connection.
 2. Add start/callback orchestration, commit-before-network transaction handling, and cookie cleanup.
-3. Encrypt and atomically replace the Google connection in a fresh transaction.
-4. Refresh credentials and query normalized opaque FreeBusy intervals.
-5. Integrate fail-closed external busy periods and expose settings/recovery behavior.
+3. Refresh credentials and query normalized opaque FreeBusy intervals.
+4. Integrate fail-closed external busy periods and expose settings/recovery behavior.
 
 ## Non-goals
 

@@ -17,6 +17,7 @@ from app import (
     google_calendar_token_httpx,
     tools,
 )
+from app.calendar_oauth_pkce import derive_s256_code_challenge
 from app.google_calendar_authorization import GOOGLE_CALENDAR_FREEBUSY_SCOPE
 from app.google_calendar_oauth import (
     GOOGLE_CALENDAR_CALLBACK_PATH,
@@ -285,6 +286,9 @@ def test_success_uses_one_exact_bounded_request(monkeypatch):
     result = _run(_exchange())
 
     assert result.refresh_token == REFRESH_TOKEN
+    assert result.pkce_code_challenge == derive_s256_code_challenge(
+        CODE_VERIFIER
+    )
     assert factory_calls == [True]
     assert transport.close_count == 1
     assert stream.iteration_count == 1
@@ -317,6 +321,34 @@ def test_success_uses_one_exact_bounded_request(monkeypatch):
         b"&grant_type=authorization_code"
         b"&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
     )
+
+
+def test_distinct_verifiers_preserve_distinct_bindings_through_deadline(
+    monkeypatch,
+):
+    other_verifier = "A" * 43
+    first_transport, _ = _install_transport(
+        monkeypatch,
+        lambda _request: _response(),
+    )
+
+    first = _run(_exchange(code_verifier=CODE_VERIFIER))
+
+    second_transport, _ = _install_transport(
+        monkeypatch,
+        lambda _request: _response(),
+    )
+    second = _run(_exchange(code_verifier=other_verifier))
+
+    assert first.pkce_code_challenge == derive_s256_code_challenge(
+        CODE_VERIFIER
+    )
+    assert second.pkce_code_challenge == derive_s256_code_challenge(
+        other_verifier
+    )
+    assert first.pkce_code_challenge != second.pkce_code_challenge
+    assert len(first_transport.requests) == 1
+    assert len(second_transport.requests) == 1
 
 
 def test_async_network_policy_ignores_environment(monkeypatch, tmp_path):
