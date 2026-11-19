@@ -38,6 +38,15 @@ stale claim, commit failure, or close failure becomes the same newly constructed
 `GoogleCalendarRefreshCredentialClaimError`. No error distinguishes tenant existence or lifecycle
 details.
 
+The sealed value and its supported validator live in a database-free handoff module. Issuance adds
+a process-local keyed integrity tag over every owner, connection, revision, and refresh-token field.
+The supported validator checks that complete tag and returns an independent sealed snapshot, so a
+consumer never validates and then rereads mutable source fields. Future network consumers must
+validate before and after an injected collaborator runs. A field changed with low-level Python
+mutation therefore cannot retag one tenant's credential as another's. The tag is an in-process
+misuse and corruption defense, not a boundary against arbitrary code execution inside the trusted
+application process.
+
 ## Claim transaction
 
 Inputs and exact dependency types are validated before session creation. The factory must return a
@@ -124,3 +133,4 @@ AES-GCM validation, schema constraints, lifecycle commands, and their broader co
 - Routes, authentication middleware, cookies, rollout gates, OpenAPI, or frontend UI.
 - Scheduler, agenda, availability, booking, calendar writes, event details, or notifications.
 - Multiple calendars, other providers, metrics, audit events, or secret-memory zeroization claims.
+- Protection against arbitrary code execution inside the trusted application process.
