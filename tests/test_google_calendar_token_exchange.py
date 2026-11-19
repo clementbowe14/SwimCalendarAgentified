@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
+import dis
 import inspect
 import json
+import logging
 import pickle
+import sys
 import traceback
 
 import pytest
@@ -23,6 +27,8 @@ from app.google_calendar_oauth import (
 )
 from app.google_calendar_token_exchange import (
     GOOGLE_CALENDAR_TOKEN_ENDPOINT,
+    GoogleCalendarRefreshAuthorizationRequired,
+    GoogleCalendarRefreshTokenExchangeResult,
     GoogleCalendarTokenExchangeConfiguration,
     GoogleCalendarTokenExchangeError,
     GoogleCalendarTokenExchangeResult,
@@ -44,6 +50,16 @@ _DEFAULT = object()
 
 class TextSubclass(str):
     pass
+
+
+class PrivateBaseException(BaseException):
+    pass
+
+
+class HostileSystemExit(SystemExit):
+    @property
+    def code(self):
+        raise RuntimeError("system-exit-getter-private")
 
 
 class RecordingTransport:
@@ -121,6 +137,18 @@ def _module_traceback(error):
     return names, repr(values)
 
 
+def _module_frame_locals(error):
+    result = []
+    current = error.__traceback__
+    while current is not None:
+        if current.tb_frame.f_code.co_filename.endswith(
+            "/app/google_calendar_token_exchange.py"
+        ):
+            result.append(dict(current.tb_frame.f_locals))
+        current = current.tb_next
+    return result
+
+
 def test_public_surface_signatures_and_redacted_immutable_values():
     assert token_exchange.__all__ == (
         "GOOGLE_CALENDAR_TOKEN_ENDPOINT",
@@ -130,6 +158,10 @@ def test_public_surface_signatures_and_redacted_immutable_values():
         "GoogleCalendarTokenTransport",
         "GoogleCalendarTokenTransportResponse",
         "exchange_google_calendar_authorization_code",
+        "GoogleCalendarRefreshTokenExchangeOutcome",
+        "GoogleCalendarRefreshAuthorizationRequired",
+        "GoogleCalendarRefreshTokenExchangeResult",
+        "exchange_google_calendar_refresh_token",
     )
     signature = inspect.signature(exchange_google_calendar_authorization_code)
     assert list(signature.parameters) == [
@@ -195,14 +227,152 @@ def test_secret_values_reject_standard_and_application_serializers():
             jsonable_encoder(value)
 
 
-def test_secret_value_types_reject_subclassing():
+@pytest.mark.parametrize("operation", ["assign", "delete"])
+def test_secret_value_mutation_tracebacks_drop_names_values_and_context(
+    operation,
+    caplog,
+):
+    caplog.set_level(logging.DEBUG)
+    for target in (_configuration(), _response(), _exchange()):
+        attempted_name = (
+            f"attempted_{type(target).__name__}_{operation}_private"
+        )
+        attempted_value = (
+            f"attempted-{type(target).__name__}-{operation}-private"
+        )
+        try:
+            raise RuntimeError("ambient-mutation-private")
+        except RuntimeError:
+            with pytest.raises(AttributeError) as raised:
+                if operation == "assign":
+                    setattr(target, attempted_name, attempted_value)
+                else:
+                    delattr(target, attempted_name)
+
+        assert raised.value.__cause__ is None
+        assert raised.value.__context__ is None
+        assert raised.value.__suppress_context__ is True
+        names, frame_values = _module_traceback(raised.value)
+        expected_mutator = (
+            "__setattr__" if operation == "assign" else "__delattr__"
+        )
+        assert names == [
+            expected_mutator,
+            "_raise_secret_immutable_error",
+        ]
+        for frame_locals in _module_frame_locals(raised.value):
+            assert all(
+                value is not target for value in frame_locals.values()
+            )
+        output = " ".join(
+            (
+                repr(raised.value),
+                "".join(traceback.format_exception(raised.value)),
+                frame_values,
+                caplog.text,
+            )
+        )
+        assert attempted_name not in output
+        assert attempted_value not in output
+        assert "ambient-mutation-private" not in output
+
+
+@pytest.mark.parametrize(
+    ("hook_name", "expected_frame"),
+    [
+        ("reduce", "__reduce__"),
+        ("reduce_ex", "__reduce_ex__"),
+        ("getstate", "__getstate__"),
+    ],
+)
+def test_secret_value_serialization_hooks_drop_object_and_context(
+    hook_name,
+    expected_frame,
+    caplog,
+):
+    caplog.set_level(logging.DEBUG)
+    for target in (_configuration(), _response(), _exchange()):
+        try:
+            raise RuntimeError("ambient-serialization-private")
+        except RuntimeError:
+            with pytest.raises(TypeError) as raised:
+                if hook_name == "reduce":
+                    target.__reduce__()
+                elif hook_name == "reduce_ex":
+                    target.__reduce_ex__(5)
+                else:
+                    target.__getstate__()
+
+        assert raised.value.__cause__ is None
+        assert raised.value.__context__ is None
+        assert raised.value.__suppress_context__ is True
+        names, frame_values = _module_traceback(raised.value)
+        assert names == [
+            expected_frame,
+            "_raise_secret_serialization_error",
+        ]
+        for frame_locals in _module_frame_locals(raised.value):
+            assert all(
+                value is not target for value in frame_locals.values()
+            )
+        output = " ".join(
+            (
+                repr(raised.value),
+                "".join(traceback.format_exception(raised.value)),
+                frame_values,
+                caplog.text,
+            )
+        )
+        for private in (
+            CLIENT_SECRET,
+            REFRESH_TOKEN,
+            ACCESS_TOKEN,
+            "ambient-serialization-private",
+        ):
+            assert private not in output
+
+
+def test_secret_value_types_reject_subclassing_without_traceback_secrets(
+    caplog,
+):
+    caplog.set_level(logging.DEBUG)
     for base in (
         GoogleCalendarTokenExchangeConfiguration,
         GoogleCalendarTokenTransportResponse,
         GoogleCalendarTokenExchangeResult,
+        GoogleCalendarRefreshTokenExchangeResult,
+        GoogleCalendarRefreshAuthorizationRequired,
     ):
-        with pytest.raises(TypeError):
-            type("UnsafeSecretSubclass", (base,), {})
+        attempted_secret = f"subclass-{base.__name__}-private"
+        try:
+            raise RuntimeError("ambient-subclass-private")
+        except RuntimeError:
+            with pytest.raises(TypeError) as raised:
+
+                class UnsafeSecretSubclass(
+                    base,
+                    private_option=attempted_secret,
+                ):
+                    pass
+
+        assert raised.value.__cause__ is None
+        assert raised.value.__context__ is None
+        assert raised.value.__suppress_context__ is True
+        names, frame_values = _module_traceback(raised.value)
+        assert names == [
+            "__init_subclass__",
+            "_raise_secret_subclass_error",
+        ]
+        output = " ".join(
+            (
+                repr(raised.value),
+                "".join(traceback.format_exception(raised.value)),
+                frame_values,
+                caplog.text,
+            )
+        )
+        assert attempted_secret not in output
+        assert "ambient-subclass-private" not in output
 
 
 @pytest.mark.parametrize("include_binding", [False, True])
@@ -215,16 +385,11 @@ def test_result_cannot_be_forged_through_public_constructor(
             CODE_VERIFIER
         )
 
-    with pytest.raises(GoogleCalendarTokenExchangeError) as raised:
+    with pytest.raises(TypeError) as raised:
         GoogleCalendarTokenExchangeResult(**arguments)
 
-    assert str(raised.value) == (
-        "Google Calendar authorization could not be completed."
-    )
-    assert raised.value.__cause__ is None
-    assert raised.value.__context__ is None
     names, values = _module_traceback(raised.value)
-    assert names == ["__init__", "_raise_token_exchange_error"]
+    assert names == []
     assert REFRESH_TOKEN not in values
 
 
@@ -833,10 +998,6 @@ def test_parser_failure_is_sanitized_without_private_frames(monkeypatch, caplog)
             authorization_configuration=_authorization_configuration(),
             client_secret="invalid\nsecret",
         ),
-        lambda: GoogleCalendarTokenExchangeResult(
-            refresh_token=REFRESH_TOKEN,
-            pkce_code_challenge=derive_s256_code_challenge(CODE_VERIFIER),
-        ),
         lambda: _exchange(authorization_code="invalid\ncode"),
     ],
 )
@@ -858,3 +1019,611 @@ def test_public_failures_clear_secret_bearing_ambient_exception_context(
     output = " ".join((str(raised.value), repr(raised.value), rendered, values))
     assert "_raise_token_exchange_error" in names
     assert ambient_secret not in output
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    ["configuration", "response", "exchange"],
+)
+@pytest.mark.parametrize(
+    (
+        "exception_factory",
+        "expected_type",
+        "expected_helper",
+        "expected_exit_code",
+    ),
+    [
+        (
+            lambda: asyncio.CancelledError("boundary-control-private"),
+            asyncio.CancelledError,
+            "_raise_control_exception",
+            None,
+        ),
+        (
+            lambda: KeyboardInterrupt("boundary-control-private"),
+            KeyboardInterrupt,
+            "_raise_control_exception",
+            None,
+        ),
+        (
+            lambda: SystemExit(7),
+            SystemExit,
+            "_raise_control_exception",
+            7,
+        ),
+        (
+            lambda: SystemExit("boundary-control-private"),
+            SystemExit,
+            "_raise_control_exception",
+            1,
+        ),
+        (
+            lambda: HostileSystemExit("boundary-control-private"),
+            SystemExit,
+            "_raise_control_exception",
+            1,
+        ),
+        (
+            lambda: GeneratorExit("boundary-control-private"),
+            GeneratorExit,
+            "_raise_control_exception",
+            None,
+        ),
+        (
+            lambda: PrivateBaseException("boundary-control-private"),
+            GoogleCalendarTokenExchangeError,
+            "_raise_token_exchange_error",
+            None,
+        ),
+    ],
+)
+def test_public_token_boundaries_sanitize_every_base_exception_path(
+    monkeypatch,
+    caplog,
+    boundary,
+    exception_factory,
+    expected_type,
+    expected_helper,
+    expected_exit_code,
+):
+    caplog.set_level(logging.DEBUG)
+
+    if boundary == "configuration":
+
+        def fail_configuration(**_kwargs):
+            raise exception_factory()
+
+        monkeypatch.setattr(
+            token_exchange,
+            "_validated_configuration_values",
+            fail_configuration,
+        )
+        operation = lambda: _configuration()
+        expected_public_frame = "__init__"
+    elif boundary == "response":
+
+        def fail_response(*_args, **_kwargs):
+            raise exception_factory()
+
+        monkeypatch.setattr(
+            token_exchange,
+            "_install_validated_transport_response",
+            fail_response,
+        )
+        operation = lambda: GoogleCalendarTokenTransportResponse(
+            status_code=200,
+            content_type="application/json",
+            body=b'{"access_token":"response-body-private"}',
+        )
+        expected_public_frame = "__init__"
+    else:
+        transport = RecordingTransport(error=exception_factory())
+        operation = lambda: _exchange(transport=transport)
+        expected_public_frame = (
+            "exchange_google_calendar_authorization_code"
+        )
+
+    with pytest.raises(expected_type) as raised:
+        operation()
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    if expected_type is SystemExit:
+        assert raised.value.code == expected_exit_code
+    names, frame_values = _module_traceback(raised.value)
+    assert names == [expected_public_frame, expected_helper]
+    for frame_locals in _module_frame_locals(raised.value):
+        assert all(
+            not isinstance(
+                value,
+                (
+                    GoogleCalendarOAuthConfiguration,
+                    GoogleCalendarTokenExchangeConfiguration,
+                ),
+            )
+            for value in frame_locals.values()
+        )
+    output = " ".join(
+        (
+            repr(raised.value),
+            "".join(traceback.format_exception(raised.value)),
+            frame_values,
+            caplog.text,
+        )
+    )
+    for private in (
+        "boundary-control-private",
+        CLIENT_ID,
+        REDIRECT_URI,
+        CLIENT_SECRET,
+        AUTHORIZATION_CODE,
+        CODE_VERIFIER,
+        "response-body-private",
+    ):
+        assert private not in output
+
+
+@pytest.mark.parametrize(
+    "attribute_name",
+    ["_client_id", "_redirect_uri", "_client_secret"],
+)
+def test_configuration_assignment_interruptions_are_sanitized(
+    caplog,
+    attribute_name,
+):
+    caplog.set_level(logging.DEBUG)
+    installer = token_exchange._install_validated_exchange_configuration
+    source_lines, first_line = inspect.getsourcelines(installer)
+    target_line = first_line + next(
+        offset
+        for offset, line in enumerate(source_lines)
+        if f'"{attribute_name}"' in line
+    )
+
+    def interrupt_assignment(frame, event, _argument):
+        if (
+            event == "line"
+            and frame.f_code is installer.__code__
+            and frame.f_lineno == target_line
+        ):
+            raise KeyboardInterrupt("assignment-control-private")
+        return interrupt_assignment
+
+    try:
+        sys.settrace(interrupt_assignment)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            _configuration()
+    finally:
+        sys.settrace(None)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    names, frame_values = _module_traceback(raised.value)
+    assert names == ["__init__", "_raise_control_exception"]
+    output = " ".join(
+        (
+            repr(raised.value),
+            "".join(traceback.format_exception(raised.value)),
+            frame_values,
+            caplog.text,
+        )
+    )
+    for private in (
+        "assignment-control-private",
+        CLIENT_ID,
+        REDIRECT_URI,
+        CLIENT_SECRET,
+    ):
+        assert private not in output
+
+
+@pytest.mark.parametrize(
+    "attribute_name",
+    ["status_code", "content_type", "body"],
+)
+def test_transport_response_assignment_interruptions_are_sanitized(
+    caplog,
+    attribute_name,
+):
+    caplog.set_level(logging.DEBUG)
+    installer = token_exchange._install_validated_transport_response
+    source_lines, first_line = inspect.getsourcelines(installer)
+    target_line = first_line + next(
+        offset
+        for offset, line in enumerate(source_lines)
+        if f'"{attribute_name}"' in line
+    )
+
+    def interrupt_assignment(frame, event, _argument):
+        if (
+            event == "line"
+            and frame.f_code is installer.__code__
+            and frame.f_lineno == target_line
+        ):
+            raise KeyboardInterrupt("response-assignment-control-private")
+        return interrupt_assignment
+
+    try:
+        sys.settrace(interrupt_assignment)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            GoogleCalendarTokenTransportResponse(
+                status_code=200,
+                content_type="application/json",
+                body=b'{"access_token":"response-body-private"}',
+            )
+    finally:
+        sys.settrace(None)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    names, frame_values = _module_traceback(raised.value)
+    assert names == ["__init__", "_raise_control_exception"]
+    output = " ".join(
+        (
+            repr(raised.value),
+            "".join(traceback.format_exception(raised.value)),
+            frame_values,
+            caplog.text,
+        )
+    )
+    for private in (
+        "response-assignment-control-private",
+        "response-body-private",
+    ):
+        assert private not in output
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    ["configuration", "response", "authorization_exchange"],
+)
+def test_supported_boundary_entry_interruptions_are_sanitized(
+    caplog,
+    boundary,
+):
+    caplog.set_level(logging.DEBUG)
+    if boundary == "configuration":
+        guarded = GoogleCalendarTokenExchangeConfiguration.__init__
+        operation = _configuration
+        expected_public_frame = "__init__"
+    elif boundary == "response":
+        guarded = GoogleCalendarTokenTransportResponse.__init__
+        operation = lambda: GoogleCalendarTokenTransportResponse(
+            status_code=200,
+            content_type="application/json",
+            body=b'{"access_token":"entry-response-private"}',
+        )
+        expected_public_frame = "__init__"
+    else:
+        guarded = exchange_google_calendar_authorization_code
+        operation = _exchange
+        expected_public_frame = (
+            "exchange_google_calendar_authorization_code"
+        )
+
+    source_lines, first_line = inspect.getsourcelines(guarded)
+    target_line = first_line + next(
+        offset
+        for offset, line in enumerate(source_lines)
+        if line.lstrip().startswith("try: return")
+    )
+    interrupted = False
+
+    def interrupt_entry(frame, event, _argument):
+        nonlocal interrupted
+        if (
+            not interrupted
+            and event == "line"
+            and frame.f_code is guarded.__code__
+            and frame.f_lineno == target_line
+        ):
+            interrupted = True
+            raise KeyboardInterrupt("entry-control-private")
+        return interrupt_entry
+
+    try:
+        sys.settrace(interrupt_entry)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            operation()
+    finally:
+        sys.settrace(None)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    names, frame_values = _module_traceback(raised.value)
+    assert names == [expected_public_frame, "_raise_control_exception"]
+    output = " ".join(
+        (
+            repr(raised.value),
+            "".join(traceback.format_exception(raised.value)),
+            frame_values,
+            caplog.text,
+        )
+    )
+    for private in (
+        "entry-control-private",
+        "entry-response-private",
+        CLIENT_ID,
+        REDIRECT_URI,
+        CLIENT_SECRET,
+        AUTHORIZATION_CODE,
+        CODE_VERIFIER,
+    ):
+        assert private not in output
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    ["configuration", "response", "authorization_exchange"],
+)
+def test_supported_boundary_cleanup_interruptions_are_sanitized(
+    monkeypatch,
+    caplog,
+    boundary,
+):
+    caplog.set_level(logging.DEBUG)
+    if boundary == "configuration":
+        guarded = GoogleCalendarTokenExchangeConfiguration.__init__
+        operation = lambda: GoogleCalendarTokenExchangeConfiguration(
+            authorization_configuration=_authorization_configuration(),
+            client_secret="invalid\ncleanup-client-secret-private",
+        )
+        expected_public_frame = "__init__"
+    elif boundary == "response":
+        guarded = GoogleCalendarTokenTransportResponse.__init__
+
+        def fail_response(*_args, **_kwargs):
+            raise ValueError("ordinary-response-cleanup-private")
+
+        monkeypatch.setattr(
+            token_exchange,
+            "_install_validated_transport_response",
+            fail_response,
+        )
+        operation = lambda: GoogleCalendarTokenTransportResponse(
+            status_code=200,
+            content_type="application/json",
+            body=b'{"access_token":"cleanup-response-private"}',
+        )
+        expected_public_frame = "__init__"
+    else:
+        guarded = exchange_google_calendar_authorization_code
+        operation = lambda: _exchange(
+            authorization_code="invalid\ncleanup-authorization-private"
+        )
+        expected_public_frame = (
+            "exchange_google_calendar_authorization_code"
+        )
+
+    source_lines, first_line = inspect.getsourcelines(guarded)
+    target_line = first_line + next(
+        offset
+        for offset, line in enumerate(source_lines)
+        if line.lstrip().startswith("try:") and " = None" in line
+    )
+    cleanup_instructions = [
+        instruction
+        for instruction in dis.get_instructions(guarded)
+        if instruction.positions.lineno == target_line
+    ]
+    assert "DELETE_FAST" not in {
+        instruction.opname for instruction in cleanup_instructions
+    }
+    assert sum(
+        instruction.opname == "STORE_FAST"
+        for instruction in cleanup_instructions
+    ) >= 2
+    interrupted = False
+
+    def interrupt_cleanup(frame, event, _argument):
+        nonlocal interrupted
+        if (
+            not interrupted
+            and event == "line"
+            and frame.f_code is guarded.__code__
+            and frame.f_lineno == target_line
+        ):
+            interrupted = True
+            raise KeyboardInterrupt("cleanup-control-private")
+        return interrupt_cleanup
+
+    try:
+        sys.settrace(interrupt_cleanup)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            operation()
+    finally:
+        sys.settrace(None)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    names, frame_values = _module_traceback(raised.value)
+    assert names == [expected_public_frame, "_raise_control_exception"]
+    output = " ".join(
+        (
+            repr(raised.value),
+            "".join(traceback.format_exception(raised.value)),
+            frame_values,
+            caplog.text,
+        )
+    )
+    for private in (
+        "cleanup-control-private",
+        "cleanup-client-secret-private",
+        "ordinary-response-cleanup-private",
+        "cleanup-response-private",
+        "cleanup-authorization-private",
+        CLIENT_ID,
+        REDIRECT_URI,
+        CLIENT_SECRET,
+        AUTHORIZATION_CODE,
+        CODE_VERIFIER,
+    ):
+        assert private not in output
+
+
+@pytest.mark.parametrize(
+    ("constructor", "private_values"),
+    [
+        (
+            lambda: GoogleCalendarTokenExchangeResult(
+                refresh_token=REFRESH_TOKEN,
+                pkce_code_challenge=derive_s256_code_challenge(
+                    CODE_VERIFIER
+                ),
+            ),
+            (REFRESH_TOKEN, CODE_VERIFIER),
+        ),
+        (
+            lambda: GoogleCalendarRefreshTokenExchangeResult(
+                account_id="acct_result_constructor_private",
+                instructor_id="inst_result_constructor_private",
+                connection_id="calconn_" + "e" * 32,
+                expected_calendar_connection_revision=23,
+                access_token="result-access-token-private",
+                expires_in_seconds=3600,
+            ),
+            (
+                "acct_result_constructor_private",
+                "inst_result_constructor_private",
+                "calconn_" + "e" * 32,
+                "result-access-token-private",
+            ),
+        ),
+        (
+            lambda: GoogleCalendarRefreshAuthorizationRequired(
+                account_id="acct_recovery_constructor_private",
+                instructor_id="inst_recovery_constructor_private",
+                connection_id="calconn_" + "f" * 32,
+                expected_calendar_connection_revision=29,
+            ),
+            (
+                "acct_recovery_constructor_private",
+                "inst_recovery_constructor_private",
+                "calconn_" + "f" * 32,
+            ),
+        ),
+    ],
+)
+def test_direct_secret_construction_has_no_python_secret_frame(
+    constructor,
+    private_values,
+):
+    with pytest.raises(TypeError) as raised:
+        constructor()
+
+    names, frame_values = _module_traceback(raised.value)
+    assert names == []
+    output = " ".join(
+        (
+            repr(raised.value),
+            "".join(traceback.format_exception(raised.value)),
+            frame_values,
+        )
+    )
+    for private in private_values:
+        assert private not in output
+
+
+def test_direct_construction_ambient_context_remains_caller_owned():
+    ambient = RuntimeError("caller-owned-ambient-private")
+    try:
+        raise ambient
+    except RuntimeError:
+        with pytest.raises(TypeError) as raised:
+            GoogleCalendarTokenExchangeResult(
+                refresh_token=REFRESH_TOKEN,
+                pkce_code_challenge=derive_s256_code_challenge(
+                    CODE_VERIFIER
+                ),
+            )
+
+    assert raised.value.__context__ is ambient
+    names, frame_values = _module_traceback(raised.value)
+    assert names == []
+    direct_diagnostic = " ".join(
+        (str(raised.value), repr(raised.value), frame_values)
+    )
+    assert REFRESH_TOKEN not in direct_diagnostic
+    assert CODE_VERIFIER not in direct_diagnostic
+
+
+@pytest.mark.parametrize(
+    ("constructor", "private_values"),
+    [
+        (
+            lambda: GoogleCalendarTokenExchangeResult(
+                refresh_token=REFRESH_TOKEN,
+                pkce_code_challenge=derive_s256_code_challenge(
+                    CODE_VERIFIER
+                ),
+            ),
+            (REFRESH_TOKEN, CODE_VERIFIER),
+        ),
+        (
+            lambda: GoogleCalendarRefreshTokenExchangeResult(
+                account_id="acct_classifier_return_private",
+                instructor_id="inst_classifier_return_private",
+                connection_id="calconn_" + "1" * 32,
+                expected_calendar_connection_revision=31,
+                access_token="classifier-return-access-token-private",
+                expires_in_seconds=3600,
+            ),
+            (
+                "acct_classifier_return_private",
+                "inst_classifier_return_private",
+                "calconn_" + "1" * 32,
+                "classifier-return-access-token-private",
+            ),
+        ),
+        (
+            lambda: GoogleCalendarRefreshAuthorizationRequired(
+                account_id="acct_classifier_recovery_private",
+                instructor_id="inst_classifier_recovery_private",
+                connection_id="calconn_" + "2" * 32,
+                expected_calendar_connection_revision=37,
+            ),
+            (
+                "acct_classifier_recovery_private",
+                "inst_classifier_recovery_private",
+                "calconn_" + "2" * 32,
+            ),
+        ),
+    ],
+)
+def test_direct_secret_construction_never_enters_module_python_code(
+    constructor,
+    private_values,
+):
+    module_events = []
+
+    def record_module_events(frame, event, _argument):
+        if frame.f_code.co_filename.endswith(
+            "/app/google_calendar_token_exchange.py"
+        ):
+            module_events.append((frame.f_code.co_name, event))
+        return record_module_events
+
+    try:
+        sys.settrace(record_module_events)
+        with pytest.raises(TypeError) as raised:
+            constructor()
+    finally:
+        sys.settrace(None)
+
+    assert module_events == []
+    names, frame_values = _module_traceback(raised.value)
+    assert names == []
+    output = " ".join(
+        (
+            repr(raised.value),
+            "".join(traceback.format_exception(raised.value)),
+            frame_values,
+        )
+    )
+    for private in private_values:
+        assert private not in output
