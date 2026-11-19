@@ -1206,6 +1206,70 @@
         "title": "CoachBookLessonRequest",
         "type": "object"
       },
+      "CoachCalendarConnectionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization_required_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authorization Required At"
+          },
+          "connected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connected At"
+          },
+          "provider": {
+            "const": "google",
+            "title": "Provider",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "disconnected",
+              "connected",
+              "authorization_required"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "provider",
+          "state",
+          "connected_at",
+          "updated_at",
+          "authorization_required_at"
+        ],
+        "title": "CoachCalendarConnectionResponse",
+        "type": "object"
+      },
       "CoachClientAvailabilityWindowResponse": {
         "properties": {
           "days": {
@@ -4311,6 +4375,32 @@
           }
         ],
         "summary": "Create Booking",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/calendar-connections/google": {
+      "get": {
+        "operationId": "read_google_calendar_connection_status_api_coach_calendar_connections_google_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachCalendarConnectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Read Google Calendar Connection Status",
         "tags": [
           "coach"
         ]

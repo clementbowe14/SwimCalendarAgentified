@@ -175,6 +175,141 @@ def test_status_read_preserves_pending_connection_changes(
     assert _stored_revision(account_id) == 1
 
 
+@pytest.mark.parametrize("transition", ["disconnect", "replace"])
+def test_status_read_rejects_cached_connection_after_competing_lifecycle(
+    migrated_postgres_db,
+    transition,
+):
+    account_id, _ = _demo_owner()
+    _replace(account_id, token="cached-status-original", now=T0)
+    changed_at = T0 + datetime.timedelta(minutes=1)
+
+    session = db.SessionLocal()
+    try:
+        cached = session.query(ProviderCalendarConnectionDB).filter_by(
+            account_id=account_id
+        ).one()
+
+        if transition == "disconnect":
+            with db.SessionLocal.begin() as competing_session:
+                calendar_connections.disconnect_google_calendar(
+                    competing_session,
+                    account_id=account_id,
+                )
+        else:
+            _replace(
+                account_id,
+                token="cached-status-replacement",
+                now=changed_at,
+            )
+
+        status = calendar_connections.get_google_calendar_connection_status(
+            session,
+            account_id=account_id,
+        )
+
+        assert cached in session.identity_map.values()
+        if transition == "disconnect":
+            assert status == CalendarConnectionStatus(
+                provider="google",
+                state="disconnected",
+                connected_at=None,
+                updated_at=None,
+                authorization_required_at=None,
+            )
+        else:
+            assert status.state == "connected"
+            assert status.connected_at == changed_at
+            assert status.updated_at == changed_at
+            assert status.authorization_required_at is None
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("unrelated_dirty", [False, True])
+def test_status_read_rejects_non_lifecycle_cache_after_competing_recovery_mark(
+    migrated_postgres_db,
+    unrelated_dirty,
+):
+    account_id, _ = _demo_owner()
+    _replace(account_id, token="cached-status-recovery", now=T0)
+    marked_at = T0 + datetime.timedelta(minutes=1)
+
+    session = db.SessionLocal()
+    try:
+        cached = session.query(ProviderCalendarConnectionDB).filter_by(
+            account_id=account_id
+        ).one()
+        if unrelated_dirty:
+            cached.credential_key_id = "unrelated-local-dirty-key"
+        with db.SessionLocal.begin() as competing_session:
+            calendar_connections.mark_google_calendar_authorization_required(
+                competing_session,
+                account_id=account_id,
+                expected_connection_id=cached.id,
+                now=marked_at,
+            )
+
+        status = calendar_connections.get_google_calendar_connection_status(
+            session,
+            account_id=account_id,
+        )
+
+        assert (cached in session.dirty) is unrelated_dirty
+        assert status.state == "authorization_required"
+        assert status.connected_at == T0
+        assert status.updated_at == marked_at
+        assert status.authorization_required_at == marked_at
+    finally:
+        session.close()
+
+
+def test_status_read_does_not_refresh_expired_credential_columns(
+    migrated_postgres_db,
+):
+    account_id, _ = _demo_owner()
+    _replace(account_id, token="expired-status-cache", now=T0)
+
+    session = db.SessionLocal()
+    statements = []
+
+    def capture_connection_query(
+        _connection,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ):
+        if "provider_calendar_connections" in statement:
+            statements.append(statement)
+
+    try:
+        cached = session.query(ProviderCalendarConnectionDB).filter_by(
+            account_id=account_id
+        ).one()
+        session.expire(cached)
+        event.listen(db.engine, "before_cursor_execute", capture_connection_query)
+        try:
+            status = calendar_connections.get_google_calendar_connection_status(
+                session,
+                account_id=account_id,
+            )
+        finally:
+            event.remove(
+                db.engine,
+                "before_cursor_execute",
+                capture_connection_query,
+            )
+
+        assert status.state == "connected"
+        assert status.connected_at == T0
+        assert len(statements) == 1
+        assert "credential_" not in statements[0]
+    finally:
+        session.close()
+
+
 def test_replace_persists_only_an_encrypted_owner_bound_envelope(
     migrated_postgres_db,
 ):

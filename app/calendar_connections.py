@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Literal, NoReturn, Optional
 from uuid import uuid4
 
-from sqlalchemy import delete as _delete, inspect as _inspect
+from sqlalchemy import delete as _delete, inspect as _inspect, select as _select
 from sqlalchemy.exc import SQLAlchemyError as _SQLAlchemyError
 from sqlalchemy.orm import (
     Session as _Session,
@@ -58,6 +58,14 @@ _LIFECYCLE_COMMAND_MODELS = (
     *_CONNECTION_COMMAND_MODELS,
     _ProviderCalendarOAuthStateDB,
     _ProviderCalendarOAuthPKCEVerifierDB,
+)
+_STATUS_LIFECYCLE_ATTRIBUTES = frozenset(
+    {
+        "provider",
+        "created_at",
+        "updated_at",
+        "authorization_required_at",
+    }
 )
 
 CalendarConnectionState = Literal[
@@ -117,14 +125,62 @@ def get_google_calendar_connection_status(
 ) -> CalendarConnectionStatus:
     """Read one provider account's credential-free Google connection state."""
 
+    if not isinstance(account_id, str) or not account_id.strip():
+        raise CalendarConnectionOwnerNotFound()
     try:
-        account = _provider_account(session, account_id=account_id, lock=False)
-        row = _connection_for_account(
-            session,
-            account.id,
-            refresh=False,
+        with session.no_autoflush:
+            row = session.execute(
+                _select(
+                    _ProviderAccountDB.id.label("account_id"),
+                    _ProviderCalendarConnectionDB.id.label("connection_id"),
+                    _ProviderCalendarConnectionDB.provider,
+                    _ProviderCalendarConnectionDB.created_at,
+                    _ProviderCalendarConnectionDB.updated_at,
+                    _ProviderCalendarConnectionDB.authorization_required_at,
+                )
+                .select_from(_ProviderAccountDB)
+                .outerjoin(
+                    _ProviderCalendarConnectionDB,
+                    _ProviderCalendarConnectionDB.account_id
+                    == _ProviderAccountDB.id,
+                )
+                .where(_ProviderAccountDB.id == account_id)
+            ).one_or_none()
+        if row is None:
+            raise CalendarConnectionOwnerNotFound()
+        if row.provider is None:
+            return _status(None)
+        identity_key = session.identity_key(
+            _ProviderCalendarConnectionDB,
+            row.connection_id,
         )
-        return _status(row)
+        cached_connection = session.identity_map.get(identity_key)
+        if cached_connection is not None and cached_connection in session.dirty:
+            cached_state = _inspect(cached_connection)
+            if not (
+                _STATUS_LIFECYCLE_ATTRIBUTES
+                & cached_state.expired_attributes
+            ) and any(
+                cached_state.attrs[name].history.has_changes()
+                for name in _STATUS_LIFECYCLE_ATTRIBUTES
+            ):
+                return _status(cached_connection)
+        authorization_required_at = (
+            _aware_utc(row.authorization_required_at)
+            if row.authorization_required_at is not None
+            else None
+        )
+        return CalendarConnectionStatus(
+            provider="google",
+            state=(
+                "authorization_required"
+                if authorization_required_at is not None
+                else "connected"
+            ),
+            connected_at=_aware_utc(row.created_at),
+            updated_at=_aware_utc(row.updated_at),
+            authorization_required_at=authorization_required_at,
+        )
     except CalendarConnectionError:
         raise
     except _SQLAlchemyError:
