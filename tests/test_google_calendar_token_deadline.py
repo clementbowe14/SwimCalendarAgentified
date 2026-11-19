@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import dis
 import inspect
 import json
 import ssl
+import sys
 import traceback
 
 import anyio
@@ -25,6 +27,7 @@ from app.google_calendar_oauth import (
 )
 from app.google_calendar_token_deadline import (
     exchange_google_calendar_authorization_code_with_deadline,
+    exchange_google_calendar_refresh_token_with_deadline,
 )
 from app.google_calendar_token_exchange import (
     GOOGLE_CALENDAR_TOKEN_ENDPOINT,
@@ -258,9 +261,13 @@ def _module_traceback(error):
 def test_public_surface_is_one_async_keyword_only_service():
     assert google_calendar_token_deadline.__all__ == (
         "exchange_google_calendar_authorization_code_with_deadline",
+        "exchange_google_calendar_refresh_token_with_deadline",
     )
     assert inspect.iscoroutinefunction(
         exchange_google_calendar_authorization_code_with_deadline
+    )
+    assert inspect.iscoroutinefunction(
+        exchange_google_calendar_refresh_token_with_deadline
     )
     signature = inspect.signature(
         exchange_google_calendar_authorization_code_with_deadline
@@ -837,6 +844,302 @@ def test_external_cancellation_remains_sanitized_cancellation(monkeypatch):
         assert private not in values
     assert transport.cancelled is True
     assert transport.close_count == 1
+
+
+@pytest.mark.parametrize("failure_kind", ["malformed_response", "exception"])
+def test_authorization_suppressed_cancellation_precedes_followup_failure(
+    monkeypatch,
+    failure_kind,
+):
+    request_started = asyncio.Event()
+    cancellation_was_suppressed = []
+
+    async def suppress_then_fail(**_kwargs):
+        request_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancellation_was_suppressed.append(True)
+            if failure_kind == "malformed_response":
+                return GoogleCalendarTokenTransportResponse(
+                    status_code=500,
+                    content_type=None,
+                    body=b"",
+                )
+            raise RuntimeError(PROVIDER_DETAIL)
+
+    monkeypatch.setattr(
+        google_calendar_token_deadline,
+        "_post_form_async",
+        suppress_then_fail,
+    )
+
+    async def scenario():
+        task = asyncio.create_task(_exchange())
+        await request_started.wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError as error:
+            return error
+        raise AssertionError("pending cancellation must win")
+
+    raised = _run(scenario())
+
+    assert cancellation_was_suppressed == [True]
+    assert raised.__cause__ is None
+    assert raised.__context__ is None
+    assert raised.__suppress_context__ is True
+    names, values = _module_traceback(raised)
+    assert names == [
+        "exchange_google_calendar_authorization_code_with_deadline",
+        "_raise_cancelled",
+    ]
+    for private in (
+        CLIENT_SECRET,
+        AUTHORIZATION_CODE,
+        CODE_VERIFIER,
+        PROVIDER_DETAIL,
+    ):
+        assert private not in values
+
+
+def test_authorization_boundary_entry_interruption_is_sanitized():
+    guarded = exchange_google_calendar_authorization_code_with_deadline
+    interrupted = False
+
+    def interrupt_entry(frame, event, _argument):
+        nonlocal interrupted
+        if (
+            not interrupted
+            and event == "line"
+            and frame.f_code is guarded.__code__
+        ):
+            interrupted = True
+            raise KeyboardInterrupt("authorization-entry-control-private")
+        return interrupt_entry
+
+    try:
+        sys.settrace(interrupt_entry)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            _run(_exchange())
+    finally:
+        sys.settrace(None)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    names, values = _module_traceback(raised.value)
+    assert names == [
+        "exchange_google_calendar_authorization_code_with_deadline",
+        "_raise_control_exception",
+    ]
+    output = " ".join(
+        (
+            repr(raised.value),
+            _formatted_exception(raised.value),
+            values,
+        )
+    )
+    for private in (
+        "authorization-entry-control-private",
+        CLIENT_SECRET,
+        AUTHORIZATION_CODE,
+        CODE_VERIFIER,
+    ):
+        assert private not in output
+
+
+def test_authorization_boundary_cleanup_interruption_is_sanitized():
+    guarded = exchange_google_calendar_authorization_code_with_deadline
+    source_lines, first_line = inspect.getsourcelines(guarded)
+    target_line = first_line + next(
+        offset
+        for offset, line in enumerate(source_lines)
+        if line.lstrip().startswith("try:") and " = None" in line
+    )
+    cleanup_instructions = [
+        instruction
+        for instruction in dis.get_instructions(guarded)
+        if instruction.positions.lineno == target_line
+    ]
+    assert "DELETE_FAST" not in {
+        instruction.opname for instruction in cleanup_instructions
+    }
+    assert sum(
+        instruction.opname == "STORE_FAST"
+        for instruction in cleanup_instructions
+    ) >= 3
+    interrupted = False
+
+    def interrupt_cleanup(frame, event, _argument):
+        nonlocal interrupted
+        if (
+            not interrupted
+            and event == "line"
+            and frame.f_code is guarded.__code__
+            and frame.f_lineno == target_line
+        ):
+            interrupted = True
+            raise KeyboardInterrupt("authorization-cleanup-control-private")
+        return interrupt_cleanup
+
+    try:
+        sys.settrace(interrupt_cleanup)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            _run(
+                _exchange(
+                    authorization_code=(
+                        "invalid\nauthorization-cleanup-secret"
+                    )
+                )
+            )
+    finally:
+        sys.settrace(None)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    names, values = _module_traceback(raised.value)
+    assert names == [
+        "exchange_google_calendar_authorization_code_with_deadline",
+        "_raise_control_exception",
+    ]
+    output = " ".join(
+        (
+            repr(raised.value),
+            _formatted_exception(raised.value),
+            values,
+        )
+    )
+    for private in (
+        "authorization-cleanup-control-private",
+        "authorization-cleanup-secret",
+        CLIENT_SECRET,
+        AUTHORIZATION_CODE,
+        CODE_VERIFIER,
+    ):
+        assert private not in output
+
+
+def test_authorization_boundary_exception_entry_interruption_is_sanitized():
+    guarded = (
+        google_calendar_token_deadline
+        ._guarded_google_calendar_authorization_code_with_deadline
+    )
+    source_lines, first_line = inspect.getsourcelines(guarded)
+    target_line = first_line + next(
+        offset
+        for offset, line in enumerate(source_lines)
+        if line.lstrip().startswith("except BaseException as failure")
+    )
+    interrupted = False
+
+    def interrupt_exception_entry(frame, event, _argument):
+        nonlocal interrupted
+        if (
+            not interrupted
+            and event == "line"
+            and frame.f_code is guarded.__code__
+            and frame.f_lineno == target_line
+        ):
+            interrupted = True
+            raise KeyboardInterrupt("authorization-except-entry-private")
+        return interrupt_exception_entry
+
+    try:
+        sys.settrace(interrupt_exception_entry)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            _run(
+                _exchange(
+                    authorization_code=(
+                        "invalid\nauthorization-except-entry-secret"
+                    )
+                )
+            )
+    finally:
+        sys.settrace(None)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    names, values = _module_traceback(raised.value)
+    assert names == [
+        "exchange_google_calendar_authorization_code_with_deadline",
+        "_raise_control_exception",
+    ]
+    output = " ".join(
+        (
+            repr(raised.value),
+            _formatted_exception(raised.value),
+            values,
+        )
+    )
+    for private in (
+        "authorization-except-entry-private",
+        "authorization-except-entry-secret",
+        CLIENT_SECRET,
+        AUTHORIZATION_CODE,
+        CODE_VERIFIER,
+    ):
+        assert private not in output
+
+
+def test_reentrant_public_authorization_handler_is_secret_free():
+    guarded = exchange_google_calendar_authorization_code_with_deadline
+    source_lines, first_line = inspect.getsourcelines(guarded)
+    target_line = first_line + next(
+        offset
+        for offset, line in enumerate(source_lines)
+        if line.lstrip().startswith(
+            "except BaseException as boundary_raised"
+        )
+    )
+    interrupted = False
+
+    def interrupt_public_handler(frame, event, _argument):
+        nonlocal interrupted
+        if (
+            not interrupted
+            and event == "line"
+            and frame.f_code is guarded.__code__
+            and frame.f_lineno == target_line
+        ):
+            interrupted = True
+            raise KeyboardInterrupt("public-handler-private-detail")
+        return interrupt_public_handler
+
+    try:
+        sys.settrace(interrupt_public_handler)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            _run(
+                _exchange(
+                    authorization_code=(
+                        "invalid\npublic-handler-secret"
+                    )
+                )
+            )
+    finally:
+        sys.settrace(None)
+
+    names, values = _module_traceback(raised.value)
+    assert names == [
+        "exchange_google_calendar_authorization_code_with_deadline"
+    ]
+    output = " ".join(
+        (
+            repr(raised.value),
+            _formatted_exception(raised.value),
+            values,
+        )
+    )
+    for private in (
+        "public-handler-secret",
+        CLIENT_SECRET,
+        AUTHORIZATION_CODE,
+        CODE_VERIFIER,
+    ):
+        assert private not in output
 
 
 def test_cancellation_during_client_cleanup_takes_precedence(monkeypatch):

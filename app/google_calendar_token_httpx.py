@@ -14,6 +14,7 @@ import anyio
 import httpcore
 import httpx
 
+from app.calendar_credentials import MAX_REFRESH_TOKEN_BYTES
 from app.google_calendar_oauth import GoogleCalendarTokenExchangeError
 from app.google_calendar_token_exchange import (
     GOOGLE_CALENDAR_TOKEN_ENDPOINT,
@@ -28,7 +29,7 @@ _TOKEN_EXCHANGE_TIMEOUT_SECONDS = 5.0
 _MAX_REQUEST_BODY_BYTES = 64 * 1024
 _MAX_RESPONSE_BODY_BYTES = 64 * 1024
 _RESPONSE_CHUNK_BYTES = 8 * 1024
-_FIELD_NAMES = (
+_AUTHORIZATION_CODE_FIELD_NAMES = (
     "code",
     "client_id",
     "client_secret",
@@ -36,7 +37,7 @@ _FIELD_NAMES = (
     "grant_type",
     "code_verifier",
 )
-_FIELD_MAXIMUM_BYTES = (
+_AUTHORIZATION_CODE_FIELD_MAXIMUM_BYTES = (
     8 * 1024,
     512,
     4 * 1024,
@@ -44,6 +45,20 @@ _FIELD_MAXIMUM_BYTES = (
     len("authorization_code"),
     43,
 )
+_REFRESH_TOKEN_FIELD_NAMES = (
+    "client_id",
+    "client_secret",
+    "grant_type",
+    "refresh_token",
+)
+_REFRESH_TOKEN_FIELD_MAXIMUM_BYTES = (
+    512,
+    4 * 1024,
+    len("refresh_token"),
+    MAX_REFRESH_TOKEN_BYTES,
+)
+_AUTHORIZATION_CODE_BODY_STATUSES = frozenset({200})
+_REFRESH_TOKEN_BODY_STATUSES = frozenset({200, 400})
 
 
 def _remaining_timeout(
@@ -280,14 +295,18 @@ def _post_form(
     fields: object,
     timeout_seconds: object,
 ) -> GoogleCalendarTokenTransportResponse:
-    encoded_form = _validated_encoded_form(
+    encoded_form, readable_body_statuses = _validated_encoded_form(
         url=url,
         fields=fields,
         timeout_seconds=timeout_seconds,
     )
     client = _new_http_client(timeout_seconds=_TOKEN_EXCHANGE_TIMEOUT_SECONDS)
     try:
-        return _stream_response(client=client, encoded_form=encoded_form)
+        return _stream_response(
+            client=client,
+            encoded_form=encoded_form,
+            readable_body_statuses=readable_body_statuses,
+        )
     finally:
         client.close()
 
@@ -301,7 +320,7 @@ async def _post_form_async(
 ) -> GoogleCalendarTokenTransportResponse:
     """Perform the same bounded request through cancellation-capable I/O."""
 
-    encoded_form = _validated_encoded_form(
+    encoded_form, readable_body_statuses = _validated_encoded_form(
         url=url,
         fields=fields,
         timeout_seconds=timeout_seconds,
@@ -315,6 +334,7 @@ async def _post_form_async(
         response = await _stream_response_async(
             client=client,
             encoded_form=encoded_form,
+            readable_body_statuses=readable_body_statuses,
         )
     except BaseException:
         try:
@@ -333,7 +353,7 @@ def _validated_encoded_form(
     url: object,
     fields: object,
     timeout_seconds: object,
-) -> bytes:
+) -> tuple[bytes, frozenset[int]]:
     if type(url) is not str or url != GOOGLE_CALENDAR_TOKEN_ENDPOINT:
         raise ValueError("invalid token endpoint")
     if (
@@ -341,13 +361,28 @@ def _validated_encoded_form(
         or timeout_seconds != _TOKEN_EXCHANGE_TIMEOUT_SECONDS
     ):
         raise ValueError("invalid timeout")
-    if type(fields) is not tuple or len(fields) != len(_FIELD_NAMES):
+    if type(fields) is not tuple:
+        raise ValueError("invalid token fields")
+
+    if len(fields) == len(_AUTHORIZATION_CODE_FIELD_NAMES):
+        expected_names = _AUTHORIZATION_CODE_FIELD_NAMES
+        maximum_sizes = _AUTHORIZATION_CODE_FIELD_MAXIMUM_BYTES
+        grant_type_index = 4
+        expected_grant_type = "authorization_code"
+        readable_body_statuses = _AUTHORIZATION_CODE_BODY_STATUSES
+    elif len(fields) == len(_REFRESH_TOKEN_FIELD_NAMES):
+        expected_names = _REFRESH_TOKEN_FIELD_NAMES
+        maximum_sizes = _REFRESH_TOKEN_FIELD_MAXIMUM_BYTES
+        grant_type_index = 2
+        expected_grant_type = "refresh_token"
+        readable_body_statuses = _REFRESH_TOKEN_BODY_STATUSES
+    else:
         raise ValueError("invalid token fields")
 
     validated_fields: list[tuple[str, str]] = []
     for expected_name, maximum_bytes, field in zip(
-        _FIELD_NAMES,
-        _FIELD_MAXIMUM_BYTES,
+        expected_names,
+        maximum_sizes,
         fields,
         strict=True,
     ):
@@ -364,7 +399,7 @@ def _validated_encoded_form(
             raise ValueError("invalid token field")
         validated_fields.append((name, value))
 
-    if validated_fields[4][1] != "authorization_code":
+    if validated_fields[grant_type_index][1] != expected_grant_type:
         raise ValueError("invalid grant type")
     encoded = urlencode(
         tuple(validated_fields),
@@ -376,7 +411,7 @@ def _validated_encoded_form(
     ).encode("ascii")
     if not 1 <= len(encoded) <= _MAX_REQUEST_BODY_BYTES:
         raise ValueError("invalid token form size")
-    return encoded
+    return encoded, readable_body_statuses
 
 
 def _validated_operation_deadline(value: object) -> float:
@@ -475,6 +510,7 @@ def _stream_response(
     *,
     client: httpx.Client,
     encoded_form: bytes,
+    readable_body_statuses: frozenset[int],
 ) -> GoogleCalendarTokenTransportResponse:
     with client.stream(
         "POST",
@@ -491,13 +527,17 @@ def _stream_response(
         follow_redirects=False,
         timeout=httpx.Timeout(_TOKEN_EXCHANGE_TIMEOUT_SECONDS),
     ) as response:
-        return _bounded_response(response)
+        return _bounded_response(
+            response,
+            readable_body_statuses=readable_body_statuses,
+        )
 
 
 async def _stream_response_async(
     *,
     client: httpx.AsyncClient,
     encoded_form: bytes,
+    readable_body_statuses: frozenset[int],
 ) -> GoogleCalendarTokenTransportResponse:
     response_context = client.stream(
         "POST",
@@ -516,7 +556,10 @@ async def _stream_response_async(
     )
     response = await response_context.__aenter__()
     try:
-        result = await _bounded_response_async(response)
+        result = await _bounded_response_async(
+            response,
+            readable_body_statuses=readable_body_statuses,
+        )
     except BaseException as failure:
         try:
             await response_context.__aexit__(
@@ -535,11 +578,13 @@ async def _stream_response_async(
 
 def _bounded_response(
     response: httpx.Response,
+    *,
+    readable_body_statuses: frozenset[int],
 ) -> GoogleCalendarTokenTransportResponse:
     status_code = response.status_code
     if type(status_code) is not int:
         raise ValueError("invalid response status")
-    if status_code != 200:
+    if status_code not in readable_body_statuses:
         return GoogleCalendarTokenTransportResponse(
             status_code=status_code,
             content_type=None,
@@ -567,11 +612,13 @@ def _bounded_response(
 
 async def _bounded_response_async(
     response: httpx.Response,
+    *,
+    readable_body_statuses: frozenset[int],
 ) -> GoogleCalendarTokenTransportResponse:
     status_code = response.status_code
     if type(status_code) is not int:
         raise ValueError("invalid response status")
-    if status_code != 200:
+    if status_code not in readable_body_statuses:
         return GoogleCalendarTokenTransportResponse(
             status_code=status_code,
             content_type=None,
