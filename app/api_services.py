@@ -43,6 +43,7 @@ from app.api_schemas import (
     CoachBlockerMutation,
     CoachBlockerResponse,
     CoachBlockerUpdate,
+    CoachCalendarConnectionResponse,
     CoachClientAvailabilityWindowResponse,
     CoachClientListResponse,
     CoachClientLocationResponse,
@@ -78,6 +79,10 @@ from app.api_schemas import (
     PublicRequestStatusResponse,
     TimeSlotResponse,
     ClientInviteCalendarLinks,
+)
+from app.calendar_connections import (
+    CalendarConnectionOwnerNotFound,
+    get_google_calendar_connection_status,
 )
 from app.calendar_handoff import calendar_ics, calendar_links
 from app.config import demo_data_access_enabled_from_env
@@ -154,6 +159,26 @@ def get_coach_provider_settings(instructor_id: str) -> CoachProviderSettingsResp
         return _provider_settings_response(load_provider_configuration(instructor_id))
     except ProviderNotFound as exc:
         raise ResourceNotFound("The instructor could not be found.") from exc
+
+
+def get_coach_google_calendar_connection_status(
+    account_id: str,
+) -> CoachCalendarConnectionResponse:
+    try:
+        with db.SessionLocal() as session:
+            status = get_google_calendar_connection_status(
+                session,
+                account_id=account_id,
+            )
+    except CalendarConnectionOwnerNotFound as exc:
+        raise ResourceNotFound("The provider could not be found.") from exc
+    return CoachCalendarConnectionResponse(
+        provider=status.provider,
+        state=status.state,
+        connected_at=status.connected_at,
+        updated_at=status.updated_at,
+        authorization_required_at=status.authorization_required_at,
+    )
 
 
 def list_coach_clients(instructor_id: str) -> CoachClientListResponse:

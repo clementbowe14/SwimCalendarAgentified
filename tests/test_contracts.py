@@ -78,6 +78,7 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/coach/blockers" in paths
     assert "/api/coach/blockers/{blocker_id}" in paths
     assert "/api/coach/command-center/snapshot" in paths
+    assert "/api/coach/calendar-connections/google" in paths
     assert "/api/coach/appointments/{appointment_id}/calendar-links" in paths
     assert "/api/coach/appointments/{appointment_id}/calendar.ics" in paths
     assert "text/calendar" in openapi["paths"][
@@ -100,6 +101,26 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/coach/lesson-requests/{request_token}/decline" in paths
     assert "/api/coach/settings" in paths
     assert "/api/coach/scheduling-policy" in paths
+    calendar_status = openapi["paths"][
+        "/api/coach/calendar-connections/google"
+    ]["get"]
+    assert calendar_status["security"] == [{"CoachSessionCookie": []}]
+    assert calendar_status["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"] == {
+        "$ref": "#/components/schemas/CoachCalendarConnectionResponse"
+    }
+    assert set(
+        openapi["components"]["schemas"]["CoachCalendarConnectionResponse"][
+            "required"
+        ]
+    ) == {
+        "provider",
+        "state",
+        "connected_at",
+        "updated_at",
+        "authorization_required_at",
+    }
     assert openapi["paths"]["/api/coach/settings"]["get"]["deprecated"] is True
     legacy_policy_put = openapi["paths"]["/api/coach/settings"]["put"]
     assert legacy_policy_put["deprecated"] is True

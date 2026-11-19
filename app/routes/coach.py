@@ -21,6 +21,7 @@ from app.api_schemas import (
     CoachBlockerResponse,
     CoachBlockerUpdate,
     CoachBookLessonRequest,
+    CoachCalendarConnectionResponse,
     CoachClientListResponse,
     CoachClientProfileResponse,
     CoachCommandCenterSnapshot,
@@ -50,6 +51,7 @@ from app.api_services import (
     get_coach_command_center_snapshot,
     get_coach_calendar_ics,
     get_coach_calendar_links,
+    get_coach_google_calendar_connection_status,
     get_coach_blockers,
     get_coach_client,
     get_coach_provider_settings,
@@ -187,6 +189,18 @@ def read_provider_settings(
 ) -> CoachProviderSettingsResponse:
     _private_response(response)
     return get_coach_provider_settings(coach.instructor_id)
+
+
+@router.get(
+    "/calendar-connections/google",
+    response_model=CoachCalendarConnectionResponse,
+)
+def read_google_calendar_connection_status(
+    response: Response,
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachCalendarConnectionResponse:
+    _private_response(response)
+    return get_coach_google_calendar_connection_status(coach.account_id)
 
 
 @router.put("/provider", response_model=CoachProviderSettingsResponse)

@@ -160,6 +160,16 @@ class CoachProviderSettingsResponse(BaseModel):
     setup_missing_fields: list[str]
 
 
+class CoachCalendarConnectionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Literal["google"]
+    state: Literal["disconnected", "connected", "authorization_required"]
+    connected_at: Optional[AwareDatetime]
+    updated_at: Optional[AwareDatetime]
+    authorization_required_at: Optional[AwareDatetime]
+
+
 class CoachProviderSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
