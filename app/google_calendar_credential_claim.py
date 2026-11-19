@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import re
+import asyncio
 from collections.abc import Callable
-from typing import Literal, NoReturn, TypeAlias, final
+from typing import Literal, TypeAlias
 
 from sqlalchemy import select as _select
 from sqlalchemy.engine import Engine as _Engine
@@ -15,7 +15,17 @@ from app.calendar_credentials import (
     CalendarCredentialScope,
     EncryptedCalendarCredential,
 )
-from app.google_calendar_oauth import GoogleCalendarOAuthError
+from app.google_calendar_credential_handoff import (
+    GoogleCalendarRefreshCredentialClaim,
+    GoogleCalendarRefreshCredentialClaimError,
+    _new_claim,
+    _raise_claim_error,
+    _raise_control_exception,
+    _validated_claim_fence,
+    _validated_connection_id,
+    _validated_identifier,
+    _validated_revision,
+)
 from app.models import ProviderAccountDB, ProviderCalendarConnectionDB
 
 
@@ -29,9 +39,6 @@ __all__ = (
 )
 
 
-_CONNECTION_ID_PATTERN = re.compile(r"calconn_[0-9a-f]{32}\Z")
-_MAX_IDENTIFIER_BYTES = 255
-_POSTGRESQL_BIGINT_MAX = 9_223_372_036_854_775_807
 _CLAIM_MODELS = (ProviderAccountDB, ProviderCalendarConnectionDB)
 
 
@@ -39,93 +46,6 @@ GoogleCalendarRefreshCredentialState: TypeAlias = Literal[
     "disconnected",
     "authorization_required",
 ]
-
-
-class GoogleCalendarRefreshCredentialClaimError(GoogleCalendarOAuthError):
-    """A stored Google credential could not be claimed safely."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            "Google Calendar refresh credential could not be claimed safely."
-        )
-
-
-class _SealedClaimValue:
-    """Immutable, non-serializable base for a secret-bearing handoff."""
-
-    __slots__ = ()
-
-    def __setattr__(self, _name: str, _value: object) -> None:
-        raise AttributeError(
-            "Google Calendar refresh credential claims are immutable."
-        )
-
-    def __delattr__(self, _name: str) -> None:
-        raise AttributeError(
-            "Google Calendar refresh credential claims are immutable."
-        )
-
-    def __reduce__(self) -> NoReturn:
-        raise TypeError(
-            "Google Calendar refresh credential claims cannot be serialized."
-        )
-
-    def __reduce_ex__(self, _protocol: int) -> NoReturn:
-        raise TypeError(
-            "Google Calendar refresh credential claims cannot be serialized."
-        )
-
-    def __getstate__(self) -> NoReturn:
-        raise TypeError(
-            "Google Calendar refresh credential claims cannot be serialized."
-        )
-
-
-@final
-class GoogleCalendarRefreshCredentialClaim(_SealedClaimValue):
-    """One decrypted credential generation awaiting freshness validation."""
-
-    __slots__ = (
-        "account_id",
-        "instructor_id",
-        "connection_id",
-        "expected_calendar_connection_revision",
-        "refresh_token",
-    )
-
-    account_id: str
-    instructor_id: str
-    connection_id: str
-    expected_calendar_connection_revision: int
-    refresh_token: str
-
-    def __init_subclass__(cls, **_kwargs: object) -> NoReturn:
-        raise TypeError(
-            "Google Calendar refresh credential claims cannot be subclassed."
-        )
-
-    def __init__(
-        self,
-        *,
-        account_id: object,
-        instructor_id: object,
-        connection_id: object,
-        expected_calendar_connection_revision: object,
-        refresh_token: object,
-    ) -> None:
-        del (
-            account_id,
-            instructor_id,
-            connection_id,
-            expected_calendar_connection_revision,
-            refresh_token,
-        )
-        _raise_claim_error()
-
-    def __repr__(self) -> str:
-        return "GoogleCalendarRefreshCredentialClaim(<redacted>)"
-
-    __str__ = __repr__
 
 
 GoogleCalendarRefreshCredentialClaimResult: TypeAlias = (
@@ -142,15 +62,38 @@ def claim_google_calendar_refresh_credential(
 ) -> GoogleCalendarRefreshCredentialClaimResult:
     """Claim one persisted refresh credential after releasing every lock."""
 
+    control_exception: str | None = None
+    system_exit_code: int | None = None
     try:
         return _claim_google_calendar_refresh_credential(
             session_factory,
             instructor_id=instructor_id,
             credential_cipher=credential_cipher,
         )
-    except Exception:
+    except asyncio.CancelledError:
+        control_exception = "cancelled"
+    except KeyboardInterrupt:
+        control_exception = "keyboard_interrupt"
+    except SystemExit as raised:
+        control_exception = "system_exit"
+        if type(raised) is SystemExit:
+            system_exit_code = (
+                raised.code
+                if type(raised.code) is int or raised.code is None
+                else 1
+            )
+        else:
+            system_exit_code = 1
+    except GeneratorExit:
+        control_exception = "generator_exit"
+    except BaseException:
         pass
     del session_factory, instructor_id, credential_cipher
+    if control_exception is not None:
+        _raise_control_exception(
+            control_exception,
+            system_exit_code=system_exit_code,
+        )
     _raise_claim_error()
 
 
@@ -208,15 +151,38 @@ def revalidate_google_calendar_refresh_credential_claim(
 ) -> None:
     """Reject a credential claim changed during its network gap."""
 
+    control_exception: str | None = None
+    system_exit_code: int | None = None
     try:
         _revalidate_google_calendar_refresh_credential_claim(
             session_factory,
             claim=claim,
         )
         return
-    except Exception:
+    except asyncio.CancelledError:
+        control_exception = "cancelled"
+    except KeyboardInterrupt:
+        control_exception = "keyboard_interrupt"
+    except SystemExit as raised:
+        control_exception = "system_exit"
+        if type(raised) is SystemExit:
+            system_exit_code = (
+                raised.code
+                if type(raised.code) is int or raised.code is None
+                else 1
+            )
+        else:
+            system_exit_code = 1
+    except GeneratorExit:
+        control_exception = "generator_exit"
+    except BaseException:
         pass
     del session_factory, claim
+    if control_exception is not None:
+        _raise_control_exception(
+            control_exception,
+            system_exit_code=system_exit_code,
+        )
     _raise_claim_error()
 
 
@@ -436,82 +402,4 @@ def _revalidate_locked_refresh_credential_claim(
         raise ValueError("stale credential connection")
 
 
-def _validated_claim_fence(value: object) -> tuple[str, str, str, int]:
-    if type(value) is not GoogleCalendarRefreshCredentialClaim:
-        raise ValueError("invalid credential claim")
-    return (
-        _validated_identifier(value.account_id),
-        _validated_identifier(value.instructor_id),
-        _validated_connection_id(value.connection_id),
-        _validated_revision(
-            value.expected_calendar_connection_revision,
-            allow_zero=False,
-        ),
-    )
-
-
-def _validated_identifier(value: object) -> str:
-    if (
-        type(value) is not str
-        or not 1 <= len(value) <= _MAX_IDENTIFIER_BYTES
-        or value != value.strip()
-    ):
-        raise ValueError("invalid owner identifier")
-    try:
-        encoded = value.encode("ascii")
-    except UnicodeEncodeError:
-        raise ValueError("invalid owner identifier") from None
-    if any(byte < 0x21 or byte > 0x7E for byte in encoded):
-        raise ValueError("invalid owner identifier")
-    return value
-
-
-def _validated_connection_id(value: object) -> str:
-    if (
-        type(value) is not str
-        or _CONNECTION_ID_PATTERN.fullmatch(value) is None
-    ):
-        raise ValueError("invalid connection identifier")
-    return value
-
-
-def _validated_revision(value: object, *, allow_zero: bool) -> int:
-    minimum = 0 if allow_zero else 1
-    if (
-        type(value) is not int
-        or not minimum <= value <= _POSTGRESQL_BIGINT_MAX
-    ):
-        raise ValueError("invalid connection revision")
-    return value
-
-
-def _new_claim(
-    *,
-    account_id: str,
-    instructor_id: str,
-    connection_id: str,
-    expected_calendar_connection_revision: int,
-    refresh_token: str,
-) -> GoogleCalendarRefreshCredentialClaim:
-    result = object.__new__(GoogleCalendarRefreshCredentialClaim)
-    object.__setattr__(result, "account_id", account_id)
-    object.__setattr__(result, "instructor_id", instructor_id)
-    object.__setattr__(result, "connection_id", connection_id)
-    object.__setattr__(
-        result,
-        "expected_calendar_connection_revision",
-        expected_calendar_connection_revision,
-    )
-    object.__setattr__(result, "refresh_token", refresh_token)
-    return result
-
-
-def _raise_claim_error() -> NoReturn:
-    error = GoogleCalendarRefreshCredentialClaimError()
-    try:
-        raise error from None
-    except GoogleCalendarRefreshCredentialClaimError as raised:
-        raised.__cause__ = None
-        raised.__context__ = None
-        raised.__suppress_context__ = True
-        raise
+# Imported handoff helpers remain module attributes for internal compatibility.

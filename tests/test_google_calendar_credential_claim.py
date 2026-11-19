@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import datetime
 import inspect
 import json
+import logging
 import pickle
+import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -15,7 +19,11 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session
 
-from app import db, google_calendar_credential_claim
+from app import (
+    db,
+    google_calendar_credential_claim,
+    google_calendar_credential_handoff,
+)
 from app.calendar_connections import (
     disconnect_google_calendar,
     mark_google_calendar_authorization_required,
@@ -27,6 +35,10 @@ from app.google_calendar_credential_claim import (
     GoogleCalendarRefreshCredentialClaimError,
     claim_google_calendar_refresh_credential,
     revalidate_google_calendar_refresh_credential_claim,
+)
+from app.google_calendar_credential_handoff import (
+    GoogleCalendarValidatedRefreshCredentialClaim,
+    validate_google_calendar_refresh_credential_claim,
 )
 from app.google_calendar_oauth import GoogleCalendarOAuthError
 from app.models import (
@@ -50,6 +62,16 @@ class TextSubclass(str):
 
 class CipherSubclass(CalendarCredentialCipher):
     pass
+
+
+class PrivateBaseException(BaseException):
+    pass
+
+
+class HostileSystemExit(SystemExit):
+    @property
+    def code(self):
+        raise RuntimeError("system-exit-getter-private")
 
 
 class TrackingSession(Session):
@@ -132,18 +154,46 @@ def _sealed_claim(
     )
 
 
+def _forged_claim(**mutations):
+    claim = _sealed_claim()
+    field_names = {
+        "revision": "expected_calendar_connection_revision",
+    }
+    for name, value in mutations.items():
+        object.__setattr__(claim, field_names.get(name, name), value)
+    return claim
+
+
 def _module_traceback(error):
     names = []
     values = []
     current = error.__traceback__
     while current is not None:
         if current.tb_frame.f_code.co_filename.endswith(
-            "/app/google_calendar_credential_claim.py"
+            (
+                "/app/google_calendar_credential_claim.py",
+                "/app/google_calendar_credential_handoff.py",
+            )
         ):
             names.append(current.tb_frame.f_code.co_name)
             values.extend(current.tb_frame.f_locals.values())
         current = current.tb_next
     return names, repr(values)
+
+
+def _module_frame_locals(error):
+    result = []
+    current = error.__traceback__
+    while current is not None:
+        if current.tb_frame.f_code.co_filename.endswith(
+            (
+                "/app/google_calendar_credential_claim.py",
+                "/app/google_calendar_credential_handoff.py",
+            )
+        ):
+            result.append(dict(current.tb_frame.f_locals))
+        current = current.tb_next
+    return result
 
 
 def _formatted_exception(error):
@@ -293,6 +343,473 @@ def test_claim_handoff_is_builder_only_immutable_and_nonserializable(monkeypatch
         result.refresh_token,
     ):
         assert private not in values
+
+
+def test_supported_validator_returns_an_independent_sealed_snapshot():
+    assert google_calendar_credential_handoff.__all__ == (
+        "GoogleCalendarRefreshCredentialClaim",
+        "GoogleCalendarRefreshCredentialClaimError",
+        "GoogleCalendarValidatedRefreshCredentialClaim",
+        "validate_google_calendar_refresh_credential_claim",
+    )
+    claim = _sealed_claim()
+
+    snapshot = validate_google_calendar_refresh_credential_claim(claim)
+    object.__setattr__(claim, "refresh_token", "mutated-after-validation")
+
+    assert type(snapshot) is GoogleCalendarValidatedRefreshCredentialClaim
+    assert snapshot.account_id == "acct_refresh_claim_private"
+    assert snapshot.instructor_id == "inst_refresh_claim_private"
+    assert snapshot.connection_id == "calconn_" + "1" * 32
+    assert snapshot.expected_calendar_connection_revision == 7
+    assert snapshot.refresh_token == "refresh-token-private"
+    assert not hasattr(snapshot, "__dict__")
+    assert repr(snapshot) == (
+        "GoogleCalendarValidatedRefreshCredentialClaim(<redacted>)"
+    )
+    assert snapshot.refresh_token not in repr(snapshot)
+    with pytest.raises(AttributeError):
+        snapshot.refresh_token = "replacement"
+    for serializer in (
+        dataclasses.asdict,
+        dataclasses.astuple,
+        vars,
+        pickle.dumps,
+        json.dumps,
+        jsonable_encoder,
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            serializer(snapshot)
+    with pytest.raises(GoogleCalendarRefreshCredentialClaimError):
+        GoogleCalendarValidatedRefreshCredentialClaim(
+            account_id=snapshot.account_id,
+            instructor_id=snapshot.instructor_id,
+            connection_id=snapshot.connection_id,
+            expected_calendar_connection_revision=7,
+            refresh_token=snapshot.refresh_token,
+        )
+
+
+@pytest.mark.parametrize("target_kind", ["claim", "snapshot"])
+@pytest.mark.parametrize("operation", ["assign", "delete"])
+def test_sealed_mutation_traceback_does_not_retain_attempted_secret(
+    target_kind,
+    operation,
+    caplog,
+):
+    caplog.set_level(logging.DEBUG)
+    claim = _sealed_claim()
+    target = (
+        claim
+        if target_kind == "claim"
+        else validate_google_calendar_refresh_credential_claim(claim)
+    )
+    attempted_secret = f"attempted-{target_kind}-refresh-private"
+    attempted_name = f"attempted_{target_kind}_{operation}_attribute_private"
+
+    try:
+        raise RuntimeError("ambient-mutation-private")
+    except RuntimeError:
+        with pytest.raises(AttributeError) as raised:
+            if operation == "assign":
+                setattr(target, attempted_name, attempted_secret)
+            else:
+                delattr(target, attempted_name)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    names, frame_values = _module_traceback(raised.value)
+    expected_mutator = (
+        "__setattr__" if operation == "assign" else "__delattr__"
+    )
+    assert names == [expected_mutator, "_raise_immutable_error"]
+    output = " ".join(
+        (
+            str(raised.value),
+            repr(raised.value),
+            _formatted_exception(raised.value),
+            frame_values,
+            caplog.text,
+        )
+    )
+    assert attempted_secret not in output
+    assert attempted_name not in output
+    assert "ambient-mutation-private" not in output
+
+
+@pytest.mark.parametrize("target_kind", ["claim", "snapshot"])
+@pytest.mark.parametrize(
+    ("hook_name", "expected_frame"),
+    [
+        ("reduce", "__reduce__"),
+        ("reduce_ex", "__reduce_ex__"),
+        ("getstate", "__getstate__"),
+    ],
+)
+def test_serialization_hook_traceback_does_not_retain_sealed_secret(
+    target_kind,
+    hook_name,
+    expected_frame,
+    caplog,
+):
+    caplog.set_level(logging.DEBUG)
+    claim = _sealed_claim(refresh_token="serialization-refresh-private")
+    target = (
+        claim
+        if target_kind == "claim"
+        else validate_google_calendar_refresh_credential_claim(claim)
+    )
+
+    try:
+        raise RuntimeError("ambient-serialization-private")
+    except RuntimeError:
+        with pytest.raises(TypeError) as raised:
+            if hook_name == "reduce":
+                target.__reduce__()
+            elif hook_name == "reduce_ex":
+                target.__reduce_ex__(5)
+            else:
+                target.__getstate__()
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    names, frame_values = _module_traceback(raised.value)
+    assert names == [expected_frame, "_raise_serialization_error"]
+    output = " ".join(
+        (
+            str(raised.value),
+            repr(raised.value),
+            _formatted_exception(raised.value),
+            frame_values,
+            caplog.text,
+        )
+    )
+    assert "serialization-refresh-private" not in output
+    assert "ambient-serialization-private" not in output
+
+
+@pytest.mark.parametrize(
+    "base_class",
+    [
+        GoogleCalendarRefreshCredentialClaim,
+        GoogleCalendarValidatedRefreshCredentialClaim,
+    ],
+)
+def test_subclass_rejection_does_not_retain_keyword_or_ambient_secret(
+    base_class,
+    caplog,
+):
+    caplog.set_level(logging.DEBUG)
+    attempted_secret = "subclass-keyword-private"
+
+    try:
+        raise RuntimeError("ambient-subclass-private")
+    except RuntimeError:
+        with pytest.raises(TypeError) as raised:
+
+            class UnsafeClaim(
+                base_class,
+                private_option=attempted_secret,
+            ):
+                pass
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    names, frame_values = _module_traceback(raised.value)
+    assert names == ["__init_subclass__", "_raise_subclass_error"]
+    output = " ".join(
+        (
+            str(raised.value),
+            repr(raised.value),
+            _formatted_exception(raised.value),
+            frame_values,
+            caplog.text,
+        )
+    )
+    assert attempted_secret not in output
+    assert "ambient-subclass-private" not in output
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        None,
+        object(),
+        _forged_claim(account_id="acct_refresh_claim_second"),
+        _forged_claim(instructor_id="inst_refresh_claim_second"),
+        _forged_claim(connection_id="calconn_" + "2" * 32),
+        _forged_claim(revision=8),
+        _forged_claim(refresh_token="cross-tenant-refresh-private"),
+        _forged_claim(_integrity_tag=b"x" * 32),
+    ],
+)
+def test_supported_validator_rejects_invalid_claims_without_detail(candidate):
+
+    with pytest.raises(GoogleCalendarRefreshCredentialClaimError) as raised:
+        validate_google_calendar_refresh_credential_claim(candidate)
+
+    assert str(raised.value) == (
+        "Google Calendar refresh credential could not be claimed safely."
+    )
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    names, frame_values = _module_traceback(raised.value)
+    assert names == [
+        "validate_google_calendar_refresh_credential_claim",
+        "_raise_claim_error",
+    ]
+    assert "cross-tenant-refresh-private" not in frame_values
+    assert "cross-tenant-refresh-private" not in _formatted_exception(
+        raised.value
+    )
+
+
+def test_handoff_module_import_is_database_free():
+    code = """
+import sys
+from app import google_calendar_credential_handoff
+assert callable(
+    google_calendar_credential_handoff.validate_google_calendar_refresh_credential_claim
+)
+assert 'app.models' not in sys.modules
+assert 'sqlalchemy' not in sys.modules
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_type", "expected_helper", "expected_exit_code"),
+    [
+        (
+            asyncio.CancelledError("control-private-detail"),
+            asyncio.CancelledError,
+            "_raise_control_exception",
+            None,
+        ),
+        (
+            KeyboardInterrupt("control-private-detail"),
+            KeyboardInterrupt,
+            "_raise_control_exception",
+            None,
+        ),
+        (
+            SystemExit(7),
+            SystemExit,
+            "_raise_control_exception",
+            7,
+        ),
+        (
+            SystemExit("control-private-detail"),
+            SystemExit,
+            "_raise_control_exception",
+            1,
+        ),
+        (
+            HostileSystemExit("control-private-detail"),
+            SystemExit,
+            "_raise_control_exception",
+            1,
+        ),
+        (
+            GeneratorExit("control-private-detail"),
+            GeneratorExit,
+            "_raise_control_exception",
+            None,
+        ),
+        (
+            PrivateBaseException("control-private-detail"),
+            GoogleCalendarRefreshCredentialClaimError,
+            "_raise_claim_error",
+            None,
+        ),
+    ],
+)
+def test_validator_sanitizes_every_base_exception_path(
+    monkeypatch,
+    caplog,
+    error,
+    expected_type,
+    expected_helper,
+    expected_exit_code,
+):
+    caplog.set_level(logging.DEBUG)
+    claim = _sealed_claim(refresh_token="control-refresh-token-private")
+
+    def fail_integrity_tag(**_kwargs):
+        raise error
+
+    monkeypatch.setattr(
+        google_calendar_credential_handoff,
+        "_claim_integrity_tag",
+        fail_integrity_tag,
+    )
+
+    with pytest.raises(expected_type) as raised:
+        validate_google_calendar_refresh_credential_claim(claim)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    if expected_type is SystemExit:
+        assert raised.value.code == expected_exit_code
+    names, frame_values = _module_traceback(raised.value)
+    assert names == [
+        "validate_google_calendar_refresh_credential_claim",
+        expected_helper,
+    ]
+    output = " ".join(
+        (
+            repr(raised.value),
+            _formatted_exception(raised.value),
+            frame_values,
+            caplog.text,
+        )
+    )
+    for private in (
+        "control-private-detail",
+        "control-refresh-token-private",
+        "acct_refresh_claim_private",
+        "inst_refresh_claim_private",
+    ):
+        assert private not in output
+
+
+@pytest.mark.parametrize("boundary", ["claim", "revalidate"])
+@pytest.mark.parametrize(
+    (
+        "exception_factory",
+        "expected_type",
+        "expected_helper",
+        "expected_exit_code",
+    ),
+    [
+        (
+            lambda: asyncio.CancelledError("boundary-control-private"),
+            asyncio.CancelledError,
+            "_raise_control_exception",
+            None,
+        ),
+        (
+            lambda: KeyboardInterrupt("boundary-control-private"),
+            KeyboardInterrupt,
+            "_raise_control_exception",
+            None,
+        ),
+        (
+            lambda: SystemExit(7),
+            SystemExit,
+            "_raise_control_exception",
+            7,
+        ),
+        (
+            lambda: SystemExit("boundary-control-private"),
+            SystemExit,
+            "_raise_control_exception",
+            1,
+        ),
+        (
+            lambda: HostileSystemExit("boundary-control-private"),
+            SystemExit,
+            "_raise_control_exception",
+            1,
+        ),
+        (
+            lambda: GeneratorExit("boundary-control-private"),
+            GeneratorExit,
+            "_raise_control_exception",
+            None,
+        ),
+        (
+            lambda: PrivateBaseException("boundary-control-private"),
+            GoogleCalendarRefreshCredentialClaimError,
+            "_raise_claim_error",
+            None,
+        ),
+    ],
+)
+def test_public_claim_boundaries_remove_secret_objects_from_control_tracebacks(
+    monkeypatch,
+    caplog,
+    boundary,
+    exception_factory,
+    expected_type,
+    expected_helper,
+    expected_exit_code,
+):
+    caplog.set_level(logging.DEBUG)
+    claim = _sealed_claim(refresh_token="boundary-refresh-token-private")
+
+    def fail_boundary(*_args, **_kwargs):
+        raise exception_factory()
+
+    if boundary == "claim":
+        monkeypatch.setattr(
+            google_calendar_credential_claim,
+            "_claim_google_calendar_refresh_credential",
+            fail_boundary,
+        )
+        operation = lambda: _claim(lambda: None)
+        expected_public_frame = (
+            "claim_google_calendar_refresh_credential"
+        )
+    else:
+        monkeypatch.setattr(
+            google_calendar_credential_claim,
+            "_revalidate_google_calendar_refresh_credential_claim",
+            fail_boundary,
+        )
+        operation = lambda: revalidate_google_calendar_refresh_credential_claim(
+            lambda: None,
+            claim=claim,
+        )
+        expected_public_frame = (
+            "revalidate_google_calendar_refresh_credential_claim"
+        )
+
+    with pytest.raises(expected_type) as raised:
+        operation()
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    if expected_type is SystemExit:
+        assert raised.value.code == expected_exit_code
+    names, frame_values = _module_traceback(raised.value)
+    assert names == [expected_public_frame, expected_helper]
+    for frame_locals in _module_frame_locals(raised.value):
+        assert all(
+            not isinstance(value, GoogleCalendarRefreshCredentialClaim)
+            for value in frame_locals.values()
+        )
+        assert all(
+            not isinstance(value, CalendarCredentialCipher)
+            for value in frame_locals.values()
+        )
+    output = " ".join(
+        (
+            repr(raised.value),
+            _formatted_exception(raised.value),
+            frame_values,
+            caplog.text,
+        )
+    )
+    for private in (
+        "boundary-control-private",
+        "boundary-refresh-token-private",
+        "inst_refresh_claim_private",
+    ):
+        assert private not in output
 
 
 def test_invalid_inputs_and_sessions_fail_before_claiming(monkeypatch):
@@ -507,10 +1024,12 @@ def test_revalidation_rejects_malformed_claims_before_session_creation():
     malformed_claims = (
         None,
         object(),
-        _sealed_claim(account_id=""),
-        _sealed_claim(instructor_id=" inst_refresh_claim_private"),
-        _sealed_claim(connection_id="invalid-connection"),
-        _sealed_claim(revision=0),
+        _forged_claim(account_id=""),
+        _forged_claim(instructor_id=" inst_refresh_claim_private"),
+        _forged_claim(connection_id="invalid-connection"),
+        _forged_claim(revision=0),
+        _forged_claim(refresh_token="swapped-refresh-token-private"),
+        _forged_claim(_integrity_tag=b"x" * 32),
     )
     for malformed in malformed_claims:
         with pytest.raises(GoogleCalendarRefreshCredentialClaimError):
