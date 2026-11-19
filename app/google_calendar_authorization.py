@@ -16,6 +16,7 @@ from app.google_calendar_oauth import (
     GoogleCalendarOAuthConfiguration as _GoogleCalendarOAuthConfiguration,
     GoogleCalendarOAuthError,
 )
+from app.google_calendar_protocol import GOOGLE_CALENDAR_FREEBUSY_SCOPE
 
 
 __all__ = (
@@ -29,9 +30,6 @@ __all__ = (
 
 GOOGLE_CALENDAR_AUTHORIZATION_ENDPOINT = (
     "https://accounts.google.com/o/oauth2/v2/auth"
-)
-GOOGLE_CALENDAR_FREEBUSY_SCOPE = (
-    "https://www.googleapis.com/auth/calendar.freebusy"
 )
 _CANONICAL_BASE64URL_32_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 _UTC = datetime.timezone.utc
