@@ -239,6 +239,8 @@ async def _post_json_in_owned_task(
 ) -> object:
     start_gate = asyncio.Event()
     task = None
+    outcome: object = _UNSET
+    failure_outcome: _OwnedTransportOutcome | None = None
     try:
         task = asyncio.create_task(
             _gated_post_json(
@@ -250,45 +252,85 @@ async def _post_json_in_owned_task(
         )
         start_gate.set()
         outcome = await _await_owned_transport_task(task)
-        if type(outcome) is not _OwnedTransportOutcome:
-            raise ExternalCalendarInvalidResponse() from None
-        if outcome.control_exception is not None:
-            _raise_control_exception(
-                outcome.control_exception,
-                system_exit_code=outcome.system_exit_code,
-            )
-        if outcome.failure_reason is not None:
-            _raise_freebusy_failure(outcome.failure_reason)
-        return outcome.value
-    except BaseException:
+    except BaseException as raised:
+        parent_is_direct_cancellation = isinstance(
+            raised,
+            asyncio.CancelledError,
+        )
+        failure_outcome = _safely_classified_transport_outcome(raised)
         if task is not None:
-            cleanup_result = await _cancel_owned_transport_task(
-                task,
-                deadline=deadline,
-            )
-            if type(cleanup_result) is _OwnedTransportOutcome:
-                if (
-                    cleanup_result.control_exception is not None
-                    and not cleanup_result.control_is_cancellation_only
-                ):
-                    _raise_control_exception(
-                        cleanup_result.control_exception,
-                        system_exit_code=(
-                            cleanup_result.system_exit_code
-                        ),
-                    )
-            elif isinstance(cleanup_result, BaseException):
-                control_exception, _system_exit_code = (
-                    _classified_non_cancel_control_exception(
-                        cleanup_result
-                    )
+            try:
+                cleanup_result = await _cancel_owned_transport_task(
+                    task,
+                    deadline=deadline,
                 )
-                if control_exception is not None:
-                    _raise_control_exception(
-                        control_exception,
-                        system_exit_code=_system_exit_code,
-                    )
-        raise
+            except BaseException as cleanup_raised:
+                cleanup_result = _safely_classified_transport_outcome(
+                    cleanup_raised
+                )
+                cleanup_raised = None
+            failure_outcome = _selected_parent_failure_outcome(
+                failure_outcome,
+                cleanup_result,
+            )
+        if (
+            parent_is_direct_cancellation
+            and failure_outcome.control_exception == "cancelled"
+        ):
+            raise
+        raised = None
+    if failure_outcome is not None:
+        return _unwrap_owned_transport_outcome(failure_outcome)
+    if type(outcome) is not _OwnedTransportOutcome:
+        raise ExternalCalendarInvalidResponse() from None
+    return _unwrap_owned_transport_outcome(outcome)
+
+
+def _safely_classified_transport_outcome(
+    raised: BaseException,
+) -> _OwnedTransportOutcome:
+    try:
+        outcome = _owned_transport_failure_outcome(raised)
+        raised = None
+    except BaseException as secondary_raised:
+        outcome = _owned_transport_combined_emergency_outcome(
+            raised,
+            secondary_raised,
+        )
+        raised = secondary_raised = None
+    return outcome
+
+
+def _selected_parent_failure_outcome(
+    parent_outcome: _OwnedTransportOutcome,
+    cleanup_result: object,
+) -> _OwnedTransportOutcome:
+    if isinstance(cleanup_result, BaseException):
+        cleanup_result = _safely_classified_transport_outcome(
+            cleanup_result
+        )
+    if type(cleanup_result) is not _OwnedTransportOutcome:
+        return parent_outcome
+    if (
+        cleanup_result.control_exception is not None
+        and not cleanup_result.control_is_cancellation_only
+        and parent_outcome.control_exception in (None, "cancelled")
+    ):
+        return cleanup_result
+    return parent_outcome
+
+
+def _unwrap_owned_transport_outcome(
+    outcome: _OwnedTransportOutcome,
+) -> object:
+    if outcome.control_exception is not None:
+        _raise_control_exception(
+            outcome.control_exception,
+            system_exit_code=outcome.system_exit_code,
+        )
+    if outcome.failure_reason is not None:
+        _raise_freebusy_failure(outcome.failure_reason)
+    return outcome.value
 
 
 async def _gated_post_json(

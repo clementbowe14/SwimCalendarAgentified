@@ -941,7 +941,8 @@ def test_real_stalled_transport_is_cancelled_by_overall_deadline(monkeypatch):
     )
 
     async def scenario():
-        return await asyncio.wait_for(_query(), timeout=1.0)
+        async with asyncio.timeout(1.0):
+            return await _query()
 
     with pytest.raises(ExternalCalendarTimeout) as raised:
         _run(scenario())
@@ -1104,7 +1105,8 @@ def test_non_cancel_control_grouped_before_deadline_wins(monkeypatch):
         )
 
     async def scenario():
-        return await asyncio.wait_for(_query(), timeout=1.0)
+        async with asyncio.timeout(1.0):
+            return await _query()
 
     monkeypatch.setattr(
         google_calendar_freebusy_deadline,
@@ -1421,7 +1423,8 @@ def test_parent_control_cancels_and_awaits_owned_transport_task(monkeypatch):
             interrupt_after_start,
         )
         try:
-            await asyncio.wait_for(_query(), timeout=1.0)
+            async with asyncio.timeout(1.0):
+                await _query()
         except KeyboardInterrupt as raised:
             assert type(raised) is KeyboardInterrupt
             assert cleaned.is_set()
@@ -1537,7 +1540,8 @@ def test_owned_task_cleanup_is_bounded_by_original_deadline(monkeypatch):
         )
         started_at = asyncio.get_running_loop().time()
         try:
-            await asyncio.wait_for(_query(), timeout=1.0)
+            async with asyncio.timeout(1.0):
+                await _query()
         except KeyboardInterrupt:
             state["elapsed"] = (
                 asyncio.get_running_loop().time() - started_at
