@@ -46,6 +46,23 @@ class GoogleCalendarBusySourceFactory:
             )
         _raise_unavailable()
 
+    def create_for(
+        self,
+        session_factory: Callable[[], _Session],
+    ) -> CalendarBusySource:
+        """Create one source bound to a caller-captured database factory."""
+
+        try: return _create_google_calendar_busy_source(session_factory)
+        except BaseException as boundary_raised:
+            try: self = session_factory = None; control_exception, system_exit_code = _classify_control_exception(boundary_raised); boundary_raised = None
+            except BaseException as cleanup_raised: self = session_factory = boundary_raised = None; control_exception, system_exit_code = _classify_control_exception(cleanup_raised); cleanup_raised = None
+        if control_exception is not None:
+            _raise_control_exception(
+                control_exception,
+                system_exit_code=system_exit_code,
+            )
+        _raise_unavailable()
+
     def __setattr__(self, _name: str, _value: object) -> NoReturn:
         del self, _name, _value
         _raise_fresh(
@@ -91,6 +108,8 @@ class GoogleCalendarBusySourceFactory:
 def _create_google_calendar_busy_source(
     session_factory: Callable[[], _Session],
 ) -> CalendarBusySource:
+    if not callable(session_factory):
+        raise ValueError("Calendar busy source session factory is invalid.")
     configuration = credential_cipher = source = None
     try:
         configuration = (
@@ -166,16 +185,36 @@ def _classify_control_exception(
                 current,
                 BaseExceptionGroup,
             )
+        else:
+            nested = ()
+        lineage = tuple(
+            value
+            for value in (
+                BaseException.__cause__.__get__(current, BaseException),
+                BaseException.__context__.__get__(current, BaseException),
+            )
+            if value is not None
+        )
+        linked_count = len(nested) + len(lineage)
+        if linked_count:
             available_entries = max(
                 _MAX_CONTROL_EXCEPTION_ENTRIES
                 - traversed_entries
                 - len(pending),
                 0,
             )
-            children_to_schedule = min(len(nested), available_entries)
-            overflowed = overflowed or children_to_schedule < len(nested)
-            for index in range(children_to_schedule - 1, -1, -1):
+            lineage_to_schedule = min(len(lineage), available_entries)
+            nested_to_schedule = min(
+                len(nested),
+                available_entries - lineage_to_schedule,
+            )
+            overflowed = overflowed or (
+                lineage_to_schedule + nested_to_schedule < linked_count
+            )
+            for index in range(nested_to_schedule - 1, -1, -1):
                 pending.append(nested[index])
+            for index in range(lineage_to_schedule - 1, -1, -1):
+                pending.append(lineage[index])
     if overflowed or cancellation_found:
         return "cancelled", None
     return None, None
