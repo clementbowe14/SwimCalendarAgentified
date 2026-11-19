@@ -2800,7 +2800,9 @@ def test_claim_fenced_recovery_serializes_before_lifecycle_change(
     release_recovery = threading.Event()
     lifecycle_backend_ready = threading.Event()
     recovery_backend_pid = []
+    recovery_marked_at = []
     lifecycle_backend_pid = []
+    lifecycle_replaced_at = []
     real_mark = (
         google_calendar_refresh_recovery
         ._mark_locked_refresh_credential_authorization_required
@@ -2808,6 +2810,12 @@ def test_claim_fenced_recovery_serializes_before_lifecycle_change(
 
     def held_mark(session, **values):
         result = real_mark(session, **values)
+        marked_connection = session.get(
+            ProviderCalendarConnectionDB,
+            values["connection_id"],
+        )
+        assert marked_connection is not None
+        recovery_marked_at.append(marked_connection.updated_at)
         recovery_backend_pid.append(
             session.execute(text("SELECT pg_backend_pid()")).scalar_one()
         )
@@ -2835,12 +2843,16 @@ def test_claim_fenced_recovery_serializes_before_lifecycle_change(
             )
             lifecycle_backend_ready.set()
             if transition == "replace":
+                replacement_at = recovery_marked_at[0] + datetime.timedelta(
+                    microseconds=1
+                )
+                lifecycle_replaced_at.append(replacement_at)
                 return replace_google_calendar_connection(
                     session,
                     account_id=account_id,
                     refresh_token="post-recovery-replacement-private",
                     cipher=CIPHER,
-                    now=T0 + datetime.timedelta(minutes=1),
+                    now=replacement_at,
                 )
             return disconnect_google_calendar(
                 session,
@@ -2869,6 +2881,7 @@ def test_claim_fenced_recovery_serializes_before_lifecycle_change(
         assert stored is not None
         assert stored["id"] != claim.connection_id
         assert stored["authorization_required_at"] is None
+        assert stored["updated_at"] == lifecycle_replaced_at[0]
     else:
         assert lifecycle_status.state == "disconnected"
         assert stored is None
