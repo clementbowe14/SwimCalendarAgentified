@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, timedelta
 import hashlib
 import math
 import re
-from typing import Optional
+from typing import NoReturn, Optional
 from urllib.parse import quote
 import uuid
 
@@ -16,6 +17,7 @@ from app.api_errors import (
     AlternativeSlotContextMismatch,
     ApiException,
     BlockerStale,
+    CalendarAvailabilityUnavailable,
     CalendarLinksUnavailable,
     GeocodingFailed as GeocodingFailedApiError,
     IdempotencyConflict,
@@ -86,6 +88,7 @@ from app.calendar_connections import (
 )
 from app.calendar_handoff import calendar_ics, calendar_links
 from app.config import demo_data_access_enabled_from_env
+from app.external_calendar import CalendarBusySource, ExternalCalendarUnavailable
 from app.models import (
     AppointmentDB,
     InviteSlotOfferDB,
@@ -941,14 +944,25 @@ def _request_status(status: str, computed_expired: bool = False) -> str:
 def search_coach_availability(
     instructor_id: str,
     request: AvailabilitySearchRequest,
+    *,
+    calendar_busy_source: Optional[CalendarBusySource] = None,
 ) -> AvailabilitySearchResponse:
-    slots = _find_slots(
-        instructor_id=instructor_id,
-        requested_date=request.requested_date,
-        client_address=request.client_address,
-        is_instructor_facility=request.is_instructor_facility,
-        duration_mins=request.duration_mins,
-    )
+    try: slots = _find_slots(
+            calendar_busy_source=(
+                calendar_busy_source,
+                (calendar_busy_source := None),
+            )[0],
+            instructor_id=instructor_id,
+            requested_date=request.requested_date,
+            client_address=request.client_address,
+            is_instructor_facility=request.is_instructor_facility,
+            duration_mins=request.duration_mins,
+        )
+    finally:
+        try: calendar_busy_source = None
+        except BaseException:
+            calendar_busy_source = None
+            raise
     return AvailabilitySearchResponse(
         status="PRESENTING",
         client_name=request.client_name,
@@ -1814,16 +1828,28 @@ def public_invite_response(invite: InviteContext) -> PublicInviteResponse:
 def search_public_availability(
     invite: InviteContext,
     request: PublicAvailabilitySearchRequest,
+    *,
+    calendar_busy_source: Optional[CalendarBusySource] = None,
 ) -> PublicAvailabilitySearchResponse:
-    is_facility = request.location_type == "facility"
-    slots = _find_slots(
-        instructor_id=invite.instructor_id,
-        requested_date=request.requested_date,
-        client_address=request.client_address,
-        is_instructor_facility=is_facility,
-        duration_mins=request.duration_mins,
-        public=True,
-    )
+    try: slots = _find_slots(
+            calendar_busy_source=(
+                calendar_busy_source,
+                (calendar_busy_source := None),
+            )[0],
+            instructor_id=invite.instructor_id,
+            requested_date=request.requested_date,
+            client_address=request.client_address,
+            is_instructor_facility=(
+                is_facility := request.location_type == "facility"
+            ),
+            duration_mins=request.duration_mins,
+            public=True,
+        )
+    finally:
+        try: calendar_busy_source = None
+        except BaseException:
+            calendar_busy_source = None
+            raise
     location = _resolve_location(invite.instructor_id, request.client_address, is_facility)
     return PublicAvailabilitySearchResponse(
         status="PRESENTING",
@@ -2062,9 +2088,108 @@ def _find_slots(
     duration_mins: int,
     buffer_policy: Optional[BufferPolicy] = None,
     public: bool = False,
+    *,
+    calendar_busy_source: Optional[CalendarBusySource] = None,
 ) -> list[TimeSlotDTO]:
-    try:
-        return tools.find_available_swim_slots(
+    try: control_kind = None; system_exit_code = None; cleanup_failure = False; return _find_slots_evaluated(
+            calendar_busy_source=(
+                calendar_busy_source,
+                (calendar_busy_source := None),
+            )[0],
+            instructor_id=instructor_id,
+            requested_date=requested_date,
+            client_address=client_address,
+            is_instructor_facility=is_instructor_facility,
+            duration_mins=duration_mins,
+            buffer_policy=buffer_policy,
+            public=public,
+        )
+    except asyncio.CancelledError:
+        control_kind = "cancelled"
+        system_exit_code = None
+        cleanup_failure = False
+    except KeyboardInterrupt:
+        control_kind = "keyboard_interrupt"
+        system_exit_code = None
+        cleanup_failure = False
+    except SystemExit as interrupted:
+        try:
+            control_kind = "system_exit"
+            cleanup_failure = False
+            system_exit_code = (
+                interrupted.code
+                if type(interrupted) is SystemExit
+                and (
+                    type(interrupted.code) is int
+                    or interrupted.code is None
+                )
+                else 1
+            )
+            interrupted = None
+        except BaseException as cleanup_raised:
+            interrupted = None
+            if isinstance(cleanup_raised, asyncio.CancelledError):
+                control_kind = "cancelled"
+                system_exit_code = None
+                cleanup_failure = False
+            elif isinstance(cleanup_raised, KeyboardInterrupt):
+                control_kind = "keyboard_interrupt"
+                system_exit_code = None
+                cleanup_failure = False
+            elif isinstance(cleanup_raised, SystemExit):
+                control_kind = "system_exit"
+                cleanup_failure = False
+                system_exit_code = (
+                    cleanup_raised.code
+                    if type(cleanup_raised) is SystemExit
+                    and (
+                        type(cleanup_raised.code) is int
+                        or cleanup_raised.code is None
+                    )
+                    else 1
+                )
+            elif isinstance(cleanup_raised, GeneratorExit):
+                control_kind = "generator_exit"
+                system_exit_code = None
+                cleanup_failure = False
+            else:
+                control_kind = None
+                system_exit_code = None
+                cleanup_failure = True
+            cleanup_raised = None
+    except GeneratorExit:
+        control_kind = "generator_exit"
+        system_exit_code = None
+        cleanup_failure = False
+    finally:
+        try: calendar_busy_source = None
+        except BaseException:
+            calendar_busy_source = None
+            raise
+    if cleanup_failure:
+        _raise_calendar_cleanup_failure()
+    _raise_calendar_control(
+        control_kind,
+        system_exit_code=system_exit_code,
+    )
+
+
+def _find_slots_evaluated(
+    instructor_id: str,
+    requested_date: date,
+    client_address: str,
+    is_instructor_facility: bool,
+    duration_mins: int,
+    buffer_policy: Optional[BufferPolicy] = None,
+    public: bool = False,
+    *,
+    calendar_busy_source: Optional[CalendarBusySource] = None,
+) -> list[TimeSlotDTO]:
+    try: calendar_failure = False; return tools.find_available_swim_slots(
+            calendar_busy_source=(
+                calendar_busy_source,
+                (calendar_busy_source := None),
+            )[0],
             instructor_id=instructor_id,
             date_str=requested_date.isoformat(),
             client_address=client_address,
@@ -2072,6 +2197,13 @@ def _find_slots(
             duration_mins=duration_mins,
             buffer_policy=buffer_policy,
         )
+    except ExternalCalendarUnavailable:
+        try: calendar_failure = True
+        except BaseException as interrupted:
+            interrupted.__cause__ = None
+            interrupted.__context__ = None
+            interrupted.__suppress_context__ = True
+            raise
     except GeocodeFailed as exc:
         raise GeocodingFailedApiError({"field": "client_address"}) from exc
     except RoutingTimeout as exc:
@@ -2092,6 +2224,78 @@ def _find_slots(
         if "not found" in message.lower():
             raise ResourceNotFound("The instructor could not be found.") from exc
         raise InvalidSchedulingRequest("The scheduling request could not be evaluated.") from exc
+    finally:
+        try: calendar_busy_source = None
+        except (
+            asyncio.CancelledError,
+            KeyboardInterrupt,
+            SystemExit,
+            GeneratorExit,
+        ):
+            calendar_busy_source = None
+            raise
+        except BaseException:
+            calendar_busy_source = None
+            _raise_calendar_cleanup_failure()
+    if calendar_failure:
+        _raise_calendar_availability_unavailable()
+    raise RuntimeError("Calendar availability error mapping is invalid.")
+
+
+def _raise_calendar_control(
+    kind: str,
+    *,
+    system_exit_code: int | None,
+) -> NoReturn:
+    if kind == "cancelled":
+        error: BaseException = asyncio.CancelledError()
+    elif kind == "keyboard_interrupt":
+        error = KeyboardInterrupt()
+    elif kind == "system_exit":
+        error = SystemExit(system_exit_code)
+    else:
+        error = GeneratorExit()
+    error.__cause__ = None
+    error.__context__ = None
+    error.__suppress_context__ = True
+    error.__traceback__ = None
+    try:
+        raise error.with_traceback(None) from None
+    except BaseException as raised:
+        raised.__cause__ = None
+        raised.__context__ = None
+        raised.__suppress_context__ = True
+        raise
+
+
+def _raise_calendar_cleanup_failure() -> NoReturn:
+    error = RuntimeError("Calendar availability control cleanup failed.")
+    error.__cause__ = None
+    error.__context__ = None
+    error.__suppress_context__ = True
+    error.__traceback__ = None
+    try:
+        raise error.with_traceback(None) from None
+    except RuntimeError as raised:
+        raised.__cause__ = None
+        raised.__context__ = None
+        raised.__suppress_context__ = True
+        raise
+
+
+def _raise_calendar_availability_unavailable() -> NoReturn:
+    error = CalendarAvailabilityUnavailable()
+    error.__cause__ = None
+    error.__context__ = None
+    error.__suppress_context__ = True
+    error.__traceback__ = None
+    try:
+        raise error.with_traceback(None) from None
+    except CalendarAvailabilityUnavailable as raised:
+        raised.__cause__ = None
+        raised.__context__ = None
+        raised.__suppress_context__ = True
+        raise
 
 
 def _require_available_start(
