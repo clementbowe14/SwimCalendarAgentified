@@ -186,6 +186,73 @@ def test_app_factory_resolves_the_current_session_factory_at_create_time(
     assert captured == [second_session_factory]
 
 
+def test_create_for_binds_the_exact_captured_session_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def global_session_factory():
+        raise AssertionError("create_for must not resolve the mutable global")
+
+    def captured_session_factory():
+        return None
+
+    captured: list[object] = []
+    monkeypatch.setattr(db, "SessionLocal", global_session_factory)
+    monkeypatch.setattr(
+        config,
+        "google_calendar_token_exchange_configuration_from_env",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        config,
+        "calendar_credential_cipher_from_env",
+        lambda: object(),
+    )
+    created = CreatedSource(object(), object())
+    monkeypatch.setattr(
+        factory_module,
+        "_new_google_calendar_busy_source",
+        lambda session_factory, **_kwargs: captured.append(session_factory)
+        or created,
+    )
+
+    result = GoogleCalendarBusySourceFactory().create_for(
+        captured_session_factory
+    )
+
+    assert result is created
+    assert captured == [captured_session_factory]
+
+
+def test_create_for_rejects_an_invalid_session_factory_before_secret_loading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loader_calls: list[str] = []
+
+    def forbidden_loader():
+        loader_calls.append("secret")
+        raise AssertionError("invalid bindings must fail before secret loading")
+
+    monkeypatch.setattr(
+        config,
+        "google_calendar_token_exchange_configuration_from_env",
+        forbidden_loader,
+    )
+    monkeypatch.setattr(
+        config,
+        "calendar_credential_cipher_from_env",
+        forbidden_loader,
+    )
+
+    with pytest.raises(ExternalCalendarUnavailable) as captured:
+        GoogleCalendarBusySourceFactory().create_for(None)
+
+    assert type(captured.value) is ExternalCalendarUnavailable
+    assert captured.value.reason_code == "provider_unavailable"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert loader_calls == []
+
+
 def test_create_loads_exact_dependencies_in_order_without_caching(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -451,6 +518,67 @@ def test_process_controls_are_fresh_and_cause_free(
     assert "private" not in str(captured.value)
     if expected_type is SystemExit:
         assert captured.value.code == expected_code
+
+
+@pytest.mark.parametrize("lineage", ["cause", "context", "group-child"])
+@pytest.mark.parametrize(
+    ("control", "expected_type", "expected_args"),
+    [
+        (
+            asyncio.CancelledError("wrapped-cancel-private"),
+            asyncio.CancelledError,
+            (),
+        ),
+        (
+            KeyboardInterrupt("wrapped-keyboard-private"),
+            KeyboardInterrupt,
+            (),
+        ),
+        (SystemExit("wrapped-system-private"), SystemExit, (1,)),
+        (
+            GeneratorExit("wrapped-generator-private"),
+            GeneratorExit,
+            (),
+        ),
+    ],
+)
+def test_create_for_preserves_controls_in_bounded_exception_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+    lineage: str,
+    control: BaseException,
+    expected_type: type[BaseException],
+    expected_args: tuple,
+) -> None:
+    wrapper = RuntimeError("wrapper-private")
+    if lineage == "cause":
+        wrapper.__cause__ = control
+        failure: BaseException = wrapper
+    elif lineage == "context":
+        wrapper.__context__ = control
+        failure = wrapper
+    else:
+        child = RuntimeError("group-child-private")
+        child.__cause__ = control
+        failure = ExceptionGroup("group-private", [child])
+
+    def interrupt():
+        raise failure
+
+    monkeypatch.setattr(
+        config,
+        "google_calendar_token_exchange_configuration_from_env",
+        interrupt,
+    )
+
+    with pytest.raises(expected_type) as captured:
+        GoogleCalendarBusySourceFactory().create_for(_session_factory)
+
+    assert captured.value is not control
+    assert captured.value.args == expected_args
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert captured.value.__suppress_context__ is True
+    assert "private" not in str(captured.value)
 
 
 @pytest.mark.parametrize(
