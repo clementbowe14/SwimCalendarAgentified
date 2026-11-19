@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import re
 import secrets
@@ -56,6 +57,7 @@ _MAX_EXPIRES_IN_SECONDS = 2_147_483_647
 _PKCE_BASE64URL_32_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 _SUCCESS_TOKEN_RESPONSE_STATUSES = frozenset({200})
 _REFRESH_TOKEN_RESPONSE_STATUSES = frozenset({200, 400})
+_REFRESH_RESULT_INTEGRITY_KEY = secrets.token_bytes(32)
 
 
 class _SealedSecretValue:
@@ -246,6 +248,7 @@ class GoogleCalendarRefreshTokenExchangeResult(_SealedSecretValue):
         "expected_calendar_connection_revision",
         "access_token",
         "expires_in_seconds",
+        "_integrity_tag",
     )
 
     account_id: str
@@ -859,6 +862,14 @@ def _new_refresh_exchange_result(
     access_token: str,
     expires_in_seconds: int,
 ) -> GoogleCalendarRefreshTokenExchangeResult:
+    integrity_tag = _refresh_exchange_result_integrity_tag(
+        account_id=account_id,
+        instructor_id=instructor_id,
+        connection_id=connection_id,
+        expected_revision=expected_calendar_connection_revision,
+        access_token=access_token,
+        expires_in_seconds=expires_in_seconds,
+    )
     result = object.__new__(GoogleCalendarRefreshTokenExchangeResult)
     object.__setattr__(result, "account_id", account_id)
     object.__setattr__(result, "instructor_id", instructor_id)
@@ -870,7 +881,69 @@ def _new_refresh_exchange_result(
     )
     object.__setattr__(result, "access_token", access_token)
     object.__setattr__(result, "expires_in_seconds", expires_in_seconds)
+    object.__setattr__(result, "_integrity_tag", integrity_tag)
     return result
+
+
+def _refresh_exchange_result_integrity_matches(
+    value: object,
+    *,
+    account_id: str,
+    instructor_id: str,
+    connection_id: str,
+    expected_revision: int,
+    access_token: str,
+    expires_in_seconds: int,
+) -> bool:
+    """Authenticate one validated field snapshot without exposing its tag."""
+
+    if type(value) is not GoogleCalendarRefreshTokenExchangeResult:
+        return False
+    try:
+        integrity_tag = value._integrity_tag
+        expected_tag = _refresh_exchange_result_integrity_tag(
+            account_id=account_id,
+            instructor_id=instructor_id,
+            connection_id=connection_id,
+            expected_revision=expected_revision,
+            access_token=access_token,
+            expires_in_seconds=expires_in_seconds,
+        )
+    except (AttributeError, OverflowError, TypeError, UnicodeEncodeError):
+        return False
+    return (
+        type(integrity_tag) is bytes
+        and len(integrity_tag) == hashlib.sha256().digest_size
+        and hmac.compare_digest(integrity_tag, expected_tag)
+    )
+
+
+def _refresh_exchange_result_integrity_tag(
+    *,
+    account_id: str,
+    instructor_id: str,
+    connection_id: str,
+    expected_revision: int,
+    access_token: str,
+    expires_in_seconds: int,
+) -> bytes:
+    parts = (
+        account_id.encode("ascii"),
+        instructor_id.encode("ascii"),
+        connection_id.encode("ascii"),
+        expected_revision.to_bytes(8, "big", signed=False),
+        access_token.encode("ascii"),
+        expires_in_seconds.to_bytes(8, "big", signed=False),
+    )
+    message = b"".join(
+        len(part).to_bytes(4, "big", signed=False) + part
+        for part in parts
+    )
+    return hmac.new(
+        _REFRESH_RESULT_INTEGRITY_KEY,
+        message,
+        hashlib.sha256,
+    ).digest()
 
 
 def _new_refresh_authorization_required(
