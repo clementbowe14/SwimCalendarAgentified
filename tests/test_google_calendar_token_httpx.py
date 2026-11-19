@@ -9,17 +9,21 @@ import httpx
 import pytest
 
 from app import api, google_calendar_token_httpx, tools
+from app.calendar_credentials import MAX_REFRESH_TOKEN_BYTES
 from app.calendar_oauth_pkce import derive_s256_code_challenge
 from app.google_calendar_authorization import GOOGLE_CALENDAR_FREEBUSY_SCOPE
+from app.google_calendar_credential_claim import _new_claim
 from app.google_calendar_oauth import (
     GOOGLE_CALENDAR_CALLBACK_PATH,
     GoogleCalendarOAuthConfiguration,
 )
 from app.google_calendar_token_exchange import (
     GOOGLE_CALENDAR_TOKEN_ENDPOINT,
+    GoogleCalendarRefreshAuthorizationRequired,
     GoogleCalendarTokenExchangeConfiguration,
     GoogleCalendarTokenExchangeError,
     exchange_google_calendar_authorization_code,
+    exchange_google_calendar_refresh_token,
 )
 from app.google_calendar_token_httpx import HttpxGoogleCalendarTokenTransport
 from app.routing import HaversineRoutingProvider
@@ -32,6 +36,9 @@ AUTHORIZATION_CODE = "4/code+private&value="
 CODE_VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 ACCESS_TOKEN = "access-token-private-value"
 REFRESH_TOKEN = "refresh-token-private-value"
+ACCOUNT_ID = "acct_httpx_refresh_private"
+INSTRUCTOR_ID = "inst_httpx_refresh_private"
+CONNECTION_ID = "calconn_" + "a" * 32
 PROVIDER_DETAIL = "provider-private-error-detail"
 MAX_BODY_BYTES = 64 * 1024
 
@@ -88,6 +95,37 @@ def _fields(**overrides):
     }
     values.update(overrides)
     return tuple((name, values[name]) for name in values)
+
+
+def _refresh_fields(**overrides):
+    values = {
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "grant_type": "refresh_token",
+        "refresh_token": REFRESH_TOKEN,
+    }
+    values.update(overrides)
+    return tuple((name, values[name]) for name in values)
+
+
+def _configuration():
+    return GoogleCalendarTokenExchangeConfiguration(
+        authorization_configuration=GoogleCalendarOAuthConfiguration(
+            client_id=CLIENT_ID,
+            redirect_uri=REDIRECT_URI,
+        ),
+        client_secret=CLIENT_SECRET,
+    )
+
+
+def _refresh_claim():
+    return _new_claim(
+        account_id=ACCOUNT_ID,
+        instructor_id=INSTRUCTOR_ID,
+        connection_id=CONNECTION_ID,
+        expected_calendar_connection_revision=7,
+        refresh_token=REFRESH_TOKEN,
+    )
 
 
 def _payload():
@@ -233,6 +271,70 @@ def test_exact_post_form_encoding_headers_and_timeout(monkeypatch):
         assert secret not in url_text
 
 
+def test_refresh_exchange_uses_one_exact_form_and_preserves_claim_binding(
+    monkeypatch,
+):
+    body = json.dumps(
+        {
+            "access_token": ACCESS_TOKEN,
+            "expires_in": 3600,
+            "scope": GOOGLE_CALENDAR_FREEBUSY_SCOPE,
+            "token_type": "Bearer",
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    network_transport, factory_calls = _install_transport(
+        monkeypatch,
+        lambda _request: _response(status_code=200, body=body),
+    )
+
+    result = exchange_google_calendar_refresh_token(
+        configuration=_configuration(),
+        claim=_refresh_claim(),
+        transport=HttpxGoogleCalendarTokenTransport(),
+    )
+
+    assert result.account_id == ACCOUNT_ID
+    assert result.instructor_id == INSTRUCTOR_ID
+    assert result.connection_id == CONNECTION_ID
+    assert result.expected_calendar_connection_revision == 7
+    assert result.access_token == ACCESS_TOKEN
+    assert result.expires_in_seconds == 3600
+    assert factory_calls == [True]
+    assert network_transport.close_count == 1
+    assert len(network_transport.requests) == 1
+    request = network_transport.requests[0]
+    assert request.content == (
+        b"client_id=123456789-dayweave.apps.googleusercontent.com"
+        b"&client_secret=client%2Bsecret%2Fprivate%26value%3D"
+        b"&grant_type=refresh_token"
+        b"&refresh_token=refresh-token-private-value"
+    )
+    assert request.url.query == b""
+    assert "authorization" not in request.headers
+    assert "cookie" not in request.headers
+
+
+def test_refresh_http_400_body_is_bounded_for_invalid_grant(monkeypatch):
+    body = b'{"error":"invalid_grant"}'
+    network_transport, _ = _install_transport(
+        monkeypatch,
+        lambda _request: _response(status_code=400, body=body),
+    )
+
+    result = exchange_google_calendar_refresh_token(
+        configuration=_configuration(),
+        claim=_refresh_claim(),
+        transport=HttpxGoogleCalendarTokenTransport(),
+    )
+
+    assert type(result) is GoogleCalendarRefreshAuthorizationRequired
+    assert result.account_id == ACCOUNT_ID
+    assert result.connection_id == CONNECTION_ID
+    assert len(network_transport.requests) == 1
+    assert network_transport.close_count == 1
+
+
 def test_fixed_httpx_transport_and_client_policy_ignores_environment(
     monkeypatch,
     tmp_path,
@@ -360,6 +462,40 @@ def test_invalid_request_contract_fails_before_network(
     assert factory_calls == []
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [
+        _refresh_fields()[:-1],
+        _refresh_fields() + (("scope", GOOGLE_CALENDAR_FREEBUSY_SCOPE),),
+        (_refresh_fields()[1], _refresh_fields()[0]) + _refresh_fields()[2:],
+        _refresh_fields(grant_type="authorization_code"),
+        (("code", AUTHORIZATION_CODE),) + _refresh_fields()[1:],
+        ((TextSubclass("client_id"), CLIENT_ID),) + _refresh_fields()[1:],
+        _refresh_fields(refresh_token=TextSubclass(REFRESH_TOKEN)),
+        _refresh_fields(refresh_token=""),
+        _refresh_fields(refresh_token="bad\nrefresh"),
+        _refresh_fields(refresh_token="x" * (MAX_REFRESH_TOKEN_BYTES + 1)),
+    ],
+)
+def test_invalid_refresh_form_fails_before_network(monkeypatch, fields):
+    factory_calls = []
+
+    def forbidden_factory():
+        factory_calls.append(True)
+        raise AssertionError("network objects must not be constructed")
+
+    monkeypatch.setattr(
+        google_calendar_token_httpx,
+        "_new_http_transport",
+        forbidden_factory,
+    )
+
+    with pytest.raises(GoogleCalendarTokenExchangeError):
+        _post(fields=fields)
+
+    assert factory_calls == []
+
+
 def test_field_size_is_rejected_before_copying_or_form_encoding(monkeypatch):
     validation_calls = []
     encoding_calls = []
@@ -416,6 +552,37 @@ def test_non_200_response_is_not_followed_retried_or_read(
     assert response.status_code == status_code
     assert response.content_type is None
     assert response.body == b""
+    assert len(network_transport.requests) == 1
+    assert network_transport.close_count == 1
+
+
+@pytest.mark.parametrize("status_code", [302, 401, 408, 429, 500, 503])
+def test_refresh_noneligible_status_body_is_not_read_or_retried(
+    monkeypatch,
+    status_code,
+):
+    stream = RecordingStream(
+        error=AssertionError("ineligible refresh body must not be read")
+    )
+
+    def handler(_request):
+        return _response(
+            status_code=status_code,
+            headers=[
+                ("location", "https://redirect-private.invalid/token"),
+                ("content-type", "application/json"),
+            ],
+            stream=stream,
+        )
+
+    network_transport, _ = _install_transport(monkeypatch, handler)
+
+    response = _post(fields=_refresh_fields())
+
+    assert response.status_code == status_code
+    assert response.content_type is None
+    assert response.body == b""
+    assert stream.iteration_count == 0
     assert len(network_transport.requests) == 1
     assert network_transport.close_count == 1
     assert stream.iteration_count == 0
