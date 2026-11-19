@@ -6,6 +6,13 @@ on:
     branches:
       - master
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   SWIM_ENV: test
   SWIM_ENABLE_DEMO_DATA: "true"
@@ -16,7 +23,8 @@ env:
 
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
 
     services:
       postgres:
@@ -34,9 +42,11 @@ jobs:
           --health-retries 12
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
 
@@ -85,7 +95,8 @@ jobs:
         run: python -m pytest -q -m e2e
 
   frontends:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
 
     services:
       postgres:
@@ -103,9 +114,11 @@ jobs:
           --health-retries 12
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
           cache: npm
@@ -113,7 +126,7 @@ jobs:
             frontend-instructor-command/package-lock.json
             frontend-client-invite/package-lock.json
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
 
@@ -248,3 +261,27 @@ jobs:
           VITE_USE_MOCK_API: "false"
           VITE_CLIENT_INVITE_API_URL: http://127.0.0.1:8000/api/public
         run: npm run test:e2e:live
+
+  merge-gate:
+    name: merge-gate
+    if: ${{ always() }}
+    needs:
+      - backend
+      - frontends
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+
+    steps:
+      - name: Require every CI job to succeed
+        shell: bash
+        env:
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          FRONTENDS_RESULT: ${{ needs.frontends.result }}
+        run: |
+          set -euo pipefail
+          printf 'backend=%s\nfrontends=%s\n' \
+            "$BACKEND_RESULT" "$FRONTENDS_RESULT"
+
+          [[ "$BACKEND_RESULT" == "success" ]]
+          [[ "$FRONTENDS_RESULT" == "success" ]]
