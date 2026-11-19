@@ -7,6 +7,7 @@ import datetime
 import json
 import re
 import secrets
+from collections.abc import Iterator
 from decimal import Decimal
 from typing import Literal, NoReturn, Protocol, final
 
@@ -69,6 +70,7 @@ _FAILURE_REASONS = frozenset(
         "invalid_response",
     }
 )
+_MAX_CONTROL_EXCEPTION_NODES = 4_096
 
 
 class _SealedFreeBusyValue:
@@ -792,9 +794,8 @@ def _classified_boundary_failure(
 def _classified_control_exception(
     raised: BaseException,
 ) -> tuple[str | None, int | None]:
-    pending = [raised]
-    while pending:
-        current = pending.pop()
+    nodes, overflowed = _bounded_unique_exception_graph(raised)
+    for current in nodes:
         if isinstance(current, asyncio.CancelledError):
             return "cancelled", None
         if isinstance(current, KeyboardInterrupt):
@@ -809,13 +810,40 @@ def _classified_control_exception(
             )
         if isinstance(current, GeneratorExit):
             return "generator_exit", None
+    if overflowed:
+        return "cancelled", None
+    return None, None
+
+
+def _bounded_unique_exception_graph(
+    raised: BaseException,
+) -> tuple[tuple[BaseException, ...], bool]:
+    pending = [raised]
+    seen: set[int] = set()
+    nodes: list[BaseException] = []
+    while pending:
+        current = pending.pop()
+        identity = id(current)
+        if identity in seen:
+            continue
+        if len(seen) >= _MAX_CONTROL_EXCEPTION_NODES:
+            return tuple(nodes), True
+        seen.add(identity)
+        nodes.append(current)
         if isinstance(current, BaseExceptionGroup):
             nested = BaseExceptionGroup.exceptions.__get__(
                 current,
                 BaseExceptionGroup,
             )
             pending.extend(reversed(nested))
-    return None, None
+    return tuple(nodes), False
+
+
+def _iter_unique_exception_graph(
+    raised: BaseException,
+) -> Iterator[BaseException]:
+    nodes, _overflowed = _bounded_unique_exception_graph(raised)
+    yield from nodes
 
 
 def _raise_freebusy_failure(reason: CalendarBusyFailureReason) -> NoReturn:
