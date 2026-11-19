@@ -1,8 +1,11 @@
+import asyncio
 import datetime
 import json
 import os
+import threading
 import uuid
-from typing import Optional, List
+from contextlib import contextmanager
+from typing import Iterator, NoReturn, Optional, List
 from sqlalchemy import create_engine, func, inspect, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload, sessionmaker
@@ -38,13 +41,182 @@ SOFIA_INVITE_TOKEN = "invite_sofia_0826"
 
 engine = create_engine(DATABASE_URL, echo=False, hide_parameters=True)
 SessionLocal = sessionmaker(bind=engine)
+_database_binding_lock = threading.RLock()
+_active_database_serving_leases: set[object] = set()
+_MAX_DATABASE_CONTROL_EXCEPTION_NODES = 4_096
+_MAX_DATABASE_CONTROL_EXCEPTION_ENTRIES = (
+    _MAX_DATABASE_CONTROL_EXCEPTION_NODES * 2
+)
 
 def configure_database(database_url: str = DATABASE_URL):
-    """Rebinds the database session factory; useful for isolated API tests."""
+    """Rebind the test database before an application starts serving."""
     global DATABASE_URL, engine, SessionLocal
-    DATABASE_URL = database_url
-    engine = create_engine(DATABASE_URL, echo=False, hide_parameters=True)
-    SessionLocal = sessionmaker(bind=engine)
+    with _database_binding_lock:
+        if _active_database_serving_leases:
+            raise RuntimeError(
+                "The database cannot be reconfigured while an application "
+                "is serving."
+            )
+        next_engine = create_engine(
+            database_url,
+            echo=False,
+            hide_parameters=True,
+        )
+        next_session_factory = sessionmaker(bind=next_engine)
+        DATABASE_URL = database_url
+        engine = next_engine
+        SessionLocal = next_session_factory
+
+
+@contextmanager
+def database_serving_lifecycle() -> Iterator[None]:
+    """Keep the process-wide database binding stable while an app serves."""
+
+    lease = object()
+    try:
+        with _database_binding_lock:
+            _active_database_serving_leases.add(lease)
+        yield
+    finally:
+        try: _release_database_serving_lease(lease)
+        except BaseException as cleanup_raised:
+            try: _release_database_serving_lease(lease); lease = None; control_kind, system_exit_code = _database_control_kind(cleanup_raised); cleanup_raised = None
+            except BaseException as retry_raised: lease = cleanup_raised = None; control_kind, system_exit_code = _database_control_kind(retry_raised); retry_raised = None
+            _raise_database_cleanup_failure(
+                control_kind,
+                system_exit_code=system_exit_code,
+            )
+        lease = None
+
+
+def _release_database_serving_lease(lease: object) -> None:
+    """Discard one exact lease and retry once after an interruption."""
+
+    try: return _discard_database_serving_lease(lease)
+    except BaseException as cleanup_raised:
+        try: _discard_database_serving_lease(lease); lease = None; control_kind, system_exit_code = _database_control_kind(cleanup_raised); cleanup_raised = None
+        except BaseException as retry_raised: lease = cleanup_raised = None; control_kind, system_exit_code = _database_control_kind(retry_raised); retry_raised = None
+    _raise_database_cleanup_failure(
+        control_kind,
+        system_exit_code=system_exit_code,
+    )
+
+
+def _discard_database_serving_lease(lease: object) -> None:
+    with _database_binding_lock:
+        _active_database_serving_leases.discard(lease)
+
+
+def _database_control_kind(
+    error: BaseException,
+) -> tuple[str | None, int | None]:
+    cancellation_found = False
+    overflowed = False
+    pending = [error]
+    seen: set[int] = set()
+    traversed_entries = 0
+    while pending:
+        current = pending.pop()
+        traversed_entries += 1
+        if traversed_entries > _MAX_DATABASE_CONTROL_EXCEPTION_ENTRIES:
+            return "cancelled", None
+        identity = id(current)
+        if identity in seen:
+            continue
+        if len(seen) >= _MAX_DATABASE_CONTROL_EXCEPTION_NODES:
+            return "cancelled", None
+        seen.add(identity)
+        control_kind, system_exit_code = _database_direct_control_kind(
+            current
+        )
+        if control_kind not in (None, "cancelled"):
+            return control_kind, system_exit_code
+        cancellation_found = cancellation_found or (
+            control_kind == "cancelled"
+        )
+        if isinstance(current, BaseExceptionGroup):
+            nested = BaseExceptionGroup.exceptions.__get__(
+                current,
+                BaseExceptionGroup,
+            )
+        else:
+            nested = ()
+        lineage = tuple(
+            value
+            for value in (
+                BaseException.__cause__.__get__(current, BaseException),
+                BaseException.__context__.__get__(current, BaseException),
+            )
+            if value is not None
+        )
+        linked_count = len(nested) + len(lineage)
+        if linked_count:
+            available_entries = max(
+                _MAX_DATABASE_CONTROL_EXCEPTION_ENTRIES
+                - traversed_entries
+                - len(pending),
+                0,
+            )
+            lineage_to_schedule = min(len(lineage), available_entries)
+            nested_to_schedule = min(
+                len(nested),
+                available_entries - lineage_to_schedule,
+            )
+            overflowed = overflowed or (
+                lineage_to_schedule + nested_to_schedule < linked_count
+            )
+            for index in range(nested_to_schedule - 1, -1, -1):
+                pending.append(nested[index])
+            for index in range(lineage_to_schedule - 1, -1, -1):
+                pending.append(lineage[index])
+    if overflowed or cancellation_found:
+        return "cancelled", None
+    return None, None
+
+
+def _database_direct_control_kind(
+    error: BaseException,
+) -> tuple[str | None, int | None]:
+    if isinstance(error, asyncio.CancelledError):
+        return "cancelled", None
+    if isinstance(error, KeyboardInterrupt):
+        return "keyboard_interrupt", None
+    if isinstance(error, SystemExit):
+        code = error.code if type(error) is SystemExit else 1
+        if type(code) is not int and code is not None:
+            code = 1
+        return "system_exit", code
+    if isinstance(error, GeneratorExit):
+        return "generator_exit", None
+    return None, None
+
+
+def _raise_database_cleanup_failure(
+    control_kind: str | None,
+    *,
+    system_exit_code: int | None,
+) -> NoReturn:
+    if control_kind == "cancelled":
+        error: BaseException = asyncio.CancelledError()
+    elif control_kind == "keyboard_interrupt":
+        error = KeyboardInterrupt()
+    elif control_kind == "system_exit":
+        error = SystemExit(system_exit_code)
+    elif control_kind == "generator_exit":
+        error = GeneratorExit()
+    else:
+        error = RuntimeError("The database lifecycle could not be released.")
+    error.__cause__ = None
+    error.__context__ = None
+    error.__suppress_context__ = True
+    error.__traceback__ = None
+    try:
+        raise error.with_traceback(None) from None
+    except BaseException as raised:
+        raised.__cause__ = None
+        raised.__context__ = None
+        raised.__suppress_context__ = True
+        raise
 
 def init_db(*, settings: Optional[ApplicationSettings] = None):
     active_settings = settings or application_settings_from_env()

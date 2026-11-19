@@ -48,8 +48,9 @@ CSRF_OPENAPI_PARAMETER = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    db.init_db(settings=app.state.settings)
-    yield
+    with db.database_serving_lifecycle():
+        db.init_db(settings=app.state.settings)
+        yield
 
 
 def create_app() -> FastAPI:
