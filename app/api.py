@@ -23,6 +23,9 @@ from app.auth import (
 )
 from app.config import application_settings_from_env, routing_settings_from_env
 from app.dependencies import require_csrf_protection
+from app.google_calendar_busy_source_factory import (
+    GoogleCalendarBusySourceFactory,
+)
 from app.routes import auth, coach, health, public
 from app.routing_service import build_routing_provider
 
@@ -61,6 +64,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
+    app.state.calendar_busy_source_factory = GoogleCalendarBusySourceFactory()
     app.state.routing_readiness = {
         "provider": routing_provider.provider_name,
         "mode": "external" if routing_provider.provider_name == "mapbox" else "synthetic",
