@@ -106,6 +106,15 @@ class CalendarLinksUnavailable(ApiException):
         )
 
 
+class CalendarAvailabilityUnavailable(ApiException):
+    def __init__(self):
+        super().__init__(
+            "CALENDAR_AVAILABILITY_UNAVAILABLE",
+            "Calendar availability could not be verified.",
+            status_code=503,
+        )
+
+
 class SchedulingConflict(ApiException):
     def __init__(
         self,
