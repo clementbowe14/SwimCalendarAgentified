@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import datetime
+import dis
 import inspect
 import json
 import logging
@@ -23,6 +24,8 @@ from app import (
     db,
     google_calendar_credential_claim,
     google_calendar_credential_handoff,
+    google_calendar_refresh_recovery,
+    google_calendar_token_exchange,
 )
 from app.calendar_connections import (
     disconnect_google_calendar,
@@ -41,6 +44,13 @@ from app.google_calendar_credential_handoff import (
     validate_google_calendar_refresh_credential_claim,
 )
 from app.google_calendar_oauth import GoogleCalendarOAuthError
+from app.google_calendar_refresh_recovery import (
+    GoogleCalendarRefreshRecoveryError,
+    mark_google_calendar_refresh_credential_authorization_required,
+)
+from app.google_calendar_token_exchange import (
+    GoogleCalendarRefreshAuthorizationRequired,
+)
 from app.models import (
     InstructorDB,
     ProviderAccountDB,
@@ -74,6 +84,14 @@ class HostileSystemExit(SystemExit):
         raise RuntimeError("system-exit-getter-private")
 
 
+class IncompleteTimezone(datetime.tzinfo):
+    def utcoffset(self, _value):
+        return None
+
+    def dst(self, _value):
+        return None
+
+
 class TrackingSession(Session):
     def __init__(self, events, *, bind=_PURE_TEST_ENGINE, close_error=None):
         super().__init__(bind=bind)
@@ -87,6 +105,30 @@ class TrackingSession(Session):
         super().close()
         if self.close_error is not None:
             raise self.close_error
+
+
+class RollbackFailureTransaction:
+    def __init__(self, transaction, rollback_error):
+        self.transaction = transaction
+        self.rollback_error = rollback_error
+
+    def commit(self):
+        return self.transaction.commit()
+
+    def rollback(self):
+        raise self.rollback_error
+
+
+class RollbackFailureSession(TrackingSession):
+    def __init__(self, events, *, rollback_error):
+        super().__init__(events)
+        self.rollback_error = rollback_error
+
+    def begin(self, *args, **kwargs):
+        return RollbackFailureTransaction(
+            super().begin(*args, **kwargs),
+            self.rollback_error,
+        )
 
 
 def _recording_factory(
@@ -164,6 +206,22 @@ def _forged_claim(**mutations):
     return claim
 
 
+def _recovery_outcome(claim=None, **mutations):
+    source = claim or _sealed_claim()
+    values = {
+        "account_id": source.account_id,
+        "instructor_id": source.instructor_id,
+        "connection_id": source.connection_id,
+        "expected_calendar_connection_revision": (
+            source.expected_calendar_connection_revision
+        ),
+    }
+    values.update(mutations)
+    return google_calendar_token_exchange._new_refresh_authorization_required(
+        **values
+    )
+
+
 def _module_traceback(error):
     names = []
     values = []
@@ -173,6 +231,7 @@ def _module_traceback(error):
             (
                 "/app/google_calendar_credential_claim.py",
                 "/app/google_calendar_credential_handoff.py",
+                "/app/google_calendar_refresh_recovery.py",
             )
         ):
             names.append(current.tb_frame.f_code.co_name)
@@ -189,6 +248,7 @@ def _module_frame_locals(error):
             (
                 "/app/google_calendar_credential_claim.py",
                 "/app/google_calendar_credential_handoff.py",
+                "/app/google_calendar_refresh_recovery.py",
             )
         ):
             result.append(dict(current.tb_frame.f_locals))
@@ -245,8 +305,16 @@ def test_public_surface_commits_and_closes_before_return(monkeypatch):
         "claim_google_calendar_refresh_credential",
         "revalidate_google_calendar_refresh_credential_claim",
     )
+    assert google_calendar_refresh_recovery.__all__ == (
+        "GoogleCalendarRefreshRecoveryError",
+        "mark_google_calendar_refresh_credential_authorization_required",
+    )
     assert issubclass(
         GoogleCalendarRefreshCredentialClaimError,
+        GoogleCalendarOAuthError,
+    )
+    assert issubclass(
+        GoogleCalendarRefreshRecoveryError,
         GoogleCalendarOAuthError,
     )
     claim_signature = inspect.signature(
@@ -273,6 +341,19 @@ def test_public_surface_commits_and_closes_before_return(monkeypatch):
     ]
     assert revalidate_signature.parameters["claim"].kind is (
         inspect.Parameter.KEYWORD_ONLY
+    )
+    recovery_signature = inspect.signature(
+        mark_google_calendar_refresh_credential_authorization_required
+    )
+    assert list(recovery_signature.parameters) == [
+        "session_factory",
+        "claim",
+        "outcome",
+    ]
+    assert all(
+        recovery_signature.parameters[name].kind
+        is inspect.Parameter.KEYWORD_ONLY
+        for name in ("claim", "outcome")
     )
 
     events = []
@@ -1613,6 +1694,1308 @@ def test_claim_serializes_with_replacement_and_old_claim_revalidates_stale(
     assert type(current) is GoogleCalendarRefreshCredentialClaim
     assert current.refresh_token == "race-replacement-private"
     assert current.expected_calendar_connection_revision == 2
+
+
+def test_claim_fenced_recovery_owns_a_fresh_transaction(monkeypatch):
+    claim = _sealed_claim()
+    outcome = _recovery_outcome(claim)
+    events = []
+    session_factory, sessions = _recording_factory(events)
+
+    def mark(session, **values):
+        events.append("mark")
+        assert session.in_transaction()
+        assert values == {
+            "account_id": claim.account_id,
+            "instructor_id": claim.instructor_id,
+            "connection_id": claim.connection_id,
+            "expected_revision": 7,
+        }
+
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        mark,
+    )
+
+    assert (
+        mark_google_calendar_refresh_credential_authorization_required(
+            session_factory,
+            claim=claim,
+            outcome=outcome,
+        )
+        is None
+    )
+    assert sessions[0].was_closed is True
+    assert events == ["factory", "mark", "commit", "close"]
+
+
+def test_claim_fenced_recovery_uses_copied_claim_fence(monkeypatch):
+    claim = _sealed_claim()
+    outcome = _recovery_outcome(claim)
+    events = []
+    session_factory, _sessions = _recording_factory(events)
+
+    def mutating_factory():
+        object.__setattr__(outcome, "account_id", "acct_mutated_private")
+        return session_factory()
+
+    def mark(_session, **values):
+        assert values["account_id"] == claim.account_id
+        assert values["instructor_id"] == claim.instructor_id
+        assert values["connection_id"] == claim.connection_id
+        assert values["expected_revision"] == 7
+
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        mark,
+    )
+
+    assert (
+        mark_google_calendar_refresh_credential_authorization_required(
+            mutating_factory,
+            claim=claim,
+            outcome=outcome,
+        )
+        is None
+    )
+
+
+def test_claim_fenced_recovery_rejects_untrusted_inputs_before_session():
+    claim = _sealed_claim()
+    factory_calls = []
+
+    def forbidden_factory():
+        factory_calls.append(True)
+        raise AssertionError("session creation must not occur")
+
+    cases = (
+        (None, _recovery_outcome(claim)),
+        (_forged_claim(refresh_token="swapped-refresh-private"), _recovery_outcome(claim)),
+        (claim, None),
+        (claim, object()),
+        (claim, object.__new__(google_calendar_token_exchange.GoogleCalendarRefreshAuthorizationRequired)),
+        (claim, _recovery_outcome(claim, account_id="acct_cross_tenant_private")),
+        (claim, _recovery_outcome(claim, instructor_id="inst_cross_tenant_private")),
+        (claim, _recovery_outcome(claim, connection_id="calconn_" + "2" * 32)),
+        (
+            claim,
+            _recovery_outcome(
+                claim,
+                expected_calendar_connection_revision=8,
+            ),
+        ),
+    )
+    for supplied_claim, supplied_outcome in cases:
+        with pytest.raises(GoogleCalendarRefreshRecoveryError):
+            mark_google_calendar_refresh_credential_authorization_required(
+                forbidden_factory,
+                claim=supplied_claim,
+                outcome=supplied_outcome,
+            )
+    assert factory_calls == []
+
+
+def test_claim_fenced_recovery_rejects_unsafe_sessions(monkeypatch):
+    claim = _sealed_claim()
+    outcome = _recovery_outcome(claim)
+    mark_calls = []
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        lambda *_args, **_kwargs: mark_calls.append(True),
+    )
+
+    events = []
+    active_session = TrackingSession(events)
+    active_transaction = active_session.begin()
+    with pytest.raises(GoogleCalendarRefreshRecoveryError):
+        mark_google_calendar_refresh_credential_authorization_required(
+            lambda: active_session,
+            claim=claim,
+            outcome=outcome,
+        )
+    assert active_session.was_closed is True
+    active_transaction.close()
+
+    primary = create_engine("sqlite+pysqlite:///:memory:")
+    split = create_engine("sqlite+pysqlite:///:memory:")
+    split_session = Session(
+        bind=primary,
+        binds={ProviderCalendarConnectionDB: split},
+    )
+    try:
+        with pytest.raises(GoogleCalendarRefreshRecoveryError):
+            mark_google_calendar_refresh_credential_authorization_required(
+                lambda: split_session,
+                claim=claim,
+                outcome=outcome,
+            )
+    finally:
+        split_session.close()
+        primary.dispose()
+        split.dispose()
+
+    autocommit_engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        isolation_level="AUTOCOMMIT",
+    )
+    try:
+        with pytest.raises(GoogleCalendarRefreshRecoveryError):
+            mark_google_calendar_refresh_credential_authorization_required(
+                lambda: Session(bind=autocommit_engine),
+                claim=claim,
+                outcome=outcome,
+            )
+    finally:
+        autocommit_engine.dispose()
+    assert mark_calls == []
+
+
+@pytest.mark.parametrize("failure_point", ["operation", "commit", "close"])
+def test_claim_fenced_recovery_sanitizes_failures(
+    monkeypatch,
+    caplog,
+    failure_point,
+):
+    claim = _sealed_claim()
+    outcome = _recovery_outcome(claim)
+    private_values = (
+        claim.account_id,
+        claim.instructor_id,
+        claim.connection_id,
+        claim.refresh_token,
+        "claim-fenced-recovery-private-detail",
+    )
+    private_message = " ".join(private_values)
+    events = []
+    session_factory, sessions = _recording_factory(
+        events,
+        commit_error=(
+            RuntimeError(private_message)
+            if failure_point == "commit"
+            else None
+        ),
+        close_error=(
+            RuntimeError(private_message)
+            if failure_point == "close"
+            else None
+        ),
+    )
+
+    def mark(*_args, **_kwargs):
+        if failure_point == "operation":
+            raise RuntimeError(private_message)
+
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        mark,
+    )
+
+    with pytest.raises(GoogleCalendarRefreshRecoveryError) as raised:
+        mark_google_calendar_refresh_credential_authorization_required(
+            session_factory,
+            claim=claim,
+            outcome=outcome,
+        )
+
+    assert sessions[0].was_closed is True
+    assert str(raised.value) == (
+        "Google Calendar refresh recovery could not be persisted safely."
+    )
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    names, frame_values = _module_traceback(raised.value)
+    assert names == [
+        "mark_google_calendar_refresh_credential_authorization_required",
+        "_raise_recovery_error",
+    ]
+    for frame_locals in _module_frame_locals(raised.value):
+        assert all(
+            type(value)
+            not in (
+                GoogleCalendarRefreshCredentialClaim,
+                GoogleCalendarRefreshAuthorizationRequired,
+            )
+            for value in frame_locals.values()
+        )
+    output = " ".join(
+        (
+            str(raised.value),
+            repr(raised.value),
+            _formatted_exception(raised.value),
+            frame_values,
+            caplog.text,
+        )
+    )
+    for private in private_values:
+        assert private not in output
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_type", "expected_code"),
+    [
+        (asyncio.CancelledError("private-cancel"), asyncio.CancelledError, None),
+        (KeyboardInterrupt("private-keyboard"), KeyboardInterrupt, None),
+        (SystemExit(19), SystemExit, 19),
+        (GeneratorExit("private-generator"), GeneratorExit, None),
+    ],
+)
+def test_claim_fenced_recovery_preserves_sanitized_controls(
+    monkeypatch,
+    failure,
+    expected_type,
+    expected_code,
+):
+    claim = _sealed_claim()
+    outcome = _recovery_outcome(claim)
+    session_factory, sessions = _recording_factory([])
+
+    def mark(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        mark,
+    )
+
+    with pytest.raises(expected_type) as raised:
+        mark_google_calendar_refresh_credential_authorization_required(
+            session_factory,
+            claim=claim,
+            outcome=outcome,
+        )
+
+    assert sessions[0].was_closed is True
+    assert raised.value is not failure
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    if expected_type is SystemExit:
+        assert raised.value.code == expected_code
+
+
+def test_claim_fenced_recovery_entry_interruption_is_sanitized():
+    guarded = mark_google_calendar_refresh_credential_authorization_required
+    source_lines, first_line = inspect.getsourcelines(guarded)
+    target_line = first_line + next(
+        offset
+        for offset, line in enumerate(source_lines)
+        if line.lstrip().startswith("try: return")
+    )
+    claim = _sealed_claim()
+    outcome = _recovery_outcome(claim)
+    interrupted = False
+
+    def interrupt_entry(frame, event, _argument):
+        nonlocal interrupted
+        if (
+            not interrupted
+            and event == "line"
+            and frame.f_code is guarded.__code__
+            and frame.f_lineno == target_line
+        ):
+            interrupted = True
+            raise KeyboardInterrupt("recovery-entry-control-private")
+        return interrupt_entry
+
+    try:
+        sys.settrace(interrupt_entry)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            guarded(
+                lambda: None,
+                claim=claim,
+                outcome=outcome,
+            )
+    finally:
+        sys.settrace(None)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    names, frame_values = _module_traceback(raised.value)
+    assert names == [
+        "mark_google_calendar_refresh_credential_authorization_required",
+        "_raise_control_exception",
+    ]
+    for frame_locals in _module_frame_locals(raised.value):
+        assert all(
+            type(value)
+            not in (
+                GoogleCalendarRefreshCredentialClaim,
+                GoogleCalendarRefreshAuthorizationRequired,
+            )
+            for value in frame_locals.values()
+        )
+    output = " ".join((_formatted_exception(raised.value), frame_values))
+    for private in (
+        "recovery-entry-control-private",
+        claim.account_id,
+        claim.instructor_id,
+        claim.connection_id,
+        claim.refresh_token,
+    ):
+        assert private not in output
+
+
+def test_claim_fenced_recovery_cleanup_interruption_is_sanitized():
+    guarded = mark_google_calendar_refresh_credential_authorization_required
+    source_lines, first_line = inspect.getsourcelines(guarded)
+    target_line = first_line + next(
+        offset
+        for offset, line in enumerate(source_lines)
+        if line.lstrip().startswith("try:") and " = None" in line
+    )
+    cleanup_instructions = [
+        instruction
+        for instruction in dis.get_instructions(guarded)
+        if instruction.positions.lineno == target_line
+    ]
+    assert "DELETE_FAST" not in {
+        instruction.opname for instruction in cleanup_instructions
+    }
+    assert sum(
+        instruction.opname == "STORE_FAST"
+        for instruction in cleanup_instructions
+    ) >= 3
+    claim = _sealed_claim()
+    outcome = _recovery_outcome(claim)
+    interrupted = False
+
+    def interrupt_cleanup(frame, event, _argument):
+        nonlocal interrupted
+        if (
+            not interrupted
+            and event == "line"
+            and frame.f_code is guarded.__code__
+            and frame.f_lineno == target_line
+        ):
+            interrupted = True
+            raise KeyboardInterrupt("recovery-cleanup-control-private")
+        return interrupt_cleanup
+
+    try:
+        sys.settrace(interrupt_cleanup)
+        with pytest.raises(KeyboardInterrupt) as raised:
+            guarded(
+                None,
+                claim=claim,
+                outcome=outcome,
+            )
+    finally:
+        sys.settrace(None)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert raised.value.__suppress_context__ is True
+    names, frame_values = _module_traceback(raised.value)
+    assert names == [
+        "mark_google_calendar_refresh_credential_authorization_required",
+        "_raise_control_exception",
+    ]
+    for frame_locals in _module_frame_locals(raised.value):
+        assert all(
+            type(value)
+            not in (
+                GoogleCalendarRefreshCredentialClaim,
+                GoogleCalendarRefreshAuthorizationRequired,
+            )
+            for value in frame_locals.values()
+        )
+    output = " ".join((_formatted_exception(raised.value), frame_values))
+    for private in (
+        "recovery-cleanup-control-private",
+        claim.account_id,
+        claim.instructor_id,
+        claim.connection_id,
+        claim.refresh_token,
+    ):
+        assert private not in output
+
+
+@pytest.mark.parametrize(
+    ("operation_failure", "close_failure", "expected_type"),
+    [
+        (
+            KeyboardInterrupt("operation-control-private"),
+            RuntimeError("close-private"),
+            KeyboardInterrupt,
+        ),
+        (
+            asyncio.CancelledError("operation-cancel-private"),
+            KeyboardInterrupt("close-control-private"),
+            KeyboardInterrupt,
+        ),
+        (
+            RuntimeError("operation-private"),
+            asyncio.CancelledError("close-cancel-private"),
+            asyncio.CancelledError,
+        ),
+    ],
+)
+def test_claim_fenced_recovery_preserves_control_across_cleanup(
+    monkeypatch,
+    operation_failure,
+    close_failure,
+    expected_type,
+):
+    claim = _sealed_claim()
+    outcome = _recovery_outcome(claim)
+    session_factory, sessions = _recording_factory(
+        [],
+        close_error=close_failure,
+    )
+
+    def mark(*_args, **_kwargs):
+        raise operation_failure
+
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        mark,
+    )
+
+    with pytest.raises(expected_type) as raised:
+        mark_google_calendar_refresh_credential_authorization_required(
+            session_factory,
+            claim=claim,
+            outcome=outcome,
+        )
+    assert sessions[0].was_closed is True
+    assert raised.value is not operation_failure
+    assert raised.value is not close_failure
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    ("stage", "primary_failure", "rollback_failure", "expected_type"),
+    [
+        (
+            "operation",
+            KeyboardInterrupt("operation-control-private"),
+            RuntimeError("rollback-private"),
+            KeyboardInterrupt,
+        ),
+        (
+            "operation",
+            RuntimeError("operation-private"),
+            asyncio.CancelledError("rollback-cancel-private"),
+            asyncio.CancelledError,
+        ),
+        (
+            "operation",
+            asyncio.CancelledError("operation-cancel-private"),
+            KeyboardInterrupt("rollback-control-private"),
+            KeyboardInterrupt,
+        ),
+        (
+            "commit",
+            RuntimeError("commit-private"),
+            GeneratorExit("rollback-control-private"),
+            GeneratorExit,
+        ),
+    ],
+)
+def test_claim_fenced_recovery_preserves_control_across_rollback(
+    monkeypatch,
+    stage,
+    primary_failure,
+    rollback_failure,
+    expected_type,
+):
+    claim = _sealed_claim()
+    outcome = _recovery_outcome(claim)
+    events = []
+    session = RollbackFailureSession(
+        events,
+        rollback_error=rollback_failure,
+    )
+    if stage == "commit":
+        def fail_commit(_session):
+            raise primary_failure
+
+        event.listen(
+            session,
+            "before_commit",
+            fail_commit,
+        )
+
+    def mark(*_args, **_kwargs):
+        if stage == "operation":
+            raise primary_failure
+
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        mark,
+    )
+
+    with pytest.raises(expected_type) as raised:
+        mark_google_calendar_refresh_credential_authorization_required(
+            lambda: session,
+            claim=claim,
+            outcome=outcome,
+        )
+    assert session.was_closed is True
+    assert raised.value is not primary_failure
+    assert raised.value is not rollback_failure
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
+def test_claim_fenced_recovery_prioritizes_nested_non_cancel_control(
+    monkeypatch,
+):
+    claim = _sealed_claim()
+    outcome = _recovery_outcome(claim)
+    session_factory, _sessions = _recording_factory([])
+    failure = BaseExceptionGroup(
+        "private-group",
+        [
+            asyncio.CancelledError("private-cancel"),
+            BaseExceptionGroup(
+                "private-nested",
+                [KeyboardInterrupt("private-keyboard")],
+            ),
+        ],
+    )
+
+    def mark(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        mark,
+    )
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        mark_google_calendar_refresh_credential_authorization_required(
+            session_factory,
+            claim=claim,
+            outcome=outcome,
+        )
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    ("graph_kind", "expected_type"),
+    [
+        ("exact-bound", KeyboardInterrupt),
+        ("overflow", asyncio.CancelledError),
+        ("shared-dag", KeyboardInterrupt),
+    ],
+)
+def test_claim_fenced_recovery_bounds_exception_graph(
+    monkeypatch,
+    graph_kind,
+    expected_type,
+):
+    claim = _sealed_claim()
+    outcome = _recovery_outcome(claim)
+    session_factory, _sessions = _recording_factory([])
+    if graph_kind == "exact-bound":
+        children = [RuntimeError() for _index in range(4_094)]
+        children.append(KeyboardInterrupt())
+        failure = BaseExceptionGroup("exact-bound", children)
+    elif graph_kind == "overflow":
+        failure = BaseExceptionGroup(
+            "overflow",
+            [RuntimeError() for _index in range(4_096)],
+        )
+    else:
+        shared = ExceptionGroup("shared", [RuntimeError()])
+        failure = BaseExceptionGroup(
+            "shared-dag",
+            [*([shared] * 4_096), KeyboardInterrupt()],
+        )
+
+    def mark(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        mark,
+    )
+
+    with pytest.raises(expected_type) as raised:
+        mark_google_calendar_refresh_credential_authorization_required(
+            session_factory,
+            claim=claim,
+            outcome=outcome,
+        )
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_claim_fenced_recovery_survives_classifier_failure(
+    monkeypatch,
+    persistent,
+):
+    claim = _sealed_claim()
+    outcome = _recovery_outcome(claim)
+    session_factory, _sessions = _recording_factory([])
+    real_classifier = (
+        google_calendar_refresh_recovery
+        ._classified_recovery_control_exception
+    )
+    classifier_calls = []
+
+    def failing_classifier(raised):
+        classifier_calls.append(True)
+        if persistent or len(classifier_calls) == 1:
+            raise RuntimeError("classifier-failure-private")
+        return real_classifier(raised)
+
+    def mark(*_args, **_kwargs):
+        raise KeyboardInterrupt("operation-control-private")
+
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_classified_recovery_control_exception",
+        failing_classifier,
+    )
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        mark,
+    )
+
+    with pytest.raises(KeyboardInterrupt) as raised:
+        mark_google_calendar_refresh_credential_authorization_required(
+            session_factory,
+            claim=claim,
+            outcome=outcome,
+        )
+    assert len(classifier_calls) >= 1
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    names, frame_values = _module_traceback(raised.value)
+    assert names == [
+        "mark_google_calendar_refresh_credential_authorization_required",
+        "_raise_control_exception",
+    ]
+    for private in (
+        claim.account_id,
+        claim.instructor_id,
+        claim.connection_id,
+        claim.refresh_token,
+        "classifier-failure-private",
+        "operation-control-private",
+    ):
+        assert private not in frame_values
+
+
+@pytest.mark.parametrize(
+    ("operation_failure", "graph_failure", "expected_type"),
+    [
+        (
+            KeyboardInterrupt("operation-control-private"),
+            RuntimeError("graph-private"),
+            KeyboardInterrupt,
+        ),
+        (
+            RuntimeError("operation-private"),
+            GeneratorExit("graph-control-private"),
+            GeneratorExit,
+        ),
+        (
+            RuntimeError("operation-private"),
+            RuntimeError("graph-private"),
+            asyncio.CancelledError,
+        ),
+    ],
+)
+def test_claim_fenced_recovery_survives_graph_classifier_failure(
+    monkeypatch,
+    operation_failure,
+    graph_failure,
+    expected_type,
+):
+    claim = _sealed_claim()
+    outcome = _recovery_outcome(claim)
+    session_factory, _sessions = _recording_factory([])
+
+    def fail_graph(_raised):
+        raise graph_failure
+
+    def mark(*_args, **_kwargs):
+        raise operation_failure
+
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_classify_recovery_control_exception_graph",
+        fail_graph,
+    )
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        mark,
+    )
+
+    with pytest.raises(expected_type) as raised:
+        mark_google_calendar_refresh_credential_authorization_required(
+            session_factory,
+            claim=claim,
+            outcome=outcome,
+        )
+    assert raised.value is not operation_failure
+    assert raised.value is not graph_failure
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
+def test_claim_fenced_recovery_rejects_timezone_incomplete_timestamp():
+    incomplete = datetime.datetime(
+        2026,
+        11,
+        19,
+        14,
+        0,
+        tzinfo=IncompleteTimezone(),
+    )
+    with pytest.raises(ValueError, match="invalid credential timestamp"):
+        google_calendar_refresh_recovery._validated_persisted_timestamp(
+            incomplete
+        )
+
+
+def test_claim_fenced_recovery_marks_exact_generation_idempotently(
+    migrated_postgres_db,
+):
+    account_id, instructor_id = _add_owner("fenced-recovery")
+    _replace(account_id, token="fenced-recovery-private", now=T0)
+    claim = claim_google_calendar_refresh_credential(
+        db.SessionLocal,
+        instructor_id=instructor_id,
+        credential_cipher=CIPHER,
+    )
+    assert type(claim) is GoogleCalendarRefreshCredentialClaim
+    outcome = _recovery_outcome(claim)
+    before = _stored_connection(account_id)
+
+    assert (
+        mark_google_calendar_refresh_credential_authorization_required(
+            db.SessionLocal,
+            claim=claim,
+            outcome=outcome,
+        )
+        is None
+    )
+    first = _stored_connection(account_id)
+    assert first["authorization_required_at"] is not None
+    assert first["updated_at"] == first["authorization_required_at"]
+    assert first["revision"] == before["revision"] == 1
+    for unchanged in (
+        "id",
+        "provider",
+        "version",
+        "key_id",
+        "nonce",
+        "ciphertext",
+        "created_at",
+    ):
+        assert first[unchanged] == before[unchanged]
+
+    assert (
+        mark_google_calendar_refresh_credential_authorization_required(
+            db.SessionLocal,
+            claim=claim,
+            outcome=outcome,
+        )
+        is None
+    )
+    assert _stored_connection(account_id) == first
+    assert claim_google_calendar_refresh_credential(
+        db.SessionLocal,
+        instructor_id=instructor_id,
+        credential_cipher=CIPHER,
+    ) == "authorization_required"
+
+
+@pytest.mark.parametrize(
+    "transition",
+    ["replace", "disconnect", "revision", "reassign", "disable"],
+)
+def test_claim_fenced_recovery_rejects_stale_generation(
+    migrated_postgres_db,
+    transition,
+):
+    account_id, instructor_id = _add_owner(f"recovery-stale-{transition}")
+    _replace(account_id, token="recovery-original-private", now=T0)
+    claim = claim_google_calendar_refresh_credential(
+        db.SessionLocal,
+        instructor_id=instructor_id,
+        credential_cipher=CIPHER,
+    )
+    assert type(claim) is GoogleCalendarRefreshCredentialClaim
+    outcome = _recovery_outcome(claim)
+
+    if transition == "replace":
+        _replace(
+            account_id,
+            token="recovery-replacement-private",
+            now=T0 + datetime.timedelta(minutes=1),
+        )
+    elif transition == "disconnect":
+        with db.SessionLocal.begin() as session:
+            disconnect_google_calendar(session, account_id=account_id)
+    elif transition == "revision":
+        with db.SessionLocal.begin() as session:
+            account = session.get(ProviderAccountDB, account_id)
+            account.calendar_connection_revision += 1
+    elif transition == "reassign":
+        reassigned_instructor_id = "inst_refresh_claim_reassigned_owner"
+        with db.SessionLocal.begin() as session:
+            session.add(
+                InstructorDB(
+                    id=reassigned_instructor_id,
+                    name="Reassigned Recovery Owner",
+                    main_address="2 Credential Way",
+                    lat=30.3,
+                    lng=-97.3,
+                    work_start_time="08:00",
+                    work_end_time="17:00",
+                    timezone="America/Chicago",
+                )
+            )
+            account = session.get(ProviderAccountDB, account_id)
+            account.instructor_id = reassigned_instructor_id
+    else:
+        with db.SessionLocal.begin() as session:
+            account = session.get(ProviderAccountDB, account_id)
+            account.disabled_at = T0 + datetime.timedelta(minutes=1)
+    before = _stored_connection(account_id)
+
+    with pytest.raises(GoogleCalendarRefreshRecoveryError):
+        mark_google_calendar_refresh_credential_authorization_required(
+            db.SessionLocal,
+            claim=claim,
+            outcome=outcome,
+        )
+    assert _stored_connection(account_id) == before
+
+
+def test_claim_fenced_recovery_outcome_cannot_select_another_tenant(
+    migrated_postgres_db,
+):
+    first_account, first_instructor = _add_owner("recovery-tenant-first")
+    second_account, second_instructor = _add_owner("recovery-tenant-second")
+    _replace(first_account, token="recovery-first-private", now=T0)
+    _replace(second_account, token="recovery-second-private", now=T0)
+    first_claim = claim_google_calendar_refresh_credential(
+        db.SessionLocal,
+        instructor_id=first_instructor,
+        credential_cipher=CIPHER,
+    )
+    second_claim = claim_google_calendar_refresh_credential(
+        db.SessionLocal,
+        instructor_id=second_instructor,
+        credential_cipher=CIPHER,
+    )
+    assert type(first_claim) is GoogleCalendarRefreshCredentialClaim
+    assert type(second_claim) is GoogleCalendarRefreshCredentialClaim
+    before = {
+        first_account: _stored_connection(first_account),
+        second_account: _stored_connection(second_account),
+    }
+
+    with pytest.raises(GoogleCalendarRefreshRecoveryError):
+        mark_google_calendar_refresh_credential_authorization_required(
+            db.SessionLocal,
+            claim=first_claim,
+            outcome=_recovery_outcome(second_claim),
+        )
+    assert _stored_connection(first_account) == before[first_account]
+    assert _stored_connection(second_account) == before[second_account]
+
+
+def test_claim_fenced_recovery_projects_only_fence_and_status_columns(
+    migrated_postgres_db,
+):
+    account_id, instructor_id = _add_owner("recovery-projection")
+    _replace(account_id, token="recovery-projection-private", now=T0)
+    claim = claim_google_calendar_refresh_credential(
+        db.SessionLocal,
+        instructor_id=instructor_id,
+        credential_cipher=CIPHER,
+    )
+    assert type(claim) is GoogleCalendarRefreshCredentialClaim
+    statements = []
+
+    def capture(_connection, _cursor, statement, *_args):
+        normalized = " ".join(statement.lower().split())
+        if (
+            normalized.startswith(("select ", "update "))
+            and (
+                "provider_accounts" in normalized
+                or "provider_calendar_connections" in normalized
+            )
+        ):
+            statements.append(normalized)
+
+    event.listen(db.engine, "before_cursor_execute", capture)
+    try:
+        mark_google_calendar_refresh_credential_authorization_required(
+            db.SessionLocal,
+            claim=claim,
+            outcome=_recovery_outcome(claim),
+        )
+    finally:
+        event.remove(db.engine, "before_cursor_execute", capture)
+
+    assert len(statements) == 3
+    assert " from provider_accounts " in statements[0]
+    assert " for update" in statements[0]
+    assert " from provider_calendar_connections " in statements[1]
+    assert " for update" in statements[1]
+    assert statements[2].startswith("update provider_calendar_connections ")
+    assert "credential_" not in statements[0].split(" from ", 1)[0]
+    connection_projection = statements[1].split(" from ", 1)[0]
+    assert "credential_version" not in connection_projection
+    assert "credential_key_id" not in connection_projection
+    assert "credential_nonce" not in connection_projection
+    assert "credential_ciphertext" not in connection_projection
+
+
+def test_claim_fenced_recovery_rolls_back_after_locked_mutation(
+    migrated_postgres_db,
+    monkeypatch,
+):
+    account_id, instructor_id = _add_owner("recovery-rollback")
+    _replace(account_id, token="recovery-rollback-private", now=T0)
+    claim = claim_google_calendar_refresh_credential(
+        db.SessionLocal,
+        instructor_id=instructor_id,
+        credential_cipher=CIPHER,
+    )
+    assert type(claim) is GoogleCalendarRefreshCredentialClaim
+    before = _stored_connection(account_id)
+    real_mark = (
+        google_calendar_refresh_recovery
+        ._mark_locked_refresh_credential_authorization_required
+    )
+
+    def fail_after_mark(session, **values):
+        real_mark(session, **values)
+        raise RuntimeError("rollback-after-recovery-private")
+
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        fail_after_mark,
+    )
+
+    with pytest.raises(GoogleCalendarRefreshRecoveryError):
+        mark_google_calendar_refresh_credential_authorization_required(
+            db.SessionLocal,
+            claim=claim,
+            outcome=_recovery_outcome(claim),
+        )
+    assert _stored_connection(account_id) == before
+
+
+def test_concurrent_claim_fenced_recovery_is_idempotent(
+    migrated_postgres_db,
+    monkeypatch,
+):
+    account_id, instructor_id = _add_owner("recovery-concurrent")
+    _replace(account_id, token="recovery-concurrent-private", now=T0)
+    claim = claim_google_calendar_refresh_credential(
+        db.SessionLocal,
+        instructor_id=instructor_id,
+        credential_cipher=CIPHER,
+    )
+    assert type(claim) is GoogleCalendarRefreshCredentialClaim
+    outcome = _recovery_outcome(claim)
+    first_marked = threading.Event()
+    release_first = threading.Event()
+    second_backend_ready = threading.Event()
+    first_backend_pid = []
+    second_backend_pid = []
+    calls = []
+    real_mark = (
+        google_calendar_refresh_recovery
+        ._mark_locked_refresh_credential_authorization_required
+    )
+
+    def held_mark(session, **values):
+        backend_pid = session.execute(
+            text("SELECT pg_backend_pid()")
+        ).scalar_one()
+        call_number = len(calls)
+        calls.append(call_number)
+        if call_number == 0:
+            first_backend_pid.append(backend_pid)
+            result = real_mark(session, **values)
+            first_marked.set()
+            assert release_first.wait(timeout=5)
+            return result
+        second_backend_pid.append(backend_pid)
+        second_backend_ready.set()
+        return real_mark(session, **values)
+
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        held_mark,
+    )
+
+    def mark():
+        return mark_google_calendar_refresh_credential_authorization_required(
+            db.SessionLocal,
+            claim=claim,
+            outcome=outcome,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(mark)
+        assert first_marked.wait(timeout=5)
+        second_future = executor.submit(mark)
+        assert second_backend_ready.wait(timeout=5)
+        try:
+            _wait_until_blocked_by(
+                second_backend_pid[0],
+                first_backend_pid[0],
+            )
+        finally:
+            release_first.set()
+        results = (
+            first_future.result(timeout=10),
+            second_future.result(timeout=10),
+        )
+
+    assert results == (None, None)
+    stored = _stored_connection(account_id)
+    assert stored["authorization_required_at"] is not None
+    assert stored["updated_at"] == stored["authorization_required_at"]
+    assert stored["revision"] == 1
+
+
+@pytest.mark.parametrize("transition", ["replace", "disconnect"])
+def test_claim_fenced_recovery_serializes_before_lifecycle_change(
+    migrated_postgres_db,
+    monkeypatch,
+    transition,
+):
+    account_id, instructor_id = _add_owner(
+        f"recovery-first-{transition}"
+    )
+    _replace(account_id, token="recovery-first-private", now=T0)
+    claim = claim_google_calendar_refresh_credential(
+        db.SessionLocal,
+        instructor_id=instructor_id,
+        credential_cipher=CIPHER,
+    )
+    assert type(claim) is GoogleCalendarRefreshCredentialClaim
+    recovery_marked = threading.Event()
+    release_recovery = threading.Event()
+    lifecycle_backend_ready = threading.Event()
+    recovery_backend_pid = []
+    lifecycle_backend_pid = []
+    real_mark = (
+        google_calendar_refresh_recovery
+        ._mark_locked_refresh_credential_authorization_required
+    )
+
+    def held_mark(session, **values):
+        result = real_mark(session, **values)
+        recovery_backend_pid.append(
+            session.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        )
+        recovery_marked.set()
+        assert release_recovery.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        held_mark,
+    )
+
+    def recover():
+        return mark_google_calendar_refresh_credential_authorization_required(
+            db.SessionLocal,
+            claim=claim,
+            outcome=_recovery_outcome(claim),
+        )
+
+    def change_lifecycle():
+        with db.SessionLocal.begin() as session:
+            lifecycle_backend_pid.append(
+                session.execute(text("SELECT pg_backend_pid()")).scalar_one()
+            )
+            lifecycle_backend_ready.set()
+            if transition == "replace":
+                return replace_google_calendar_connection(
+                    session,
+                    account_id=account_id,
+                    refresh_token="post-recovery-replacement-private",
+                    cipher=CIPHER,
+                    now=T0 + datetime.timedelta(minutes=1),
+                )
+            return disconnect_google_calendar(
+                session,
+                account_id=account_id,
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        recovery_future = executor.submit(recover)
+        assert recovery_marked.wait(timeout=5)
+        lifecycle_future = executor.submit(change_lifecycle)
+        assert lifecycle_backend_ready.wait(timeout=5)
+        try:
+            _wait_until_blocked_by(
+                lifecycle_backend_pid[0],
+                recovery_backend_pid[0],
+            )
+        finally:
+            release_recovery.set()
+        assert recovery_future.result(timeout=10) is None
+        lifecycle_status = lifecycle_future.result(timeout=10)
+
+    stored = _stored_connection(account_id)
+    assert _stored_revision(account_id) == 2
+    if transition == "replace":
+        assert lifecycle_status.state == "connected"
+        assert stored is not None
+        assert stored["id"] != claim.connection_id
+        assert stored["authorization_required_at"] is None
+    else:
+        assert lifecycle_status.state == "disconnected"
+        assert stored is None
+
+
+@pytest.mark.parametrize("transition", ["replace", "disconnect"])
+def test_lifecycle_change_serializes_before_claim_fenced_recovery(
+    migrated_postgres_db,
+    monkeypatch,
+    transition,
+):
+    account_id, instructor_id = _add_owner(
+        f"lifecycle-first-{transition}"
+    )
+    _replace(account_id, token="lifecycle-first-private", now=T0)
+    claim = claim_google_calendar_refresh_credential(
+        db.SessionLocal,
+        instructor_id=instructor_id,
+        credential_cipher=CIPHER,
+    )
+    assert type(claim) is GoogleCalendarRefreshCredentialClaim
+    lifecycle_changed = threading.Event()
+    release_lifecycle = threading.Event()
+    recovery_backend_ready = threading.Event()
+    lifecycle_backend_pid = []
+    recovery_backend_pid = []
+    real_mark = (
+        google_calendar_refresh_recovery
+        ._mark_locked_refresh_credential_authorization_required
+    )
+
+    def observed_mark(session, **values):
+        recovery_backend_pid.append(
+            session.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        )
+        recovery_backend_ready.set()
+        return real_mark(session, **values)
+
+    monkeypatch.setattr(
+        google_calendar_refresh_recovery,
+        "_mark_locked_refresh_credential_authorization_required",
+        observed_mark,
+    )
+
+    def change_lifecycle():
+        with db.SessionLocal.begin() as session:
+            lifecycle_backend_pid.append(
+                session.execute(text("SELECT pg_backend_pid()")).scalar_one()
+            )
+            if transition == "replace":
+                status = replace_google_calendar_connection(
+                    session,
+                    account_id=account_id,
+                    refresh_token="lifecycle-first-replacement-private",
+                    cipher=CIPHER,
+                    now=T0 + datetime.timedelta(minutes=1),
+                )
+            else:
+                status = disconnect_google_calendar(
+                    session,
+                    account_id=account_id,
+                )
+            lifecycle_changed.set()
+            assert release_lifecycle.wait(timeout=5)
+            return status
+
+    def recover():
+        return mark_google_calendar_refresh_credential_authorization_required(
+            db.SessionLocal,
+            claim=claim,
+            outcome=_recovery_outcome(claim),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        lifecycle_future = executor.submit(change_lifecycle)
+        assert lifecycle_changed.wait(timeout=5)
+        recovery_future = executor.submit(recover)
+        assert recovery_backend_ready.wait(timeout=5)
+        try:
+            _wait_until_blocked_by(
+                recovery_backend_pid[0],
+                lifecycle_backend_pid[0],
+            )
+        finally:
+            release_lifecycle.set()
+        lifecycle_status = lifecycle_future.result(timeout=10)
+        with pytest.raises(GoogleCalendarRefreshRecoveryError):
+            recovery_future.result(timeout=10)
+
+    stored = _stored_connection(account_id)
+    assert _stored_revision(account_id) == 2
+    if transition == "replace":
+        assert lifecycle_status.state == "connected"
+        assert stored is not None
+        assert stored["id"] != claim.connection_id
+        assert stored["authorization_required_at"] is None
+    else:
+        assert lifecycle_status.state == "disconnected"
+        assert stored is None
+
+
+def test_claim_fenced_recovery_clamps_clock_regression(
+    migrated_postgres_db,
+):
+    account_id, instructor_id = _add_owner("recovery-clock-regression")
+    _replace(account_id, token="recovery-clock-private", now=T0)
+    claim = claim_google_calendar_refresh_credential(
+        db.SessionLocal,
+        instructor_id=instructor_id,
+        credential_cipher=CIPHER,
+    )
+    assert type(claim) is GoogleCalendarRefreshCredentialClaim
+    future = datetime.datetime.now(UTC) + datetime.timedelta(days=1)
+    with db.SessionLocal.begin() as session:
+        row = session.get(ProviderCalendarConnectionDB, claim.connection_id)
+        row.updated_at = future
+
+    mark_google_calendar_refresh_credential_authorization_required(
+        db.SessionLocal,
+        claim=claim,
+        outcome=_recovery_outcome(claim),
+    )
+
+    stored = _stored_connection(account_id)
+    assert stored["authorization_required_at"] == future
+    assert stored["updated_at"] == future
+    assert stored["revision"] == 1
 
 
 def _add_owner(suffix: str) -> tuple[str, str]:
