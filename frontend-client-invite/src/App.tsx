@@ -5,6 +5,7 @@ import type {
   ClientInviteApi,
   ClientInviteEnvelope,
   LessonRequest,
+  RequestStatus,
 } from "./api/types";
 import { ClientInviteApiError } from "./api/clientInviteApi";
 import type { ClientInviteDataMode } from "./api/dataMode";
@@ -50,6 +51,7 @@ export default function App({ api, dataMode, inviteToken, requestedDate, showMoc
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const stepTitleRef = useRef<HTMLHeadingElement>(null);
   const previousStepRef = useRef<InviteStep>(flow.step);
+  const previousRequestStatusRef = useRef<RequestStatus | null>(lessonRequest?.status ?? null);
 
   useEffect(() => {
     if (dataMode !== "http" || !inviteToken) return;
@@ -85,15 +87,18 @@ export default function App({ api, dataMode, inviteToken, requestedDate, showMoc
 
   useEffect(() => {
     const didStepChange = previousStepRef.current !== flow.step;
+    const requestStatus = lessonRequest?.status ?? null;
+    const didRequestStatusChange = previousRequestStatusRef.current !== requestStatus;
     previousStepRef.current = flow.step;
-    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-    if (!didStepChange) return;
+    previousRequestStatusRef.current = requestStatus;
+    if (!didStepChange && !didRequestStatusChange) return;
 
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     const frame = window.requestAnimationFrame(() => {
       stepTitleRef.current?.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [flow.step]);
+  }, [flow.step, lessonRequest?.status]);
 
   if (bootstrapStatus !== "ready" || !envelope || !intake) {
     return (

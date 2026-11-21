@@ -802,9 +802,7 @@ input[readonly] {
 }
 
 .results-screen > .primary-button {
-  position: sticky;
-  z-index: 5;
-  bottom: calc(12px + env(safe-area-inset-bottom));
+  position: static;
 }
 
 .back-link {
@@ -1210,6 +1208,19 @@ input[readonly] {
     padding-inline: 12px;
   }
 
+  .flow-progress {
+    padding-inline: 10px;
+  }
+
+  .flow-progress-steps {
+    gap: 2px;
+  }
+
+  .flow-progress-steps span {
+    padding-inline: 0;
+    font-size: 9px;
+  }
+
   .window-grid {
     grid-template-columns: 1fr;
   }
@@ -1233,7 +1244,6 @@ input[readonly] {
 button:focus-visible,
 input:focus-visible,
 a:focus-visible {
-  outline: 3px solid #fffdf8;
-  outline-offset: 2px;
-  box-shadow: 0 0 0 5px var(--forest-dark);
+  outline: 3px solid var(--forest-dark);
+  outline-offset: 3px;
 }

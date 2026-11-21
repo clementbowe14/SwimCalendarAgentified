@@ -29,7 +29,12 @@ export function LessonRequestStatusScreen({
   return (
     <div className="screen-stack request-screen">
       <SectionCard eyebrow="Appointment request" title={confirmed ? "Appointment confirmed" : needsNewTimes ? "Choose a new time" : expired ? "Request expired" : "Request sent"}>
-        <div className={confirmed ? "status-panel confirmed" : "status-panel"}>
+        <div
+          className={confirmed ? "status-panel confirmed" : "status-panel"}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
           <span className="status-icon">{confirmed ? <CheckCircledIcon /> : <ClockIcon />}</span>
           <div>
             {confirmed ? <ConfirmedOccurrences confirmation={lessonRequest.confirmation} /> : <strong>{lessonRequest.slot.display}</strong>}

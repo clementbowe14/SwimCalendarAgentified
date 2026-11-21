@@ -23,8 +23,30 @@ test.describe("client invite self-booking flow", () => {
     const availabilityHeading = page.getByRole("heading", { name: "Choose the times that suit you" });
     await expect(availabilityHeading).toBeVisible();
     await expect(availabilityHeading).toBeFocused();
-    await expect(page.getByRole("button", { name: "45 min" })).toHaveClass(/selected/);
+    const selectedDuration = page.getByRole("button", { name: "45 min" });
+    await expect(selectedDuration).toHaveClass(/selected/);
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Tab");
+    await expect(selectedDuration).toBeFocused();
+    await expect(selectedDuration).toHaveCSS("outline-color", "rgb(24, 71, 55)");
     await expectInviteProgress(page, "Step 2 of 5: Times", 40);
+  });
+
+  test("keeps all progress labels inside the 320px reflow viewport", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 800 });
+    await page.goto("/");
+
+    const progressSteps = page.getByRole("navigation", { name: "Invite progress steps" });
+    const calendarStep = progressSteps.getByText("Calendar", { exact: true });
+    const [progressBox, calendarBox] = await Promise.all([
+      progressSteps.boundingBox(),
+      calendarStep.boundingBox(),
+    ]);
+    expect(progressBox).not.toBeNull();
+    expect(calendarBox).not.toBeNull();
+    if (!progressBox || !calendarBox) throw new Error("Progress labels must have measurable bounds.");
+    expect(calendarBox.x + calendarBox.width).toBeLessThanOrEqual(progressBox.x + progressBox.width + 0.5);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 
   test("preserves the client address while comparing the provider location", async ({ page }) => {
@@ -47,6 +69,22 @@ test.describe("client invite self-booking flow", () => {
     await page.getByRole("button", { name: "Continue to availability" }).click();
     await page.getByRole("button", { name: "Weekly" }).click();
     await page.getByRole("button", { name: "Show available times" }).click();
+    const bookingNote = page.locator(".booking-note");
+    const firstSlot = page.locator(".slot-card").first();
+    const requestAction = page.getByRole("button", { name: "Request this time" });
+    const [bookingNoteBox, firstSlotBox, requestActionBox] = await Promise.all([
+      bookingNote.boundingBox(),
+      firstSlot.boundingBox(),
+      requestAction.boundingBox(),
+    ]);
+    expect(bookingNoteBox).not.toBeNull();
+    expect(firstSlotBox).not.toBeNull();
+    expect(requestActionBox).not.toBeNull();
+    if (!bookingNoteBox || !firstSlotBox || !requestActionBox) {
+      throw new Error("Result content and its action must have measurable bounds.");
+    }
+    expect(boxesOverlap(requestActionBox, bookingNoteBox)).toBe(false);
+    expect(boxesOverlap(requestActionBox, firstSlotBox)).toBe(false);
 
     const resultsHeading = page.getByRole("heading", { name: "Choose your preferred time" });
     await expect(resultsHeading).toBeVisible();
@@ -74,6 +112,9 @@ test.describe("client invite self-booking flow", () => {
     await expectInviteProgress(page, "Step 4 of 5: Status", 80);
 
     await page.getByRole("button", { name: "Check confirmation" }).click();
+    const confirmedHero = page.getByRole("heading", { name: "Appointment confirmed", level: 1 });
+    await expect(confirmedHero).toBeFocused();
+    await expect(page.getByRole("status")).toContainText("Riley confirmed");
     await expect(page.getByRole("heading", { name: "Appointment confirmed", level: 2 })).toBeVisible();
     await expectInviteProgress(page, "Step 4 of 5: Status", 80);
 
@@ -121,4 +162,16 @@ async function expectInviteProgress(page: Page, stepText: string, percentComplet
   const progress = page.getByRole("progressbar", { name: "Invite completion" });
   await expect(progress).toHaveAttribute("aria-valuenow", String(percentComplete));
   await expect(progress).toHaveAttribute("aria-valuetext", `${percentComplete}% complete`);
+}
+
+function boxesOverlap(
+  first: { x: number; y: number; width: number; height: number },
+  second: { x: number; y: number; width: number; height: number },
+) {
+  return (
+    first.x < second.x + second.width &&
+    first.x + first.width > second.x &&
+    first.y < second.y + second.height &&
+    first.y + first.height > second.y
+  );
 }
