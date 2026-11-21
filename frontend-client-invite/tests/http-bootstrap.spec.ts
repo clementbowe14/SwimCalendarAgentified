@@ -53,13 +53,13 @@ test("delayed HTTP bootstrap remains neutral and fixture-free until server data 
   await expect(page.getByText("Clearwater Services", { exact: true })).toBeVisible();
   await expect(page.getByText(/Jordan Lee/).first()).toBeVisible();
   await expectNoMockFixtureText(page);
-  await page.getByRole("button", { name: "Facility" }).click();
-  await expect(page.getByLabel("Preferred facility")).toHaveValue("500 Provider Plaza");
-  await expect(page.getByLabel("Preferred facility")).toHaveAttribute("readonly", "");
-  await page.getByRole("button", { name: "Home pool" }).click();
-  await expect(page.getByLabel("Home pool address")).toHaveValue("42 Server Lane");
+  await page.getByRole("button", { name: "Provider location" }).click();
+  await expect(page.getByLabel("Service location")).toHaveValue("500 Provider Plaza");
+  await expect(page.getByLabel("Service location")).toHaveAttribute("readonly", "");
+  await page.getByRole("button", { name: "My location" }).click();
+  await expect(page.getByLabel("Appointment address")).toHaveValue("42 Server Lane");
   await page.getByRole("button", { name: "Continue to availability" }).click();
-  await expect(page.getByRole("heading", { name: "Choose your open windows" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Choose the times that suit you" })).toBeVisible();
   expect(submittedIntakes.at(-1)?.location).toEqual({
     address: "42 Server Lane",
     lat: 30.2,
@@ -79,15 +79,51 @@ test("facility selection submits the configured facility coordinates and flag", 
   });
 
   await page.goto("/?invite_token=server-invite-token");
-  await page.getByRole("button", { name: "Facility" }).click();
+  await page.getByRole("button", { name: "Provider location" }).click();
   await page.getByRole("button", { name: "Continue to availability" }).click();
-  await expect(page.getByRole("heading", { name: "Choose your open windows" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Choose the times that suit you" })).toBeVisible();
   expect(submittedIntakes.at(-1)?.location).toEqual({
     address: "500 Provider Plaza",
     lat: 30.25,
     lng: -97.75,
     is_instructor_facility: true,
   });
+});
+
+test("default backend address sentinel stays empty until the client enters a location", async ({ page }) => {
+  const submittedIntakes: ClientInviteEnvelope["intake"][] = [];
+  const emptyAddressEnvelope: ClientInviteEnvelope = {
+    ...serverEnvelope,
+    intake: {
+      ...serverEnvelope.intake,
+      location: {
+        address: "Enter home pool address",
+        lat: null,
+        lng: null,
+        is_instructor_facility: false,
+      },
+    },
+  };
+  await page.route(apiPattern, async (route) => {
+    if (route.request().method() === "POST") {
+      submittedIntakes.push(route.request().postDataJSON() as ClientInviteEnvelope["intake"]);
+    }
+    await route.fulfill({ json: emptyAddressEnvelope });
+  });
+
+  await page.goto("/?invite_token=server-invite-token");
+  const address = page.getByLabel("Appointment address");
+  await expect(address).toHaveValue("");
+  await expect(address).toHaveAttribute("placeholder", "Enter appointment address");
+
+  await page.getByRole("button", { name: "Continue to availability" }).click();
+  expect(submittedIntakes).toHaveLength(0);
+  await expect(address).toBeFocused();
+
+  await address.fill("77 Client Way");
+  await page.getByRole("button", { name: "Continue to availability" }).click();
+  await expect(page.getByRole("heading", { name: "Choose the times that suit you" })).toBeVisible();
+  expect(submittedIntakes.at(-1)?.location.address).toBe("77 Client Way");
 });
 
 test("missing HTTP invite token shows an invalid-link state without making a request", async ({ page }) => {
@@ -144,7 +180,7 @@ async function expectFixtureFree(page: Page) {
   await expect(page.getByLabel("Client name")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Continue to availability" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Show available times" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Request this lesson" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Request this time" })).toHaveCount(0);
 }
 
 async function expectNoMockFixtureText(page: Page) {

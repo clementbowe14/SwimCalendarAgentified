@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   AvailabilitySearchResponse,
   ClientIntake,
@@ -48,6 +48,8 @@ export default function App({ api, dataMode, inviteToken, requestedDate, showMoc
   );
   const [bootstrapError, setBootstrapError] = useState("");
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
+  const stepTitleRef = useRef<HTMLHeadingElement>(null);
+  const previousStepRef = useRef<InviteStep>(flow.step);
 
   useEffect(() => {
     if (dataMode !== "http" || !inviteToken) return;
@@ -80,6 +82,18 @@ export default function App({ api, dataMode, inviteToken, requestedDate, showMoc
       active = false;
     };
   }, [api, bootstrapAttempt, dataMode, inviteToken]);
+
+  useEffect(() => {
+    const didStepChange = previousStepRef.current !== flow.step;
+    previousStepRef.current = flow.step;
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    if (!didStepChange) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      stepTitleRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [flow.step]);
 
   if (bootstrapStatus !== "ready" || !envelope || !intake) {
     return (
@@ -190,6 +204,7 @@ export default function App({ api, dataMode, inviteToken, requestedDate, showMoc
         title={heroContent.title}
         copy={heroContent.copy}
         businessName={envelope.business_name}
+        titleRef={stepTitleRef}
       />
       <FlowProgress currentStep={flow.step} />
       {errorMessage ? (
@@ -274,7 +289,7 @@ function BootstrapScreen({
         <section className="bootstrap-card" role="status" aria-live="polite">
           <p className="eyebrow">Client invitation</p>
           <h1>Loading your invitation</h1>
-          <p>We’re securely retrieving the lesson details from your scheduling link.</p>
+          <p>We’re securely retrieving the appointment details from your scheduling link.</p>
           <div className="bootstrap-skeleton" aria-hidden="true"><span /><span /><span /></div>
         </section>
       </main>
@@ -335,9 +350,9 @@ function getHeroContent(step: InviteStep, instructorName: string, lessonRequest:
   if ((step === "request" || step === "calendar") && lessonRequest?.status === "confirmed") {
     return {
       eyebrow: step === "request" ? "Request status" : "Calendar handoff",
-      title: "Lesson confirmed",
+      title: "Appointment confirmed",
       copy: lessonRequest.confirmation
-        ? "Your active lesson dates and confirmation status."
+        ? "Your confirmed date and appointment details."
         : "This request was confirmed. There are no active calendar dates available.",
     };
   }
@@ -345,38 +360,38 @@ function getHeroContent(step: InviteStep, instructorName: string, lessonRequest:
   if (step === "intake") {
     return {
       eyebrow: `Invite from ${instructorName}`,
-      title: "Tell us when you can swim",
-      copy: "Share your location and availability, then choose from lesson times that are genuinely open.",
+      title: "Let’s find a time that works",
+      copy: "Share the times that suit you, then choose from appointments that are genuinely open.",
     };
   }
 
   if (step === "preferences") {
     return {
       eyebrow: "Availability",
-      title: "Choose your open windows",
-      copy: `${instructorName} uses these windows to find appointment options for you.`,
+      title: "Choose the times that suit you",
+      copy: "Choose any windows that work for you. We’ll show appointment times available to request.",
     };
   }
 
   if (step === "results") {
     return {
       eyebrow: "Available times",
-      title: "Pick a lesson time",
-      copy: "These appointment times are available to request.",
+      title: "Choose your preferred time",
+      copy: "Every option shown is open and ready for you to request.",
     };
   }
 
   if (step === "request") {
     return {
       eyebrow: "Request status",
-      title: "Lesson request sent",
-      copy: `The time is held while ${instructorName} confirms the final appointment.`,
+      title: "Your request is with the provider",
+      copy: `The time is held while ${instructorName} confirms the appointment.`,
     };
   }
 
   return {
     eyebrow: "Calendar handoff",
-    title: "Lesson confirmed",
+    title: "Appointment confirmed",
     copy: "Add the confirmed appointment to the calendar you use most.",
   };
 }

@@ -4,7 +4,8 @@ import type { ClientIntake, LessonLocationType } from "../api/types";
 import { SectionCard } from "../components/SectionCard";
 import { ToggleButton } from "../components/ToggleButton";
 
-const HOME_POOL_ADDRESS_PROMPT = "Enter home pool address";
+const EMPTY_HOME_LOCATION_SENTINEL = "Enter home pool address";
+const CLIENT_LOCATION_ADDRESS_PROMPT = "Enter appointment address";
 
 type InviteLandingScreenProps = {
   intake: ClientIntake;
@@ -32,7 +33,7 @@ export function InviteLandingScreen({
     is_instructor_facility: false,
   });
   const needsHomePoolAddress =
-    intake.location_type === "home" && intake.location.address === HOME_POOL_ADDRESS_PROMPT;
+    intake.location_type === "home" && intake.location.address === EMPTY_HOME_LOCATION_SENTINEL;
 
   const updateField = (field: keyof ClientIntake, value: string) => {
     onChange({ ...intake, [field]: value });
@@ -51,7 +52,7 @@ export function InviteLandingScreen({
       location:
         type === "facility"
           ? {
-              address: serviceLocation?.address ?? "Facility unavailable",
+              address: serviceLocation?.address ?? "Provider location unavailable",
               lat: serviceLocation?.lat ?? null,
               lng: serviceLocation?.lng ?? null,
               is_instructor_facility: true,
@@ -62,13 +63,13 @@ export function InviteLandingScreen({
 
   return (
     <form
-      className="screen-stack"
+      className="screen-stack intake-screen"
       onSubmit={(event) => {
         event.preventDefault();
         onContinue();
       }}
     >
-      <SectionCard eyebrow="Client info" title="Basics">
+      <SectionCard eyebrow="Your details" title="A few basics">
         <label>
           <span>Client name</span>
           <input value={intake.client_name} onChange={(event) => updateField("client_name", event.target.value)} />
@@ -89,21 +90,21 @@ export function InviteLandingScreen({
             onChange={(event) => updateField("guardian_email", event.target.value)}
           />
         </label>
-        <div className="segmented-control" aria-label="Lesson location">
+        <div className="segmented-control" aria-label="Appointment location">
           <ToggleButton selected={intake.location_type === "home"} onClick={() => updateLocationType("home")}>
             <HomeIcon />
-            Home pool
+            My location
           </ToggleButton>
           <ToggleButton selected={intake.location_type === "facility"} onClick={() => updateLocationType("facility")}>
             <DrawingPinIcon />
-            Facility
+            Provider location
           </ToggleButton>
         </div>
         <label>
-          <span>{intake.location_type === "home" ? "Home pool address" : "Preferred facility"}</span>
+          <span>{intake.location_type === "home" ? "Appointment address" : "Service location"}</span>
           <input
             value={needsHomePoolAddress ? "" : intake.location.address}
-            placeholder={intake.location_type === "home" ? HOME_POOL_ADDRESS_PROMPT : undefined}
+            placeholder={intake.location_type === "home" ? CLIENT_LOCATION_ADDRESS_PROMPT : undefined}
             required={intake.location_type === "home"}
             readOnly={intake.location_type === "facility"}
             onChange={(event) => {
@@ -127,7 +128,7 @@ export function InviteLandingScreen({
         <div className="summary-strip icon-strip">
           <EnvelopeClosedIcon />
           <span>
-            Confirm your details once, then choose from lesson times that fit both your preferences and {instructorName}'s schedule.
+            Confirm your details once, then choose from appointment times that fit both your preferences and {instructorName}'s schedule.
           </span>
         </div>
         <label>

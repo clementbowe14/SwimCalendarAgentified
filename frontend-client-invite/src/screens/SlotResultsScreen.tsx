@@ -27,12 +27,12 @@ export function SlotResultsScreen({
   const selectedSlot = response.slots.find((slot) => slot.id === selectedSlotId);
 
   return (
-    <div className="screen-stack">
+    <div className="screen-stack results-screen">
       <button className="back-link" type="button" onClick={onBack}>
         <ArrowLeftIcon />
         Edit preferences
       </button>
-      <SectionCard eyebrow="Open lesson times" title="Available to request" meta={`${response.slots.length} found`}>
+      <SectionCard eyebrow="Open times" title="Available to request" meta={`${response.slots.length} found`}>
         <div className="booking-note">
           <strong>Pick the time you prefer</strong>
           <span>{recurrence === "weekly" ? "Weekly request" : "One-time request"} - {instructorName} confirms after final schedule check.</span>
@@ -67,7 +67,7 @@ export function SlotResultsScreen({
       ) : null}
 
       <button className="primary-button" type="button" onClick={onRequestSlot} disabled={!selectedSlot || requesting}>
-        {requesting ? "Sending request" : selectedSlot ? "Request this lesson" : "Select a time"}
+        {requesting ? "Sending request" : selectedSlot ? "Request this time" : "Select a time"}
       </button>
     </div>
   );

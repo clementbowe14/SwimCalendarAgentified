@@ -16,12 +16,12 @@ export function CalendarHandoffScreen({
   checkingStatus,
 }: CalendarHandoffScreenProps) {
   return (
-    <div className="screen-stack">
-      <SectionCard eyebrow="Confirmed lesson" title={lessonRequest.confirmation ? "Ready for your calendar" : "Calendar unavailable"}>
+    <div className="screen-stack calendar-screen">
+      <SectionCard eyebrow="Confirmed appointment" title={lessonRequest.confirmation ? "Ready for your calendar" : "Calendar unavailable"}>
         <section className="client-confirmed-card">
           <NotificationDelivery notifications={lessonRequest.notifications ?? []} />
           <div className="confirmed-message">
-            <span>Lesson request confirmed</span>
+            <span>Appointment confirmed</span>
             <ConfirmedOccurrences confirmation={lessonRequest.confirmation} />
             {lessonRequest.confirmation ? <small>{lessonRequest.slot.location_address}</small> : <p role="status">Calendar links are no longer available.</p>}
           </div>

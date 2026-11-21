@@ -27,8 +27,8 @@ export function LessonRequestStatusScreen({
   const expired = lessonRequest.status === "expired";
 
   return (
-    <div className="screen-stack">
-      <SectionCard eyebrow="Lesson request" title={confirmed ? "Lesson confirmed" : needsNewTimes ? "Choose a new time" : expired ? "Request expired" : "Request sent"}>
+    <div className="screen-stack request-screen">
+      <SectionCard eyebrow="Appointment request" title={confirmed ? "Appointment confirmed" : needsNewTimes ? "Choose a new time" : expired ? "Request expired" : "Request sent"}>
         <div className={confirmed ? "status-panel confirmed" : "status-panel"}>
           <span className="status-icon">{confirmed ? <CheckCircledIcon /> : <ClockIcon />}</span>
           <div>
@@ -39,13 +39,13 @@ export function LessonRequestStatusScreen({
                 : expired
                   ? "This request expired before it could be confirmed. Please choose another time from your invite."
                   : needsNewTimes
-                    ? `${instructorName} sent new lesson times for you to review.`
+                    ? `${instructorName} sent new appointment times for you to review.`
                 : `${instructorName} has the request and the slot is held while the final schedule check runs.`}
             </span>
           </div>
         </div>
         {needsNewTimes && lessonRequest.alternative_slots.length ? (
-          <div className="alternative-slot-list" aria-label="Alternative lesson times">
+          <div className="alternative-slot-list" aria-label="Alternative appointment times">
             {lessonRequest.alternative_slots.map((slot) => (
               <button
                 className="slot-option compact"
@@ -62,11 +62,11 @@ export function LessonRequestStatusScreen({
         <div className="request-timeline">
           <span className="done">
             <ChatBubbleIcon />
-            Lesson request received
+            Appointment request received
           </span>
           <span className={confirmed ? "done" : ""}>
             <CheckCircledIcon />
-            Instructor confirms the appointment
+            Provider confirms the appointment
           </span>
           <span className={calendarAvailable ? "done" : ""}>
             <CalendarIcon />

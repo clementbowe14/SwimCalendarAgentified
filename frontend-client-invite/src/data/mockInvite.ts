@@ -8,10 +8,10 @@ import type {
 export const inviteEnvelope: ClientInviteEnvelope = {
   invite_token: "invite_sofia_0826",
   instructor_name: "Riley",
-  business_name: "Swim Command",
-  service_name: "Private swim lesson",
+  business_name: "Riley & Co.",
+  service_name: "Private appointment",
   service_location: {
-    address: "Riverside facility, Austin, TX",
+    address: "Riverside Studio, Austin, TX",
     lat: 30.2672,
     lng: -97.7431,
   },
@@ -22,7 +22,7 @@ export const inviteEnvelope: ClientInviteEnvelope = {
     client_name: "Sofia Martinez",
     guardian_phone: "(512) 555-0194",
     guardian_email: "ana.martinez@example.com",
-    notes: "Beginner swimmer. Prefers shallow end warmup.",
+    notes: "Please call upon arrival.",
     location_type: "home",
     location: {
       address: "820 Lakeview Dr, Austin, TX",
@@ -49,7 +49,7 @@ export const schedulerSlots: SchedulerSlot[] = [
     start_iso: "2026-08-27T16:00:00-05:00",
     end_iso: "2026-08-27T16:45:00-05:00",
     display: "Thu, Aug 27 at 4:00 PM",
-    location_address: "Riverside facility",
+    location_address: "Riverside Studio",
     recurrence_available: true,
     recurrence: "single",
     recurrence_count: 1,
