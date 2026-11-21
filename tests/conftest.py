@@ -13,9 +13,9 @@ from app import db
 from app.api import create_app
 from app.auth import CSRF_HEADER_NAME, CSRF_HEADER_VALUE, SESSION_COOKIE_NAME
 from tests.db_test_utils import reset_postgres_database
+from tests.public_contract_safety import PUBLIC_FORBIDDEN_KEYS, flatten_keys
 
 
-FORBIDDEN_PUBLIC_KEYS = {"instructor_id", "client_id"}
 FORBIDDEN_PUBLIC_VALUE_PREFIXES = ("app_", "client_", "inst_")
 
 
@@ -68,30 +68,17 @@ def login_coach(
 
 @pytest.fixture()
 def assert_public_payload_safe():
-    return assert_public_payload_has_no_internal_identifiers
+    return assert_public_payload_is_safe
 
 
-def assert_public_payload_has_no_internal_identifiers(payload: Any) -> None:
-    keys = _flatten_keys(payload)
+def assert_public_payload_is_safe(payload: Any) -> None:
+    keys = flatten_keys(payload)
     values = _flatten_values(payload)
-    assert FORBIDDEN_PUBLIC_KEYS.isdisjoint(keys)
+    assert PUBLIC_FORBIDDEN_KEYS.isdisjoint(keys)
     assert not any(
         isinstance(value, str) and value.startswith(FORBIDDEN_PUBLIC_VALUE_PREFIXES)
         for value in values
     )
-
-
-def _flatten_keys(value: Any) -> set[str]:
-    keys: set[str] = set()
-    if isinstance(value, dict):
-        for key, nested in value.items():
-            keys.add(key)
-            keys.update(_flatten_keys(nested))
-    elif isinstance(value, list):
-        for item in value:
-            keys.update(_flatten_keys(item))
-    return keys
-
 
 def _flatten_values(value: Any) -> set[Any]:
     values = set()

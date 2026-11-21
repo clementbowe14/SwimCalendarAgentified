@@ -696,17 +696,9 @@
       },
       "ClientInviteSchedulerSlot": {
         "properties": {
-          "buffer_mins": {
-            "title": "Buffer Mins",
-            "type": "integer"
-          },
           "display": {
             "title": "Display",
             "type": "string"
-          },
-          "distance_miles": {
-            "title": "Distance Miles",
-            "type": "number"
           },
           "end_iso": {
             "format": "date-time",
@@ -719,21 +711,6 @@
           },
           "location_address": {
             "title": "Location Address",
-            "type": "string"
-          },
-          "next_event": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Event"
-          },
-          "previous_event": {
-            "title": "Previous Event",
             "type": "string"
           },
           "recurrence": {
@@ -754,18 +731,10 @@
             "title": "Recurrence Count",
             "type": "integer"
           },
-          "safety_reason": {
-            "title": "Safety Reason",
-            "type": "string"
-          },
           "start_iso": {
             "format": "date-time",
             "title": "Start Iso",
             "type": "string"
-          },
-          "travel_time_mins": {
-            "title": "Travel Time Mins",
-            "type": "integer"
           }
         },
         "required": [
@@ -774,11 +743,6 @@
           "end_iso",
           "display",
           "location_address",
-          "travel_time_mins",
-          "buffer_mins",
-          "distance_miles",
-          "previous_event",
-          "safety_reason",
           "recurrence_available"
         ],
         "title": "ClientInviteSchedulerSlot",
@@ -793,16 +757,11 @@
           "label": {
             "title": "Label",
             "type": "string"
-          },
-          "reason": {
-            "title": "Reason",
-            "type": "string"
           }
         },
         "required": [
           "id",
-          "label",
-          "reason"
+          "label"
         ],
         "title": "ClientInviteUnavailableWindow",
         "type": "object"
@@ -3226,7 +3185,7 @@
         "properties": {
           "available_slots": {
             "items": {
-              "$ref": "#/components/schemas/TimeSlotResponse"
+              "$ref": "#/components/schemas/PublicTimeSlotResponse"
             },
             "title": "Available Slots",
             "type": "array"
@@ -3410,7 +3369,7 @@
             "type": "string"
           },
           "selected_slot": {
-            "$ref": "#/components/schemas/TimeSlotResponse"
+            "$ref": "#/components/schemas/PublicTimeSlotResponse"
           },
           "status": {
             "const": "pending",
@@ -3461,6 +3420,31 @@
           "message"
         ],
         "title": "PublicRequestStatusResponse",
+        "type": "object"
+      },
+      "PublicTimeSlotResponse": {
+        "properties": {
+          "display": {
+            "title": "Display",
+            "type": "string"
+          },
+          "end_iso": {
+            "format": "date-time",
+            "title": "End Iso",
+            "type": "string"
+          },
+          "start_iso": {
+            "format": "date-time",
+            "title": "Start Iso",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_iso",
+          "end_iso",
+          "display"
+        ],
+        "title": "PublicTimeSlotResponse",
         "type": "object"
       },
       "ReadinessResponse": {

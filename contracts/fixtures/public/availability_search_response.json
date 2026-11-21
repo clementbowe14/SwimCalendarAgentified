@@ -1,19 +1,13 @@
 {
-  "dialogue_response": "Here are the safe lesson times that fit the instructor schedule, travel time, and buffers.",
+  "dialogue_response": "Here are the appointment times available to request.",
   "slots": [
     {
-      "buffer_mins": 10,
       "display": "Sat, Aug 29 at 12:30 PM",
-      "distance_miles": 2.1,
       "end_iso": "2026-08-29T13:15:00-05:00",
       "id": "slot_contract_0829_1230",
       "location_address": "820 Lakeview Dr, Austin, TX",
-      "next_event": "Next commitment",
-      "previous_event": "Prior commitment",
       "recurrence_available": true,
-      "safety_reason": "Travel and buffer time fit before the next protected schedule item.",
-      "start_iso": "2026-08-29T12:30:00-05:00",
-      "travel_time_mins": 12
+      "start_iso": "2026-08-29T12:30:00-05:00"
     }
   ],
   "status": "PRESENTING",

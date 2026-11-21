@@ -818,6 +818,12 @@ class TimeSlotResponse(BaseModel):
     distance_miles: float
 
 
+class PublicTimeSlotResponse(BaseModel):
+    start_iso: datetime
+    end_iso: datetime
+    display: str
+
+
 class AvailabilitySearchResponse(BaseModel):
     status: Literal["PRESENTING"]
     client_name: str
@@ -908,7 +914,7 @@ class PublicAvailabilitySearchResponse(BaseModel):
     requested_date: date
     duration_mins: int
     location_label: str
-    available_slots: list[TimeSlotResponse]
+    available_slots: list[PublicTimeSlotResponse]
 
 
 class PublicLessonRequestCreate(BaseModel):
@@ -942,7 +948,7 @@ class PublicLessonRequestResponse(BaseModel):
     notifications: list[NotificationStatus] = Field(default_factory=list)
     request_token: str
     status: Literal["pending"]
-    selected_slot: TimeSlotResponse
+    selected_slot: PublicTimeSlotResponse
     message: str
 
 
@@ -1005,7 +1011,6 @@ class ClientInviteAvailabilityRequest(BaseModel):
 class ClientInviteUnavailableWindow(BaseModel):
     id: str
     label: str
-    reason: str
 
 
 class ClientInviteSchedulerSlot(BaseModel):
@@ -1014,12 +1019,6 @@ class ClientInviteSchedulerSlot(BaseModel):
     end_iso: datetime
     display: str
     location_address: str
-    travel_time_mins: int
-    buffer_mins: int
-    distance_miles: float
-    previous_event: str
-    next_event: Optional[str] = None
-    safety_reason: str
     recurrence_available: bool
     recurrence: Literal["single", "weekly"] = "single"
     recurrence_count: int = 1

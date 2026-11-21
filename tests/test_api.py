@@ -139,6 +139,12 @@ def test_public_invite_availability_does_not_require_internal_ids(client):
     assert payload["available_slots"]
     assert "instructor_id" not in payload
     assert "client_id" not in payload
+    assert {
+        "travel_time_mins",
+        "buffer_mins",
+        "distance_miles",
+    }.isdisjoint(payload["available_slots"][0])
+    assert "Travel:" not in payload["available_slots"][0]["display"]
 
 
 def test_invalid_public_token_returns_stable_error(client):
@@ -235,6 +241,12 @@ def test_public_lesson_request_creates_pending_request(client):
     assert payload["status"] == "pending"
     assert payload["request_token"].startswith("req_")
     assert payload["selected_slot"]["start_iso"] == slot_start
+    assert {
+        "travel_time_mins",
+        "buffer_mins",
+        "distance_miles",
+    }.isdisjoint(payload["selected_slot"])
+    assert "Travel:" not in payload["selected_slot"]["display"]
 
 
 def test_coach_booking_retry_with_idempotency_key_returns_same_appointment(client):

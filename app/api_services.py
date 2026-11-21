@@ -79,6 +79,7 @@ from app.api_schemas import (
     PublicLessonRequestCreate,
     PublicLessonRequestResponse,
     PublicRequestStatusResponse,
+    PublicTimeSlotResponse,
     TimeSlotResponse,
     ClientInviteCalendarLinks,
 )
@@ -1856,7 +1857,7 @@ def search_public_availability(
         requested_date=request.requested_date,
         duration_mins=request.duration_mins,
         location_label=location.address if is_facility else "Client pool",
-        available_slots=[_slot_response(slot) for slot in slots],
+        available_slots=[_public_slot_response(slot) for slot in slots],
     )
 
 
@@ -1938,7 +1939,7 @@ def create_public_lesson_request(
     return PublicLessonRequestResponse(
         request_token=record.request_token,
         status="pending",
-        selected_slot=_slot_response(selected_slot),
+        selected_slot=_public_slot_response(selected_slot),
         message="Your lesson request was sent to the instructor for confirmation.",
     )
 
@@ -1991,20 +1992,14 @@ def _public_lesson_request_replay_response(
         notifications=notifications,
         request_token=existing.request_token,
         status="pending",
-        selected_slot=TimeSlotResponse(
+        selected_slot=PublicTimeSlotResponse(
             start_iso=start_time,
             end_iso=end_time,
-            display=_format_slot_display(
+            display=_format_public_slot_display(
                 start_time,
                 end_time,
-                existing.travel_time_mins,
-                existing.buffer_mins,
-                existing.distance_miles,
                 timezone_label=timezone_label,
             ),
-            travel_time_mins=existing.travel_time_mins,
-            buffer_mins=existing.buffer_mins,
-            distance_miles=existing.distance_miles,
         ),
         message="Your lesson request was sent to the instructor for confirmation.",
     )
@@ -2380,20 +2375,24 @@ def _slot_response(slot: TimeSlotDTO) -> TimeSlotResponse:
     )
 
 
-def _format_slot_display(
+def _public_slot_response(slot: TimeSlotDTO) -> PublicTimeSlotResponse:
+    return PublicTimeSlotResponse(
+        start_iso=slot.start_time,
+        end_iso=slot.end_time,
+        display=_format_public_slot_display(slot.start_time, slot.end_time),
+    )
+
+
+def _format_public_slot_display(
     start_time: datetime,
     end_time: datetime,
-    travel_time_mins: int,
-    buffer_mins: int,
-    distance_miles: float,
     *,
     timezone_label: Optional[str] = None,
 ) -> str:
-    timezone_suffix = f"{timezone_label} " if timezone_label else ""
+    timezone_suffix = f" {timezone_label}" if timezone_label else ""
     return (
-        f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')} "
+        f"{start_time.strftime('%I:%M %p')} - {end_time.strftime('%I:%M %p')}"
         f"{timezone_suffix}"
-        f"(Travel: {travel_time_mins}m, Buffer: {buffer_mins}m, Dist: {distance_miles:.1f}mi)"
     )
 
 
