@@ -53,12 +53,6 @@ export type SchedulerSlot = {
   end_iso: string;
   display: string;
   location_address: string;
-  travel_time_mins: number;
-  buffer_mins: number;
-  distance_miles: number;
-  previous_event: string;
-  next_event: string | null;
-  safety_reason: string;
   recurrence_available: boolean;
   recurrence: BookingRecurrence;
   recurrence_count: number;
@@ -71,7 +65,6 @@ export type AvailabilitySearchResponse = {
   unavailable_windows: Array<{
     id: string;
     label: string;
-    reason: string;
   }>;
 };
 

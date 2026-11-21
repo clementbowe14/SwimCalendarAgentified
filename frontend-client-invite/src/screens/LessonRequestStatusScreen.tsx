@@ -54,7 +54,7 @@ export function LessonRequestStatusScreen({
                 onClick={() => onSelectAlternative(slot.id)}
               >
                 <strong>{slot.display}</strong>
-                <span>{slot.safety_reason}</span>
+                <span>Available to request</span>
               </button>
             ))}
           </div>

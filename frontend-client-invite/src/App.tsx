@@ -354,7 +354,7 @@ function getHeroContent(step: InviteStep, instructorName: string, lessonRequest:
     return {
       eyebrow: "Availability",
       title: "Choose your open windows",
-      copy: `${instructorName} only sees options that fit your schedule, travel time, and lesson length.`,
+      copy: `${instructorName} uses these windows to find appointment options for you.`,
     };
   }
 
@@ -362,7 +362,7 @@ function getHeroContent(step: InviteStep, instructorName: string, lessonRequest:
     return {
       eyebrow: "Available times",
       title: "Pick a lesson time",
-      copy: "These options account for your availability and the provider’s existing schedule.",
+      copy: "These appointment times are available to request.",
     };
   }
 

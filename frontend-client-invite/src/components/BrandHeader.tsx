@@ -24,7 +24,7 @@ export function BrandHeader({ eyebrow, title, copy, businessName }: BrandHeaderP
       <p>{copy}</p>
       <div className="hero-proof">
         <CalendarIcon />
-        <span>Safe times account for travel, buffers, and existing lessons.</span>
+        <span>Only appointment times that are available to request are shown.</span>
       </div>
     </section>
   );

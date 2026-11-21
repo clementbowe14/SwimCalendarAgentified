@@ -15,10 +15,7 @@ export function SlotCard({ slot, selected, onSelect }: SlotCardProps) {
       </span>
       <div>
         <strong>{slot.display}</strong>
-        <span className="slot-facts">
-          Travel {slot.travel_time_mins} min - Buffer {slot.buffer_mins} min - {slot.distance_miles.toFixed(1)} mi
-        </span>
-        <p>{slot.safety_reason}</p>
+        <span className="slot-facts">Available to request</span>
         <div className="slot-meta-grid">
           <span>
             <DrawingPinIcon />

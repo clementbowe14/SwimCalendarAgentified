@@ -53,8 +53,8 @@ export function SlotResultsScreen({
         <div className="no-slots" key={window.id}>
           <ExclamationTriangleIcon />
           <div>
-            <strong>No safe options {window.label}</strong>
-            <span>{window.reason}</span>
+            <strong>No matching options {window.label}</strong>
+            <span>Try editing your availability to see more times.</span>
           </div>
         </div>
       ))}
