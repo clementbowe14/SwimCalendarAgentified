@@ -71,11 +71,6 @@ export class MockClientInviteApi implements ClientInviteApi {
     const locationFilteredSlots = schedulerSlots.map((slot) => ({
       ...slot,
       location_address: request.location.is_instructor_facility ? "Riverside facility" : request.location.address,
-      travel_time_mins: request.location.is_instructor_facility ? 0 : slot.travel_time_mins,
-      distance_miles: request.location.is_instructor_facility ? 0 : slot.distance_miles,
-      safety_reason: request.location.is_instructor_facility
-        ? "Facility selected, so the scheduler evaluates this as the instructor main location with no client-side travel."
-        : slot.safety_reason,
       recurrence_available: request.recurrence === "weekly" ? slot.recurrence_available : true,
       recurrence: request.recurrence,
       recurrence_count: request.recurrence === "weekly" ? 4 : 1,

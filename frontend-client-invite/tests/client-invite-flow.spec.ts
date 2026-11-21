@@ -46,8 +46,9 @@ test.describe("client invite self-booking flow", () => {
     await page.getByRole("button", { name: "Show available times" }).click();
 
     await expect(page.getByRole("heading", { name: "Pick a lesson time" })).toBeVisible();
-    await expect(page.getByText("Travel 12 min - Buffer 10 min - 2.1 mi")).toBeVisible();
-    await expect(page.getByText("No safe options Tue after 5 PM")).toBeVisible();
+    await expect(page.getByText("Available to request").first()).toBeVisible();
+    await expect(page.getByText("No matching options Tue after 5 PM")).toBeVisible();
+    await expect(page.getByText(/travel|buffer|distance/i)).toHaveCount(0);
     await expectInviteProgress(page, "Step 3 of 5: Slots", 60);
 
     await page.getByRole("button", { name: "Edit preferences" }).click();

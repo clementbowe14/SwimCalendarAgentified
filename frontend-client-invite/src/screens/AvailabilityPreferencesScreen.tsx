@@ -89,7 +89,7 @@ export function AvailabilityPreferencesScreen({
       </div>
 
       <button className="primary-button" type="button" onClick={onFindSlots} disabled={searching}>
-        {searching ? "Finding safe times" : "Show available times"}
+        {searching ? "Finding available times" : "Show available times"}
       </button>
     </div>
   );
