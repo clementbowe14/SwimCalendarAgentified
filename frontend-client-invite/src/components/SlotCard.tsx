@@ -1,4 +1,4 @@
-import { CheckIcon, ClockIcon, DrawingPinIcon } from "@radix-ui/react-icons";
+import { ClockIcon, DrawingPinIcon } from "@radix-ui/react-icons";
 import type { SchedulerSlot } from "../api/types";
 
 type SlotCardProps = {
@@ -9,10 +9,13 @@ type SlotCardProps = {
 
 export function SlotCard({ slot, selected, onSelect }: SlotCardProps) {
   return (
-    <button className={selected ? "slot-card selected" : "slot-card"} type="button" onClick={onSelect}>
-      <span className="slot-dot" aria-hidden="true">
-        {selected ? <CheckIcon /> : null}
-      </span>
+    <button
+      aria-pressed={selected}
+      className={selected ? "slot-card selected" : "slot-card"}
+      type="button"
+      onClick={onSelect}
+    >
+      <span className="slot-dot" aria-hidden="true" />
       <div>
         <strong>{slot.display}</strong>
         <span className="slot-facts">Available to request</span>

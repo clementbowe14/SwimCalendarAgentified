@@ -15,7 +15,6 @@
     "test:e2e:live": "CLIENT_INVITE_E2E_MODE=live VITE_USE_MOCK_API=false playwright test"
   },
   "dependencies": {
-    "@fontsource/roboto": "5.2.10",
     "@radix-ui/react-icons": "1.3.2",
     "react": "19.2.7",
     "react-dom": "19.2.7"

@@ -21,7 +21,7 @@ export function FlowProgress({ currentStep }: FlowProgressProps) {
 
   return (
     <section className="flow-progress" aria-label="Invite progress">
-      <div className="flow-progress-summary">
+      <div className="flow-progress-summary" aria-live="polite">
         <span>{`Step ${stepNumber} of ${steps.length}: ${currentStepConfig.label}`}</span>
         <strong>{`${percentComplete}% complete`}</strong>
       </div>

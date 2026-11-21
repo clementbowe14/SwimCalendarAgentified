@@ -33,9 +33,9 @@ test.describe("live backend calendar and notification handoff", () => {
     await page.getByRole("button", { name: "Continue to availability" }).click();
     await page.getByRole("button", { name: "Weekly", exact: true }).click();
     await page.getByRole("button", { name: "Show available times" }).click();
-    await expect(page.getByRole("button", { name: "Request this lesson" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Request this time" })).toBeEnabled();
     const createdPromise = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith("/lesson-requests"));
-    await page.getByRole("button", { name: "Request this lesson" }).click();
+    await page.getByRole("button", { name: "Request this time" }).click();
     const createdResponse = await createdPromise;
     expect(createdResponse.ok()).toBeTruthy();
     const created = await createdResponse.json() as LessonRequest;
@@ -98,7 +98,7 @@ test.describe("live backend calendar and notification handoff", () => {
       const calendarRequestPromise = page.waitForRequest((r) => r.url().endsWith(".ics"));
       await page.getByRole("button", { name, exact: true }).click();
       const download = await downloadPromise;
-      expect(download.suggestedFilename()).toBe("swim-lessons.ics");
+      expect(download.suggestedFilename()).toBe("dayweave-appointments.ics");
       const calendarRequest = await calendarRequestPromise;
       expect(new URL(calendarRequest.url()).origin).toBe(backend);
       expect(calendarRequest.headers().referer).toBeUndefined();

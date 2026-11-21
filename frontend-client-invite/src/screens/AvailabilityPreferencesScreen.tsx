@@ -46,7 +46,7 @@ export function AvailabilityPreferencesScreen({
   };
 
   return (
-    <div className="screen-stack">
+    <div className="screen-stack preference-screen">
       <SectionCard eyebrow="Availability" title="Your open windows" meta={`${durationMins} min`}>
         <div className="session-grid" aria-label="Session length">
           {allowedDurationsMins.map((duration) => (

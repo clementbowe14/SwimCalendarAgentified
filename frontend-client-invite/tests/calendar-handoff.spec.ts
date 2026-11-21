@@ -23,7 +23,7 @@ async function setup(page: Page, weekly = false) {
   await expect(page.getByText("Mock data", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Continue to availability" }).click();
   await page.getByRole("button", { name: "Show available times" }).click();
-  await page.getByRole("button", { name: "Request this lesson" }).click();
+  await page.getByRole("button", { name: "Request this time" }).click();
   return { request, fail: () => { failRefresh = true; } };
 }
 
@@ -85,7 +85,7 @@ test("Apple and ICS download from backend origin; HTTP errors never download", a
     const downloadPromise = page.waitForEvent("download");
     await page.getByRole("button", { name, exact: true }).click();
     const download = await downloadPromise;
-    expect(download.suggestedFilename()).toBe("swim-lessons.ics");
+    expect(download.suggestedFilename()).toBe("dayweave-appointments.ics");
     const request = await responsePromise;
     expect(request.url()).toBe("http://127.0.0.1:3109/api/public/lesson-requests/request-token/calendar.ics");
     expect(request.headers().referer).toBeUndefined();
@@ -121,12 +121,12 @@ for (const screen of ["request", "handoff"]) {
     request.confirmation!.message = "Confirmed swim lesson on Sep 5, 2026.";
     await page.getByRole("button", { name: "Refresh status" }).click();
     await expect(page.getByText("Email: queued")).toBeVisible();
-    await expect(page.getByLabel("Active lesson dates")).toContainText("Sep 5, 2026");
+    await expect(page.getByLabel("Active appointment dates")).toContainText("Sep 5, 2026");
     await expect(page.getByText(/Aug 29/)).toHaveCount(0);
     request.confirmation = null;
     await page.getByRole("button", { name: "Refresh status" }).click();
-    await expect(page.getByText("No active lesson dates available.")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Lesson confirmed", level: 1 })).toBeVisible();
+    await expect(page.getByText("No active appointment dates available.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Appointment confirmed", level: 1 })).toBeVisible();
     await expect(page.getByText("Email: queued")).toBeVisible();
     await expect(page.getByRole("button", { name: "Refresh status" })).toBeEnabled();
     await expect(page.getByRole("button", { name: "Add to calendar" })).toHaveCount(0);
