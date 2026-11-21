@@ -9,6 +9,11 @@ from app.api import create_app
 from app.db import SOFIA_INVITE_TOKEN
 from app.models import AppointmentDB, LessonRequestDB
 from tests.db_test_utils import reset_postgres_database
+from tests.public_contract_safety import (
+    PUBLIC_FORBIDDEN_KEYS,
+    PUBLIC_SCHEDULING_EVIDENCE_KEYS,
+    flatten_keys,
+)
 
 
 def test_client_invite_openapi_documents_fetch_adapter_contract():
@@ -44,8 +49,7 @@ def test_client_invite_envelope_is_seeded_and_public_safe(client):
     payload = response.json()
     assert payload["invite_token"] == SOFIA_INVITE_TOKEN
     assert payload["intake"]["client_name"] == "Sofia Martinez"
-    assert "instructor_id" not in _flatten_keys(payload)
-    assert "client_id" not in _flatten_keys(payload)
+    assert PUBLIC_FORBIDDEN_KEYS.isdisjoint(flatten_keys(payload))
 
 
 def test_client_invite_intake_can_be_submitted(client):
@@ -98,8 +102,9 @@ def test_client_invite_slots_ignore_spoofed_internal_ids_and_return_slot_ids(cli
     assert payload["slots"][0]["id"].startswith("slot_")
     assert "inst_attacker" not in str(payload)
     assert "client_attacker" not in str(payload)
-    assert "instructor_id" not in _flatten_keys(payload)
-    assert "client_id" not in _flatten_keys(payload)
+    assert PUBLIC_FORBIDDEN_KEYS.isdisjoint(flatten_keys(payload))
+    assert "travel" not in payload["dialogue_response"].lower()
+    assert "buffer" not in payload["dialogue_response"].lower()
 
 
 def test_parallel_slot_searches_reuse_server_issued_offer_ids(client):
@@ -134,10 +139,13 @@ def test_client_invite_lesson_request_uses_server_issued_slot_offer(client):
     assert payload["slot"]["id"] == slot_id
     assert payload["slot"]["start_iso"].endswith("-05:00")
     assert payload["confirmation"] is None
+    assert PUBLIC_SCHEDULING_EVIDENCE_KEYS.isdisjoint(flatten_keys(payload))
 
     status_response = client.get(f"/api/public/lesson-requests/{payload['id']}")
     assert status_response.status_code == 200
-    assert status_response.json()["id"] == payload["id"]
+    status_payload = status_response.json()
+    assert status_payload["id"] == payload["id"]
+    assert PUBLIC_SCHEDULING_EVIDENCE_KEYS.isdisjoint(flatten_keys(status_payload))
 
 
 def test_unknown_slot_offer_returns_stable_public_error(client):
@@ -248,15 +256,3 @@ def _mark_request_confirmed(request_token: str) -> None:
         session.commit()
     finally:
         session.close()
-
-
-def _flatten_keys(value: Any) -> set[str]:
-    keys: set[str] = set()
-    if isinstance(value, dict):
-        for key, nested in value.items():
-            keys.add(key)
-            keys.update(_flatten_keys(nested))
-    elif isinstance(value, list):
-        for item in value:
-            keys.update(_flatten_keys(item))
-    return keys

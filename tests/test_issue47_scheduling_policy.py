@@ -8,7 +8,7 @@ from sqlalchemy import event, text
 
 from app import db
 from app.api_schemas import CoachSchedulingPolicyResponse
-from app.models import InstructorDB, LessonRequestDB, SchedulerSettingsDB
+from app.models import InstructorDB, InviteSlotOfferDB, LessonRequestDB, SchedulerSettingsDB
 from app.scheduler_settings import default_scheduling_policy, load_scheduling_policy
 
 
@@ -423,10 +423,25 @@ def test_current_policy_rejects_stale_legacy_public_request(
         },
     )
     assert search.status_code == 200, search.text
-    slot = next(
-        item for item in search.json()["available_slots"]
-        if item["buffer_mins"] > 0
+    public_slots = search.json()["available_slots"]
+    coach_search = authenticated_api_client.post(
+        "/api/coach/availability",
+        json={
+            "client_name": "Legacy policy client",
+            "client_address": "450 North Blvd, Austin, TX",
+            "requested_date": "2026-08-20",
+            "is_instructor_facility": False,
+            "duration_mins": 45,
+        },
     )
+    assert coach_search.status_code == 200, coach_search.text
+    public_starts = {item["start_iso"] for item in public_slots}
+    policy_sensitive_start = next(
+        item["start_iso"]
+        for item in coach_search.json()["available_slots"]
+        if item["buffer_mins"] > 0 and item["start_iso"] in public_starts
+    )
+    slot = next(item for item in public_slots if item["start_iso"] == policy_sensitive_start)
     _set_all_tier_minutes(authenticated_api_client, 240)
 
     response = authenticated_api_client.post(
@@ -502,7 +517,7 @@ def test_policy_change_blocks_stale_alternative_promotion(
     primary = slots[0]
     stale_alternative = next(
         item for item in slots
-        if item["id"] != primary["id"] and item["buffer_mins"] > 0
+        if item["id"] != primary["id"] and _slot_offer_has_buffer(item["id"])
     )
     created = authenticated_api_client.post(
         "/api/public/client-invites/invite_sofia_0826/lesson-requests",
@@ -533,7 +548,7 @@ def test_policy_change_blocks_stale_client_alternative_selection(
     primary = slots[0]
     source_alternative = next(
         item for item in slots
-        if item["id"] != primary["id"] and item["buffer_mins"] > 0
+        if item["id"] != primary["id"] and _slot_offer_has_buffer(item["id"])
     )
     created = authenticated_api_client.post(
         "/api/public/client-invites/invite_sofia_0826/lesson-requests",
@@ -661,8 +676,15 @@ def _policy_sensitive_canonical_slot(
 ) -> dict:
     return next(
         slot for slot in _canonical_slots(client, recurrence=recurrence)
-        if slot["buffer_mins"] > 0
+        if _slot_offer_has_buffer(slot["id"])
     )
+
+
+def _slot_offer_has_buffer(slot_id: str) -> bool:
+    with db.SessionLocal() as session:
+        offer = session.get(InviteSlotOfferDB, slot_id)
+        assert offer is not None
+        return offer.buffer_mins > 0
 
 
 def _set_all_tier_minutes(client: TestClient, minutes: int) -> dict:

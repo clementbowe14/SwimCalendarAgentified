@@ -26,6 +26,7 @@ from app.api_schemas import (
     InviteNotificationResponse,
 )
 from scripts.export_contracts import CONTRACT_ROOT, check_contracts
+from tests.public_contract_safety import PUBLIC_FORBIDDEN_KEYS, flatten_keys
 
 
 FIXTURE_SCHEMAS = {
@@ -52,7 +53,6 @@ FIXTURE_SCHEMAS = {
     "fixtures/coach/clients.json": CoachClientListResponse,
     "fixtures/coach/command_center_snapshot.json": CoachCommandCenterSnapshot,
 }
-FORBIDDEN_PUBLIC_KEYS = {"instructor_id", "client_id"}
 FORBIDDEN_PUBLIC_VALUE_PREFIXES = ("app_",)
 FORBIDDEN_PUBLIC_VALUES = {"Alice", "Bob", "client_alice", "client_bob", "inst_001"}
 
@@ -360,15 +360,37 @@ def test_confirmation_fixture_has_safe_delivery_states_and_occurrence_links():
 def test_public_fixtures_do_not_leak_private_identifiers_or_schedule_details():
     for path in (CONTRACT_ROOT / "fixtures" / "public").glob("*.json"):
         payload = _load_json(path)
-        keys = _flatten_keys(payload)
+        keys = flatten_keys(payload)
         values = _flatten_values(payload)
-        assert FORBIDDEN_PUBLIC_KEYS.isdisjoint(keys), path
+        assert PUBLIC_FORBIDDEN_KEYS.isdisjoint(keys), path
         assert "base_location" not in keys, path
         assert FORBIDDEN_PUBLIC_VALUES.isdisjoint(values), path
         assert not any(
             isinstance(value, str) and value.startswith(FORBIDDEN_PUBLIC_VALUE_PREFIXES)
             for value in values
         ), path
+
+
+def test_public_slot_schema_omits_internal_scheduling_evidence():
+    openapi = _load_json(CONTRACT_ROOT / "openapi.json")
+    expected_properties = {
+        "ClientInviteSchedulerSlot": {
+            "id",
+            "start_iso",
+            "end_iso",
+            "display",
+            "location_address",
+            "recurrence_available",
+            "recurrence",
+            "recurrence_count",
+        },
+        "PublicTimeSlotResponse": {"start_iso", "end_iso", "display"},
+        "ClientInviteUnavailableWindow": {"id", "label"},
+    }
+
+    for schema_name, properties in expected_properties.items():
+        actual = set(openapi["components"]["schemas"][schema_name]["properties"])
+        assert actual == properties, schema_name
 
 
 def test_required_fixture_files_exist_for_frontend_contract_tests():
@@ -380,18 +402,6 @@ def test_required_fixture_files_exist_for_frontend_contract_tests():
 
 def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _flatten_keys(value: Any) -> set[str]:
-    keys: set[str] = set()
-    if isinstance(value, dict):
-        for key, nested in value.items():
-            keys.add(key)
-            keys.update(_flatten_keys(nested))
-    elif isinstance(value, list):
-        for item in value:
-            keys.update(_flatten_keys(item))
-    return keys
 
 
 def _flatten_values(value: Any) -> set[Any]:

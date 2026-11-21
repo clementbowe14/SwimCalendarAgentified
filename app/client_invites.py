@@ -127,9 +127,7 @@ def search_client_invite_slots(
     ]
     return ClientInviteAvailabilityResponse(
         status="PRESENTING",
-        dialogue_response=(
-            "Here are the safe lesson times that fit the instructor schedule, travel time, and buffers."
-        ),
+        dialogue_response="Here are the appointment times available to request.",
         slots=response_slots,
         unavailable_windows=_unavailable_windows(request, response_slots),
     )
@@ -505,12 +503,6 @@ def _store_and_shape_slot(
         end_iso=local_end,
         display=_display_slot(local_start),
         location_address=location.address,
-        travel_time_mins=slot.travel_time_mins,
-        buffer_mins=slot.buffer_mins,
-        distance_miles=slot.distance_miles,
-        previous_event="Prior commitment" if local_start.hour > 8 else "Start of instructor day",
-        next_event="Next commitment",
-        safety_reason="Travel and buffer time fit before the next protected schedule item.",
         recurrence_available=request.recurrence == "single" or _weekly_candidate(local_start),
         recurrence=request.recurrence,
         recurrence_count=4 if request.recurrence == "weekly" else 1,
@@ -616,12 +608,6 @@ def _lesson_request_response(request_token: str) -> ClientInviteLessonRequestRes
             timezone_label=None if uses_authoritative_timezone else "UTC",
         ),
         location_address=request.client_address,
-        travel_time_mins=request.travel_time_mins,
-        buffer_mins=request.buffer_mins,
-        distance_miles=request.distance_miles,
-        previous_event="Prior commitment",
-        next_event="Next commitment",
-        safety_reason="This requested time was created from a server-issued slot offer.",
         recurrence_available=True,
         recurrence=request.recurrence,
         recurrence_count=request.recurrence_count,
@@ -722,7 +708,6 @@ def _unavailable_windows(
         ClientInviteUnavailableWindow(
             id=window.id,
             label=f"{', '.join(window.days)} {window.start_time}-{window.end_time}",
-            reason="No safe lesson time fit this preferred window.",
         )
         for window in request.windows
     ]
@@ -849,12 +834,6 @@ def _offer_slot_response(
         end_iso=local_end,
         display=_display_slot(local_start, timezone_label=timezone_label),
         location_address=offer.location_address,
-        travel_time_mins=offer.travel_time_mins,
-        buffer_mins=offer.buffer_mins,
-        distance_miles=offer.distance_miles,
-        previous_event="",
-        next_event=None,
-        safety_reason="This alternative time is available for your lesson request.",
         recurrence_available=offer.recurrence_available,
         recurrence=offer.recurrence,
         recurrence_count=offer.recurrence_count,

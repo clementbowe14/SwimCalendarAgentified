@@ -253,6 +253,7 @@ def test_alternatives_are_request_bound_and_client_can_select_one(
     assert selection.status_code == 200
     assert selection.json()["status"] == "requested"
     assert selection.json()["slot"]["id"] == payload["alternative_slots"][0]["id"]
+    assert_public_payload_safe(selection.json())
 
 
 def test_selected_alternative_identity_survives_snapshot_confirmation_and_public_status(
