@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 import hashlib
 import math
@@ -1089,7 +1090,12 @@ def _optional_coach_calendar_links(
         return None
 
 
-def book_coach_lesson(instructor_id: str, request: CoachBookLessonRequest) -> BookLessonResponse:
+def book_coach_lesson(
+    instructor_id: str,
+    request: CoachBookLessonRequest,
+    *,
+    build_calendar_source: Optional[Callable[[], CalendarBusySource]] = None,
+) -> BookLessonResponse:
     try:
         provider = load_provider_configuration(instructor_id)
     except ProviderNotFound as exc:
@@ -1131,13 +1137,22 @@ def book_coach_lesson(instructor_id: str, request: CoachBookLessonRequest) -> Bo
             idempotency_key=request.idempotency_key,
             is_instructor_facility=request.is_instructor_facility,
             buffer_policy=policy,
+            calendar_busy_source=(
+                build_calendar_source() if build_calendar_source is not None else None
+            ),
         )
+    except ExternalCalendarUnavailable:
+        result = None
     except db.ScheduleConflictError as exc:
         raise SchedulingConflict() from exc
     except db.IdempotencyKeyConflictError as exc:
         raise IdempotencyConflict() from exc
     except ProviderSetupIncomplete as exc:
         raise ProviderSetupRequired(list(exc.missing_fields)) from exc
+    finally:
+        del build_calendar_source
+    if result is None:
+        _raise_calendar_availability_unavailable()
     return BookLessonResponse(
         **result,
         calendar_links=_optional_coach_calendar_links(instructor_id, [result["appointment_id"]]),
