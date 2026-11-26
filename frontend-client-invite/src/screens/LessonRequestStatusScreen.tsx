@@ -45,7 +45,7 @@ export function LessonRequestStatusScreen({
                   ? "This request expired before it could be confirmed. Please choose another time from your invite."
                   : needsNewTimes
                     ? `${instructorName} sent new appointment times for you to review.`
-                : `${instructorName} has the request and the slot is held while the final schedule check runs.`}
+                    : "Pending confirmation. Someone else may book this time."}
             </span>
           </div>
         </div>

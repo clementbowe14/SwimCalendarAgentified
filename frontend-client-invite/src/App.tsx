@@ -390,7 +390,7 @@ function getHeroContent(step: InviteStep, instructorName: string, lessonRequest:
     return {
       eyebrow: "Request status",
       title: "Your request is with the provider",
-      copy: `The time is held while ${instructorName} confirms the appointment.`,
+      copy: `${instructorName} will review your request before booking.`,
     };
   }
 
