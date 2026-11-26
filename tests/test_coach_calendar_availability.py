@@ -86,9 +86,14 @@ def test_disconnected_calendar_keeps_availability_without_google(authenticated_a
     create_for.assert_not_called()
 
 
-@pytest.mark.parametrize("connected", [False, True])
-def test_availability_preserves_existing_instructor_ids(api_client, monkeypatch, connected):
-    instructor_id = "Riley García"
+@pytest.mark.parametrize(("instructor_id", "connected"), [
+    pytest.param("Riley García", False, id="unicode-disconnected"),
+    pytest.param("Riley García", True, id="unicode-connected"),
+    pytest.param(" " + "é" * 128 + " ", False, id="wide-padded-disconnected"),
+])
+def test_availability_preserves_existing_instructor_ids(
+    api_client, monkeypatch, instructor_id, connected
+):
     with db.SessionLocal.begin() as session:
         demo = session.get(InstructorDB, "inst_001")
         session.add(InstructorDB(

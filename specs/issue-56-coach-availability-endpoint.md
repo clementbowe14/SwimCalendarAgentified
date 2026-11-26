@@ -8,9 +8,9 @@ application's factory and the active database binding.
   load Google configuration.
 - A connected calendar removes options that overlap verified busy periods.
   An external block keeps any unelapsed post-break recovery in force.
-- Instructor IDs with spaces or Unicode remain exact database keys through
-  calendar lookup and refresh. Google payloads and credential formats stay
-  unchanged.
+- Connection lookup uses the exact stored instructor key. Active credential
+  handoffs support printable UTF-8 keys within their existing byte limit.
+  Google payloads and credential formats stay unchanged.
 - If the calendar cannot be verified, return the existing
   `CALENDAR_AVAILABILITY_UNAVAILABLE` response with no available slots or
   provider diagnostics.
