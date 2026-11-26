@@ -23,6 +23,7 @@ from tests.conftest import login_coach
 
 
 AVAILABILITY_PATH = "/api/coach/availability"
+BOOKINGS_PATH = "/api/coach/bookings"
 PAYLOAD = {
     "client_name": "Calendar Client",
     "client_address": "450 North Blvd, Austin, TX",
@@ -257,3 +258,65 @@ def test_missing_factory_returns_safe_unavailable_response(migrated_postgres_db)
 
     assert response.status_code == 503
     assert response.json() == UNAVAILABLE
+
+
+@pytest.mark.parametrize("outcome, expected_status, expected_code", [
+    ("busy", 409, "SCHEDULING_CONFLICT"),
+    ("timeout", 503, "CALENDAR_AVAILABILITY_UNAVAILABLE"),
+])
+def test_direct_booking_rechecks_google_before_saving(
+    connected_calendar, monkeypatch, outcome, expected_status, expected_code
+):
+    query = _install_booking_calendar(monkeypatch)
+    booking = _request_first_available_booking(connected_calendar)
+    if outcome == "busy":
+        query.return_value = CalendarBusySnapshot(
+            status="verified",
+            periods=(CalendarBusyInterval(start=WINDOW_START, end=WINDOW_END),),
+        )
+    else:
+        query.side_effect = TimeoutError("provider diagnostics")
+
+    response = connected_calendar.post(BOOKINGS_PATH, json=booking)
+
+    assert response.status_code == expected_status, response.text
+    assert response.json()["error"]["code"] == expected_code
+    assert "provider diagnostics" not in response.text
+    assert db.get_appointment_by_idempotency_key("inst_001", booking["idempotency_key"]) is None
+    assert query.call_count == 2
+
+
+def test_direct_booking_replay_needs_no_calendar_source(connected_calendar, monkeypatch):
+    query = _install_booking_calendar(monkeypatch)
+    booking = _request_first_available_booking(connected_calendar)
+
+    booked = connected_calendar.post(BOOKINGS_PATH, json=booking)
+    assert booked.status_code == 200, booked.text
+    del connected_calendar.app.state.calendar_busy_source_factory
+    replayed = connected_calendar.post(BOOKINGS_PATH, json=booking)
+    mismatched = connected_calendar.post(BOOKINGS_PATH, json={**booking, "duration_mins": 30})
+
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json()["appointment_id"] == booked.json()["appointment_id"]
+    assert mismatched.status_code == 409, mismatched.text
+    assert mismatched.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+    assert query.call_count == 2
+
+
+def _install_booking_calendar(monkeypatch):
+    query = Mock(return_value=CalendarBusySnapshot(status="verified", periods=()))
+    factory = Mock(return_value=SimpleNamespace(query_busy_periods=query))
+    monkeypatch.setattr(GoogleCalendarBusySourceFactory, "create_for", factory)
+    return query
+
+
+def _request_first_available_booking(client):
+    response = client.post(AVAILABILITY_PATH, json=PAYLOAD)
+    assert response.status_code == 200, response.text
+    slot = response.json()["available_slots"][0]
+    return {
+        key: value for key, value in PAYLOAD.items() if key != "requested_date"
+    } | {
+        "start_time": slot["start_iso"],
+        "idempotency_key": "test-calendar-direct-booking",
+    }

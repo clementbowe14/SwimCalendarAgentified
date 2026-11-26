@@ -404,9 +404,19 @@ def _google_calendar_availability_source(
 @router.post("/bookings", response_model=BookLessonResponse)
 def create_booking(
     request: CoachBookLessonRequest,
+    http_request: Request,
     coach: CoachContext = Depends(get_current_coach),
 ) -> BookLessonResponse:
-    return book_coach_lesson(coach.instructor_id, request)
+    try:
+        return book_coach_lesson(
+            coach.instructor_id,
+            request,
+            build_calendar_source=lambda: _google_calendar_availability_source(
+                http_request, coach.instructor_id
+            ),
+        )
+    finally:
+        del request, http_request, coach
 
 
 @router.get(
