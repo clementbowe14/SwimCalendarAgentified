@@ -4,7 +4,7 @@ import type { RefObject } from "react";
 type BrandHeaderProps = {
   eyebrow: string;
   title: string;
-  copy: string;
+  copy?: string;
   businessName: string;
   titleRef: RefObject<HTMLHeadingElement | null>;
 };
@@ -28,7 +28,7 @@ export function BrandHeader({ eyebrow, title, copy, businessName, titleRef }: Br
       </div>
       <p className="eyebrow">{eyebrow}</p>
       <h1 ref={titleRef} tabIndex={-1}>{title}</h1>
-      <p>{copy}</p>
+      {copy ? <p>{copy}</p> : null}
       <div className="hero-proof">
         <CalendarIcon />
         <span>Only appointment times that are available to request are shown.</span>

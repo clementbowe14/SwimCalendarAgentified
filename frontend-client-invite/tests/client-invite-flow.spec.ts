@@ -105,9 +105,12 @@ test.describe("client invite self-booking flow", () => {
     await page.getByRole("button", { name: "Show available times" }).click();
     await page.getByRole("button", { name: "Request this time" }).click();
 
-    const requestHeading = page.getByRole("heading", { name: "Your request is with the provider" });
+    const requestHeading = page.getByRole("heading", { name: "Your appointment request" });
     await expect(requestHeading).toBeVisible();
     await expect(requestHeading).toBeFocused();
+    await expect(page.getByRole("status")).toContainText("Pending confirmation. Someone else may book this time.");
+    await expect(page.getByText(/(slot|time) is held/i)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Add to calendar" })).toHaveCount(0);
     await expect(page.getByText("Appointment request received")).toBeVisible();
     await expectInviteProgress(page, "Step 4 of 5: Status", 80);
 
