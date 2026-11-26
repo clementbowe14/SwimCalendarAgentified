@@ -48,6 +48,7 @@ from app.api_services import (
     confirm_coach_lesson_request,
     decline_coach_lesson_request,
     delete_coach_blocker,
+    disconnect_coach_google_calendar,
     get_coach_command_center_snapshot,
     get_coach_calendar_ics,
     get_coach_calendar_links,
@@ -201,6 +202,18 @@ def read_google_calendar_connection_status(
 ) -> CoachCalendarConnectionResponse:
     _private_response(response)
     return get_coach_google_calendar_connection_status(coach.account_id)
+
+
+@router.delete(
+    "/calendar-connections/google",
+    response_model=CoachCalendarConnectionResponse,
+)
+def delete_google_calendar_connection(
+    response: Response,
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachCalendarConnectionResponse:
+    _private_response(response)
+    return disconnect_coach_google_calendar(coach.account_id)
 
 
 @router.put("/provider", response_model=CoachProviderSettingsResponse)

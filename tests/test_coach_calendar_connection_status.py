@@ -181,6 +181,50 @@ def test_status_is_bound_to_authenticated_provider_and_ignores_spoofed_identity(
     )
 
 
+def test_disconnect_requires_authentication_and_csrf(
+    api_client: TestClient,
+    coach_auth_headers: dict[str, str],
+):
+    _connect(_account_id_for("inst_001"), refresh_token="test-google-refresh")
+
+    assert api_client.delete(ROUTE).status_code == 401
+    assert api_client.delete(
+        ROUTE, headers={"Cookie": coach_auth_headers["Cookie"]}
+    ).status_code == 403
+    assert api_client.get(ROUTE, headers=coach_auth_headers).json()["state"] == "connected"
+
+
+def test_disconnect_is_scoped_to_authenticated_owner_and_repeatable(
+    api_client: TestClient,
+    coach_auth_headers: dict[str, str],
+):
+    first_id = _account_id_for("inst_001")
+    _connect(first_id, refresh_token="test-first-refresh")
+    second_id = _seed_second_provider()
+    _connect(second_id, refresh_token="test-second-refresh")
+
+    disconnected = api_client.delete(
+        ROUTE, params={"account_id": second_id}, headers=coach_auth_headers
+    )
+    repeated = api_client.delete(ROUTE, headers=coach_auth_headers)
+
+    assert disconnected.status_code == 200, disconnected.text
+    assert disconnected.json() == {
+        "provider": "google",
+        "state": "disconnected",
+        "connected_at": None,
+        "updated_at": None,
+        "authorization_required_at": None,
+    }
+    assert disconnected.headers["cache-control"] == "private, no-store"
+    assert disconnected.headers["referrer-policy"] == "no-referrer"
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json() == disconnected.json()
+    with db.SessionLocal() as session:
+        remaining = session.query(ProviderCalendarConnectionDB).all()
+        assert [connection.account_id for connection in remaining] == [second_id]
+
+
 def _connect(
     account_id: str,
     *,

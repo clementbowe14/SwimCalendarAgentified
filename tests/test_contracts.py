@@ -101,15 +101,21 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/coach/lesson-requests/{request_token}/decline" in paths
     assert "/api/coach/settings" in paths
     assert "/api/coach/scheduling-policy" in paths
-    calendar_status = openapi["paths"][
-        "/api/coach/calendar-connections/google"
-    ]["get"]
+    calendar_connections = openapi["paths"]["/api/coach/calendar-connections/google"]
+    calendar_status = calendar_connections["get"]
     assert calendar_status["security"] == [{"CoachSessionCookie": []}]
     assert calendar_status["responses"]["200"]["content"][
         "application/json"
     ]["schema"] == {
         "$ref": "#/components/schemas/CoachCalendarConnectionResponse"
     }
+    disconnect = calendar_connections["delete"]
+    assert disconnect["security"] == calendar_status["security"]
+    assert disconnect["responses"]["200"] == calendar_status["responses"]["200"]
+    assert any(
+        parameter["name"] == "X-CSRF-Protection" and parameter["required"]
+        for parameter in disconnect["parameters"]
+    )
     assert set(
         openapi["components"]["schemas"]["CoachCalendarConnectionResponse"][
             "required"

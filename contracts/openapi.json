@@ -4365,6 +4365,46 @@
       }
     },
     "/api/coach/calendar-connections/google": {
+      "delete": {
+        "operationId": "delete_google_calendar_connection_api_coach_calendar_connections_google_delete",
+        "parameters": [
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachCalendarConnectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Delete Google Calendar Connection",
+        "tags": [
+          "coach"
+        ]
+      },
       "get": {
         "operationId": "read_google_calendar_connection_status_api_coach_calendar_connections_google_get",
         "responses": {

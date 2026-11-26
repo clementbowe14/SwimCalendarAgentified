@@ -85,6 +85,7 @@ from app.api_schemas import (
 )
 from app.calendar_connections import (
     CalendarConnectionOwnerNotFound,
+    disconnect_google_calendar,
     get_google_calendar_connection_status,
 )
 from app.calendar_handoff import calendar_ics, calendar_links
@@ -176,13 +177,16 @@ def get_coach_google_calendar_connection_status(
             )
     except CalendarConnectionOwnerNotFound as exc:
         raise ResourceNotFound("The provider could not be found.") from exc
-    return CoachCalendarConnectionResponse(
-        provider=status.provider,
-        state=status.state,
-        connected_at=status.connected_at,
-        updated_at=status.updated_at,
-        authorization_required_at=status.authorization_required_at,
-    )
+    return CoachCalendarConnectionResponse.model_validate(status, from_attributes=True)
+
+
+def disconnect_coach_google_calendar(account_id: str) -> CoachCalendarConnectionResponse:
+    try:
+        with db.SessionLocal.begin() as session:
+            status = disconnect_google_calendar(session, account_id=account_id)
+    except CalendarConnectionOwnerNotFound as exc:
+        raise ResourceNotFound("The provider could not be found.") from exc
+    return CoachCalendarConnectionResponse.model_validate(status, from_attributes=True)
 
 
 def list_coach_clients(instructor_id: str) -> CoachClientListResponse:
