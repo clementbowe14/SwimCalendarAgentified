@@ -1,17 +1,22 @@
 from datetime import datetime, timezone
+import json
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db
+from app import config, db, google_calendar_freebusy_deadline, google_calendar_token_deadline
 from app.api import create_app
 from app.auth import provision_provider_account
 from app.calendar_connections import replace_google_calendar_connection
 from app.calendar_credentials import CalendarCredentialCipher
 from app.external_calendar import CalendarBusyInterval, CalendarBusySnapshot
+from app.google_calendar_authorization import GOOGLE_CALENDAR_FREEBUSY_SCOPE
 from app.google_calendar_busy_source_factory import GoogleCalendarBusySourceFactory
+from app.google_calendar_freebusy import GoogleCalendarFreeBusyTransportResponse
+from app.google_calendar_oauth import GOOGLE_CALENDAR_CALLBACK_PATH
+from app.google_calendar_token_exchange import GoogleCalendarTokenTransportResponse
 from app.models import InstructorDB, ProviderAccountDB, ProviderWorkingHoursDB
 from app.routes import coach as coach_routes
 from tests.conftest import login_coach
@@ -33,23 +38,30 @@ UNAVAILABLE = {
 }
 WINDOW_START = datetime(2026, 8, 20, 13, tzinfo=timezone.utc)
 WINDOW_END = datetime(2026, 8, 20, 22, tzinfo=timezone.utc)
+TEST_CIPHER = CalendarCredentialCipher(
+    active_key_id="test-key",
+    keys={"test-key": b"k" * 32},
+)
 
 
 @pytest.fixture()
 def connected_calendar(authenticated_api_client):
-    with db.SessionLocal.begin() as session:
+    with db.SessionLocal() as session:
         account = session.query(ProviderAccountDB).filter_by(instructor_id="inst_001").one()
+        account_id = account.id
+    _connect_calendar(account_id)
+    return authenticated_api_client
+
+
+def _connect_calendar(account_id: str) -> None:
+    with db.SessionLocal.begin() as session:
         replace_google_calendar_connection(
             session,
-            account_id=account.id,
+            account_id=account_id,
             refresh_token="fake-refresh-token",
-            cipher=CalendarCredentialCipher(
-                active_key_id="test-key",
-                keys={"test-key": b"k" * 32},
-            ),
+            cipher=TEST_CIPHER,
             now=WINDOW_START,
         )
-    return authenticated_api_client
 
 
 def test_availability_requires_auth_before_building_calendar_source(monkeypatch):
@@ -74,7 +86,8 @@ def test_disconnected_calendar_keeps_availability_without_google(authenticated_a
     create_for.assert_not_called()
 
 
-def test_disconnected_calendar_accepts_existing_instructor_ids(api_client):
+@pytest.mark.parametrize("connected", [False, True])
+def test_availability_preserves_existing_instructor_ids(api_client, monkeypatch, connected):
     instructor_id = "Riley García"
     with db.SessionLocal.begin() as session:
         demo = session.get(InstructorDB, "inst_001")
@@ -104,13 +117,55 @@ def test_disconnected_calendar_accepts_existing_instructor_ids(api_client):
             ],
         ))
     email, password = "existing-provider@example.com", "existing-test-password"
-    provision_provider_account(instructor_id, email, password)
+    account_id = provision_provider_account(instructor_id, email, password)
     api_client.headers.update(login_coach(api_client, email=email, password=password))
+    if connected:
+        _connect_calendar(account_id)
+        _stub_google_responses(monkeypatch)
 
     response = api_client.post(AVAILABILITY_PATH, json=PAYLOAD)
 
     assert response.status_code == 200, response.text
-    assert response.json()["available_slots"]
+    assert bool(response.json()["available_slots"]) == (not connected)
+
+
+def _stub_google_responses(monkeypatch):
+    monkeypatch.setenv(
+        "SWIM_GOOGLE_CALENDAR_OAUTH_CLIENT_ID", "1234-test.apps.googleusercontent.com"
+    )
+    monkeypatch.setenv("SWIM_GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET", "test-client-secret")
+    monkeypatch.setenv(
+        "SWIM_GOOGLE_CALENDAR_OAUTH_REDIRECT_URI",
+        f"https://calendar.example.com{GOOGLE_CALENDAR_CALLBACK_PATH}",
+    )
+    monkeypatch.setattr(config, "calendar_credential_cipher_from_env", lambda: TEST_CIPHER)
+    token = GoogleCalendarTokenTransportResponse(
+        status_code=200,
+        content_type="application/json",
+        body=json.dumps({
+            "access_token": "fake-access-token",
+            "expires_in": 3600,
+            "scope": GOOGLE_CALENDAR_FREEBUSY_SCOPE,
+            "token_type": "Bearer",
+        }).encode("utf-8"),
+    )
+    busy = GoogleCalendarFreeBusyTransportResponse(
+        status_code=200,
+        content_type="application/json",
+        body=json.dumps({
+            "kind": "calendar#freeBusy",
+            "timeMin": "2026-08-20T13:00:00Z",
+            "timeMax": "2026-08-20T22:00:00Z",
+            "calendars": {"primary": {"busy": [{
+                "start": "2026-08-20T13:00:00Z",
+                "end": "2026-08-20T22:00:00Z",
+            }]}},
+        }).encode("utf-8"),
+    )
+    monkeypatch.setattr(google_calendar_token_deadline, "_post_form_async", AsyncMock(return_value=token))
+    monkeypatch.setattr(
+        google_calendar_freebusy_deadline, "_post_json_in_owned_task", AsyncMock(return_value=busy)
+    )
 
 
 def test_connected_calendar_excludes_busy_time(connected_calendar, monkeypatch):

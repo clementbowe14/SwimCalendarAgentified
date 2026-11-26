@@ -20,7 +20,6 @@ from app.external_calendar import (
 )
 from app.google_calendar_availability_fence import (
     _classify_control_exception,
-    _validated_instructor_id,
     claim_google_calendar_availability_fence,
     revalidate_google_calendar_availability_fence,
 )
@@ -28,6 +27,7 @@ from app.google_calendar_busy_source_factory import (
     _raise_control_exception,
     _raise_fresh,
 )
+from app.google_calendar_credential_handoff import _validated_instructor_id
 
 
 __all__ = ("GoogleCalendarAvailabilitySource",)

@@ -16,6 +16,7 @@ from app.google_calendar_credential_handoff import (
     _validated_claim_fence,
     _validated_connection_id,
     _validated_identifier,
+    _validated_instructor_id,
     _validated_revision,
 )
 from app.google_calendar_oauth import GoogleCalendarOAuthError
@@ -173,7 +174,7 @@ def _validated_authorization_required_fence(
         raise ValueError("invalid authorization-required outcome")
     outcome_fence = (
         _validated_identifier(outcome.account_id),
-        _validated_identifier(outcome.instructor_id),
+        _validated_instructor_id(outcome.instructor_id),
         _validated_connection_id(outcome.connection_id),
         _validated_revision(
             outcome.expected_calendar_connection_revision,
@@ -240,7 +241,7 @@ def _mark_locked_refresh_credential_authorization_required(
     if account is None:
         raise ValueError("missing credential owner")
     persisted_account_id = _validated_identifier(account.account_id)
-    persisted_instructor_id = _validated_identifier(account.instructor_id)
+    persisted_instructor_id = _validated_instructor_id(account.instructor_id)
     current_revision = _validated_revision(
         account.calendar_connection_revision,
         allow_zero=False,

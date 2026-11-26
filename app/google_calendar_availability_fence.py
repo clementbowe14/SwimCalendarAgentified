@@ -21,6 +21,7 @@ from app.google_calendar_credential_claim import (
 from app.google_calendar_credential_handoff import (
     _validated_connection_id,
     _validated_identifier,
+    _validated_instructor_id,
     _validated_revision,
 )
 from app.models import ProviderAccountDB, ProviderCalendarConnectionDB
@@ -363,13 +364,6 @@ def _validated_fence(
     if (state == "disconnected") != (connection_id is None):
         raise ValueError("invalid calendar availability fence state")
     return state, account_id, instructor_id, revision, connection_id
-
-
-def _validated_instructor_id(value: object) -> str:
-    # Instructor IDs are existing database keys and can include spaces or Unicode.
-    if type(value) is not str or not value.strip() or "\x00" in value:
-        raise ValueError("invalid instructor identifier")
-    return value
 
 
 def _validated_state(value: object) -> GoogleCalendarAvailabilityState:

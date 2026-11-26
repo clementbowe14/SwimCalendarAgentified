@@ -24,6 +24,7 @@ from app.google_calendar_credential_handoff import (
     _validated_claim_fence,
     _validated_connection_id,
     _validated_identifier,
+    _validated_instructor_id,
     _validated_revision,
 )
 from app.models import ProviderAccountDB, ProviderCalendarConnectionDB
@@ -103,7 +104,7 @@ def _claim_google_calendar_refresh_credential(
     instructor_id: object,
     credential_cipher: object,
 ) -> GoogleCalendarRefreshCredentialClaimResult:
-    trusted_instructor_id = _validated_identifier(instructor_id)
+    trusted_instructor_id = _validated_instructor_id(instructor_id)
     if type(credential_cipher) is not CalendarCredentialCipher:
         raise ValueError("invalid credential cipher")
     if not callable(session_factory):
@@ -337,7 +338,7 @@ def _lock_refresh_credential_owner(
         raise ValueError("missing credential owner")
 
     account_id = _validated_identifier(account.account_id)
-    persisted_instructor_id = _validated_identifier(account.instructor_id)
+    persisted_instructor_id = _validated_instructor_id(account.instructor_id)
     current_revision = _validated_revision(
         account.calendar_connection_revision,
         allow_zero=True,
@@ -371,7 +372,7 @@ def _revalidate_locked_refresh_credential_claim(
     if account is None:
         raise ValueError("missing credential owner")
     persisted_account_id = _validated_identifier(account.account_id)
-    persisted_instructor_id = _validated_identifier(account.instructor_id)
+    persisted_instructor_id = _validated_instructor_id(account.instructor_id)
     current_revision = _validated_revision(
         account.calendar_connection_revision,
         allow_zero=False,
