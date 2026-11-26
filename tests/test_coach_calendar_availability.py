@@ -7,11 +7,12 @@ from fastapi.testclient import TestClient
 
 from app import db
 from app.api import create_app
+from app.auth import provision_provider_account
 from app.calendar_connections import replace_google_calendar_connection
 from app.calendar_credentials import CalendarCredentialCipher
 from app.external_calendar import CalendarBusyInterval, CalendarBusySnapshot
 from app.google_calendar_busy_source_factory import GoogleCalendarBusySourceFactory
-from app.models import ProviderAccountDB
+from app.models import InstructorDB, ProviderAccountDB, ProviderWorkingHoursDB
 from app.routes import coach as coach_routes
 from tests.conftest import login_coach
 
@@ -73,6 +74,45 @@ def test_disconnected_calendar_keeps_availability_without_google(authenticated_a
     create_for.assert_not_called()
 
 
+def test_disconnected_calendar_accepts_existing_instructor_ids(api_client):
+    instructor_id = "Riley García"
+    with db.SessionLocal.begin() as session:
+        demo = session.get(InstructorDB, "inst_001")
+        session.add(InstructorDB(
+            id=instructor_id,
+            name="Riley",
+            main_address=demo.main_address,
+            lat=demo.lat,
+            lng=demo.lng,
+            timezone=demo.timezone,
+            base_address=demo.base_address,
+            base_lat=demo.base_lat,
+            base_lng=demo.base_lng,
+            service_address=demo.service_address,
+            service_lat=demo.service_lat,
+            service_lng=demo.service_lng,
+            service_name=demo.service_name,
+            default_duration_mins=demo.default_duration_mins,
+            working_hours=[
+                ProviderWorkingHoursDB(
+                    weekday=day.weekday,
+                    enabled=day.enabled,
+                    start_time=day.start_time,
+                    end_time=day.end_time,
+                )
+                for day in demo.working_hours
+            ],
+        ))
+    email, password = "existing-provider@example.com", "existing-test-password"
+    provision_provider_account(instructor_id, email, password)
+    api_client.headers.update(login_coach(api_client, email=email, password=password))
+
+    response = api_client.post(AVAILABILITY_PATH, json=PAYLOAD)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["available_slots"]
+
+
 def test_connected_calendar_excludes_busy_time(connected_calendar, monkeypatch):
     query = Mock(return_value=CalendarBusySnapshot(
         status="verified",
@@ -89,6 +129,43 @@ def test_connected_calendar_excludes_busy_time(connected_calendar, monkeypatch):
     query.assert_called_once_with(
         instructor_id="inst_001", window_start=WINDOW_START, window_end=WINDOW_END
     )
+
+
+def test_partial_calendar_block_preserves_break_recovery(connected_calendar, monkeypatch):
+    policy_path = "/api/coach/scheduling-policy"
+    policy = connected_calendar.get(policy_path).json()
+    saved = connected_calendar.put(policy_path, json={
+        "expected_revision": policy["revision"],
+        "distance_buffers_enabled": False,
+        "post_break_recovery_mins": 30,
+        "distance_buffer_tiers": [
+            {"id": tier["id"], "buffer_mins": tier["buffer_mins"]}
+            for tier in policy["distance_buffer_tiers"]
+        ],
+    })
+    assert saved.status_code == 200, saved.text
+
+    query = Mock(return_value=CalendarBusySnapshot(
+        status="verified",
+        periods=(CalendarBusyInterval(
+            start=datetime(2026, 8, 20, 18, 0, tzinfo=timezone.utc),
+            end=datetime(2026, 8, 20, 18, 15, tzinfo=timezone.utc),
+        ),),
+    ))
+    monkeypatch.setattr(GoogleCalendarBusySourceFactory, "create_for", Mock(
+        return_value=SimpleNamespace(query_busy_periods=query)
+    ))
+
+    response = connected_calendar.post(AVAILABILITY_PATH, json={
+        **PAYLOAD, "is_instructor_facility": True, "duration_mins": 30,
+    })
+
+    assert response.status_code == 200, response.text
+    post_break_slots = [
+        slot for slot in response.json()["available_slots"] if "T13:" in slot["start_iso"]
+    ]
+    assert post_break_slots[0]["start_iso"] == "2026-08-20T13:30:00-05:00"
+    assert post_break_slots[0]["buffer_mins"] == 15
 
 
 def test_calendar_failure_exposes_no_slots_and_allows_retry(connected_calendar, monkeypatch):

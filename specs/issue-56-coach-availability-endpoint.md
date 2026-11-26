@@ -5,8 +5,9 @@ authenticated instructor. The route constructs a fresh source using the
 application's factory and the active database binding.
 
 - A disconnected calendar keeps the current internal-only results and does not
-  load Google configuration.
+  load Google configuration, including for existing instructor IDs.
 - A connected calendar removes options that overlap verified busy periods.
+  An external block keeps any unelapsed post-break recovery in force.
 - If the calendar cannot be verified, return the existing
   `CALENDAR_AVAILABILITY_UNAVAILABLE` response with no available slots or
   provider diagnostics.

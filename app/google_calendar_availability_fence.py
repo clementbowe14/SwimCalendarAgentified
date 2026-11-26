@@ -177,7 +177,7 @@ def _claim_fence(
     *,
     instructor_id: object,
 ) -> GoogleCalendarAvailabilityFence:
-    trusted_instructor_id = _validated_identifier(instructor_id)
+    trusted_instructor_id = _validated_instructor_id(instructor_id)
     return _read_fence(
         session_factory,
         instructor_id=trusted_instructor_id,
@@ -258,7 +258,7 @@ def _read_locked_fence(
     if account is None:
         raise ValueError("missing calendar availability owner")
     persisted_account_id = _validated_identifier(account.account_id)
-    persisted_instructor_id = _validated_identifier(account.instructor_id)
+    persisted_instructor_id = _validated_instructor_id(account.instructor_id)
     revision = _validated_revision(
         account.calendar_connection_revision,
         allow_zero=True,
@@ -320,7 +320,7 @@ def _new_fence(
 ) -> GoogleCalendarAvailabilityFence:
     trusted_state = _validated_state(state)
     trusted_account_id = _validated_identifier(account_id)
-    trusted_instructor_id = _validated_identifier(instructor_id)
+    trusted_instructor_id = _validated_instructor_id(instructor_id)
     trusted_revision = _validated_revision(
         revision,
         allow_zero=trusted_state == "disconnected",
@@ -350,7 +350,7 @@ def _validated_fence(
         raise ValueError("invalid calendar availability fence")
     state = _validated_state(value.state)
     account_id = _validated_identifier(value._account_id)
-    instructor_id = _validated_identifier(value._instructor_id)
+    instructor_id = _validated_instructor_id(value._instructor_id)
     revision = _validated_revision(
         value._revision,
         allow_zero=state == "disconnected",
@@ -363,6 +363,13 @@ def _validated_fence(
     if (state == "disconnected") != (connection_id is None):
         raise ValueError("invalid calendar availability fence state")
     return state, account_id, instructor_id, revision, connection_id
+
+
+def _validated_instructor_id(value: object) -> str:
+    # Instructor IDs are existing database keys and can include spaces or Unicode.
+    if type(value) is not str or not value.strip() or "\x00" in value:
+        raise ValueError("invalid instructor identifier")
+    return value
 
 
 def _validated_state(value: object) -> GoogleCalendarAvailabilityState:
