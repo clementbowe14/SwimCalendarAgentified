@@ -206,7 +206,6 @@ def test_disconnect_is_scoped_to_authenticated_owner_and_repeatable(
     disconnected = api_client.delete(
         ROUTE, params={"account_id": second_id}, headers=coach_auth_headers
     )
-    repeated = api_client.delete(ROUTE, headers=coach_auth_headers)
 
     assert disconnected.status_code == 200, disconnected.text
     assert disconnected.json() == {
@@ -218,11 +217,13 @@ def test_disconnect_is_scoped_to_authenticated_owner_and_repeatable(
     }
     assert disconnected.headers["cache-control"] == "private, no-store"
     assert disconnected.headers["referrer-policy"] == "no-referrer"
-    assert repeated.status_code == 200, repeated.text
-    assert repeated.json() == disconnected.json()
     with db.SessionLocal() as session:
         remaining = session.query(ProviderCalendarConnectionDB).all()
         assert [connection.account_id for connection in remaining] == [second_id]
+
+    repeated = api_client.delete(ROUTE, headers=coach_auth_headers)
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json() == disconnected.json()
 
 
 def _connect(
