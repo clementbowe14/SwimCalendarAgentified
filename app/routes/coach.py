@@ -4,7 +4,12 @@ from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import PlainTextResponse
 
-from app.api_errors import ApiException, SchedulingPolicyEndpointMoved
+from app import db
+from app.api_errors import (
+    ApiException,
+    CalendarAvailabilityUnavailable,
+    SchedulingPolicyEndpointMoved,
+)
 from app.notifications import (
     correct_coach_email_delivery_contact,
     enqueue_invite_for_coach,
@@ -66,6 +71,7 @@ from app.api_services import (
     update_coach_scheduling_policy,
 )
 from app.dependencies import CoachContext, get_current_coach, require_csrf_protection
+from app.google_calendar_availability_source import GoogleCalendarAvailabilitySource
 
 
 router = APIRouter(
@@ -364,9 +370,35 @@ def save_scheduling_policy(
 @router.post("/availability", response_model=AvailabilitySearchResponse)
 def find_availability(
     request: AvailabilitySearchRequest,
+    http_request: Request,
     coach: CoachContext = Depends(get_current_coach),
 ) -> AvailabilitySearchResponse:
-    return search_coach_availability(coach.instructor_id, request)
+    try:
+        return search_coach_availability(
+            coach.instructor_id,
+            request,
+            calendar_busy_source=_google_calendar_availability_source(
+                http_request, coach.instructor_id
+            ),
+        )
+    finally:
+        # Keep request data and the authenticated principal out of route tracebacks.
+        del request, http_request, coach
+
+
+def _google_calendar_availability_source(
+    request: Request, instructor_id: str
+) -> GoogleCalendarAvailabilitySource:
+    try:
+        return GoogleCalendarAvailabilitySource(
+            db.SessionLocal,
+            instructor_id=instructor_id,
+            busy_source_factory=request.app.state.calendar_busy_source_factory.create_for,
+        )
+    except (AttributeError, ValueError):
+        # A missing factory or invalid source configuration fails closed.
+        del request, instructor_id
+    raise CalendarAvailabilityUnavailable() from None
 
 
 @router.post("/bookings", response_model=BookLessonResponse)

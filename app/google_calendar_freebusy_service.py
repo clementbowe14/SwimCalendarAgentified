@@ -31,6 +31,7 @@ from app.google_calendar_credential_claim import (
 from app.google_calendar_credential_handoff import (
     GoogleCalendarRefreshCredentialClaim,
     GoogleCalendarValidatedRefreshCredentialClaim,
+    _validated_instructor_id,
     validate_google_calendar_refresh_credential_claim,
 )
 from app.google_calendar_freebusy import (
@@ -346,7 +347,10 @@ def _validated_static_inputs(
         or type(credential_cipher) is not CalendarCredentialCipher
     ):
         raise ExternalCalendarUnavailable("provider_unavailable")
-    trusted_instructor_id = _validated_identifier(instructor_id)
+    try:
+        trusted_instructor_id = _validated_instructor_id(instructor_id)
+    except ValueError:
+        raise ExternalCalendarInvalidResponse() from None
     normalized_start, normalized_end = _validated_window(
         window_start,
         window_end,
@@ -432,7 +436,7 @@ def _require_matching_authorization_required(
     try:
         outcome_fence = (
             _validated_identifier(outcome.account_id),
-            _validated_identifier(outcome.instructor_id),
+            _validated_instructor_id(outcome.instructor_id),
             _validated_connection_id(outcome.connection_id),
             _validated_revision(
                 outcome.expected_calendar_connection_revision
@@ -484,7 +488,7 @@ def _validated_snapshot_candidate_inner(
     trusted_claim = _validated_claim_snapshot(claim)
     result_fence = (
         _validated_identifier(result.account_id),
-        _validated_identifier(result.instructor_id),
+        _validated_instructor_id(result.instructor_id),
         _validated_connection_id(result.connection_id),
         _validated_revision(result.expected_calendar_connection_revision),
     )

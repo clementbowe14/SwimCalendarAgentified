@@ -25,6 +25,7 @@ from app.external_calendar import (
 from app.google_calendar_credential_handoff import (
     GoogleCalendarRefreshCredentialClaim,
     GoogleCalendarValidatedRefreshCredentialClaim,
+    _validated_instructor_id,
     validate_google_calendar_refresh_credential_claim,
 )
 from app.google_calendar_token_exchange import (
@@ -400,7 +401,7 @@ def _validated_access_result(value: object) -> _ValidatedAccessResult:
     if type(value) is not GoogleCalendarRefreshTokenExchangeResult:
         raise ValueError("invalid access-token result")
     account_id = _validated_identifier(value.account_id)
-    instructor_id = _validated_identifier(value.instructor_id)
+    instructor_id = _validated_instructor_id(value.instructor_id)
     connection_id = _validated_connection_id(value.connection_id)
     revision = _validated_revision(
         value.expected_calendar_connection_revision

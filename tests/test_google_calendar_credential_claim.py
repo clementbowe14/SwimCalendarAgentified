@@ -915,7 +915,7 @@ def test_invalid_inputs_and_sessions_fail_before_claiming(monkeypatch):
         {"instructor_id": ""},
         {"instructor_id": " inst_private"},
         {"instructor_id": "inst\nprivate"},
-        {"instructor_id": "café"},
+        {"instructor_id": "é" * 128},  # 256 UTF-8 bytes
         {"instructor_id": TextSubclass("inst_private")},
         {"credential_cipher": object()},
         {"credential_cipher": subclass_cipher},

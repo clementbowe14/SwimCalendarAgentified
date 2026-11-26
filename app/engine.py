@@ -139,7 +139,7 @@ class SwimSchedulerConstraintEngine:
         sorted_events = sorted(existing_events, key=lambda item: item["start_time"])
         prev_location_coords = (instructor_main_location.lat, instructor_main_location.lng)
         prev_end_time = day_start
-        prev_is_break = False
+        previous_break_end = None
         is_shift_start = True
 
         for index, event in enumerate(sorted_events):
@@ -152,7 +152,7 @@ class SwimSchedulerConstraintEngine:
                 self._evaluate_gap(
                     prev_end_time=prev_end_time,
                     prev_coords=prev_location_coords,
-                    prev_is_break=prev_is_break,
+                    previous_break_end=previous_break_end,
                     is_shift_start=is_shift_start,
                     next_start_time=event["start_time"],
                     next_coords=next_coords,
@@ -166,18 +166,20 @@ class SwimSchedulerConstraintEngine:
             prev_end_time = event["end_time"]
             if event_coords is not None:
                 prev_location_coords = event_coords
-            prev_is_break = (
-                event.get("blocker_kind") == "break"
-                if event.get("event_type") == "block" or event.get("blocker_kind") is not None
-                else bool(event.get("is_break", False))
-            )
+            if event.get("blocker_kind") != "external_calendar":
+                is_break = (
+                    event.get("blocker_kind") == "break"
+                    if event.get("event_type") == "block" or event.get("blocker_kind") is not None
+                    else bool(event.get("is_break", False))
+                )
+                previous_break_end = prev_end_time if is_break else None
             is_shift_start = False
 
         valid_slots.extend(
             self._evaluate_gap(
                 prev_end_time=prev_end_time,
                 prev_coords=prev_location_coords,
-                prev_is_break=prev_is_break,
+                previous_break_end=previous_break_end,
                 is_shift_start=is_shift_start,
                 next_start_time=day_end,
                 next_coords=None,
@@ -194,7 +196,7 @@ class SwimSchedulerConstraintEngine:
         self,
         prev_end_time: datetime.datetime,
         prev_coords: Tuple[float, float],
-        prev_is_break: bool,
+        previous_break_end: Optional[datetime.datetime],
         is_shift_start: bool,
         next_start_time: datetime.datetime,
         next_coords: Optional[Tuple[float, float]],
@@ -212,10 +214,18 @@ class SwimSchedulerConstraintEngine:
         )
         buffer_mins = self.buffer_policy.inbound_buffer_minutes(
             dist_from_prev,
-            is_after_break=prev_is_break,
+            is_after_break=prev_end_time == previous_break_end,
             is_shift_start=is_shift_start,
         )
-        raw_start = prev_end_time + datetime.timedelta(minutes=travel_from_prev + buffer_mins)
+        buffer_delta = datetime.timedelta(minutes=buffer_mins)
+        if previous_break_end is not None:
+            recovery_end = previous_break_end + datetime.timedelta(
+                minutes=self.buffer_policy.post_break_recovery_mins
+            )
+            # Keep any recovery time that remains after an external busy period.
+            buffer_delta = max(buffer_delta, recovery_end - prev_end_time)
+            buffer_mins = math.ceil(buffer_delta.total_seconds() / 60)
+        raw_start = prev_end_time + (datetime.timedelta(minutes=travel_from_prev) + buffer_delta)
         current_candidate = self.buffer_policy.ceil_datetime(raw_start, self.timezone_name)
         # A locationless blocker is still a temporal boundary. Location only
         # controls whether outbound travel to the next event must fit.

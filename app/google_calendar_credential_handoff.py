@@ -198,7 +198,7 @@ def _validated_google_calendar_refresh_credential_claim(
     if type(value) is not GoogleCalendarRefreshCredentialClaim:
         raise ValueError("invalid credential claim")
     account_id = _validated_identifier(value.account_id)
-    instructor_id = _validated_identifier(value.instructor_id)
+    instructor_id = _validated_instructor_id(value.instructor_id)
     connection_id = _validated_connection_id(value.connection_id)
     expected_revision = _validated_revision(
         value.expected_calendar_connection_revision,
@@ -252,6 +252,19 @@ def _validated_identifier(value: object) -> str:
     return value
 
 
+def _validated_instructor_id(value: object) -> str:
+    # This is an existing database key, separate from Google's identifiers.
+    if (
+        type(value) is not str
+        or not 1 <= len(value) <= _MAX_IDENTIFIER_BYTES
+        or value != value.strip()
+        or not value.isprintable()
+        or len(value.encode("utf-8")) > _MAX_IDENTIFIER_BYTES
+    ):
+        raise ValueError("invalid instructor identifier")
+    return value
+
+
 def _validated_connection_id(value: object) -> str:
     if (
         type(value) is not str
@@ -295,7 +308,7 @@ def _claim_integrity_tag(
 ) -> bytes:
     parts = (
         account_id.encode("ascii"),
-        instructor_id.encode("ascii"),
+        instructor_id.encode("utf-8"),
         connection_id.encode("ascii"),
         expected_revision.to_bytes(8, "big", signed=False),
         refresh_token.encode("ascii"),
@@ -320,7 +333,7 @@ def _new_claim(
     refresh_token: str,
 ) -> GoogleCalendarRefreshCredentialClaim:
     trusted_account_id = _validated_identifier(account_id)
-    trusted_instructor_id = _validated_identifier(instructor_id)
+    trusted_instructor_id = _validated_instructor_id(instructor_id)
     trusted_connection_id = _validated_connection_id(connection_id)
     trusted_revision = _validated_revision(
         expected_calendar_connection_revision,

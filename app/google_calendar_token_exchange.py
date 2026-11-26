@@ -929,7 +929,7 @@ def _refresh_exchange_result_integrity_tag(
 ) -> bytes:
     parts = (
         account_id.encode("ascii"),
-        instructor_id.encode("ascii"),
+        instructor_id.encode("utf-8"),
         connection_id.encode("ascii"),
         expected_revision.to_bytes(8, "big", signed=False),
         access_token.encode("ascii"),
