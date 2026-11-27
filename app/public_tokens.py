@@ -4,9 +4,9 @@ from typing import Optional
 from uuid import uuid4
 
 from app import db, timezones
-from app.api_errors import InviteExpired, InviteNotFound, LessonRequestNotFound
+from app.api_errors import CalendarAvailabilityUnavailable, InviteExpired, InviteNotFound, LessonRequestNotFound
 from app.config import demo_data_access_enabled_from_env
-from app.models import InviteTokenDB, LessonRequestDB
+from app.models import InstructorDB, InviteTokenDB, LessonRequestDB, ProviderAccountDB
 from app.provider_settings import ProviderLocation, ProviderNotFound, load_provider_configuration
 from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -55,15 +55,7 @@ DEMO_INVITE_TOKEN = "demo-invite-token"
 def resolve_invite(token: str) -> InviteContext:
     session = db.SessionLocal()
     try:
-        invite = session.query(InviteTokenDB).filter_by(token=token).first()
-        if not invite:
-            raise InviteNotFound()
-        if not demo_invite_is_enabled(invite):
-            raise InviteNotFound()
-        if invite.revoked_at is not None:
-            raise InviteNotFound()
-        if invite.expires_at <= datetime.utcnow():
-            raise InviteExpired()
+        invite = require_active_invite(session, token)
         try:
             provider = load_provider_configuration(invite.instructor_id)
         except ProviderNotFound as exc:
@@ -87,6 +79,42 @@ def resolve_invite(token: str) -> InviteContext:
         )
     finally:
         session.close()
+
+
+def require_active_invite(
+    session,
+    token: str,
+    *,
+    instructor_id: str | None = None,
+    lock: bool = False,
+) -> InviteTokenDB:
+    query = session.query(InviteTokenDB).filter_by(token=token)
+    if instructor_id is not None:
+        query = query.filter_by(instructor_id=instructor_id)
+    # Revocation updates non-key fields. Keep foreign-key checks on the invite unblocked.
+    invite = (query.with_for_update(key_share=True) if lock else query).first()
+    if invite is None or invite.revoked_at is not None or not demo_invite_is_enabled(invite):
+        raise InviteNotFound()
+    if invite.expires_at <= datetime.utcnow():
+        raise InviteExpired()
+    return invite
+
+
+def require_unprovisioned_invite_instructor(session, instructor_id: str) -> None:
+    # Provider-account inserts take a foreign-key lock on the instructor row.
+    try:
+        instructor = (
+            session.query(InstructorDB.id).filter_by(id=instructor_id)
+            .with_for_update(nowait=True).first()
+        )
+        account = session.query(ProviderAccountDB.id).filter_by(instructor_id=instructor_id).first()
+    except OperationalError as exc:
+        if getattr(exc.orig, "sqlstate", None) != "55P03":
+            raise
+    else:
+        if instructor is not None and account is None:
+            return
+    raise CalendarAvailabilityUnavailable() from None
 
 
 def create_lesson_request(

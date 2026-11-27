@@ -3,13 +3,10 @@ from functools import partial
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
-from starlette.datastructures import State
 from starlette.responses import PlainTextResponse
 
-from app import db
 from app.api_errors import (
     ApiException,
-    CalendarAvailabilityUnavailable,
     SchedulingPolicyEndpointMoved,
 )
 from app.calendar_connection_access import get_google_calendar_coach
@@ -74,8 +71,12 @@ from app.api_services import (
     update_coach_blocker,
     update_coach_scheduling_policy,
 )
-from app.dependencies import CoachContext, get_current_coach, require_csrf_protection
-from app.google_calendar_availability_source import GoogleCalendarAvailabilitySource
+from app.dependencies import (
+    CoachContext,
+    get_current_coach,
+    google_calendar_availability_source as _google_calendar_availability_source,
+    require_csrf_protection,
+)
 
 
 router = APIRouter(
@@ -402,21 +403,6 @@ def find_availability(
     finally:
         # Keep request data and the authenticated principal out of route tracebacks.
         del request, http_request, coach
-
-
-def _google_calendar_availability_source(
-    state: State, instructor_id: str
-) -> GoogleCalendarAvailabilitySource:
-    try:
-        return GoogleCalendarAvailabilitySource(
-            db.SessionLocal,
-            instructor_id=instructor_id,
-            busy_source_factory=state.calendar_busy_source_factory.create_for,
-        )
-    except (AttributeError, ValueError):
-        # A missing factory or invalid source configuration fails closed.
-        del state, instructor_id
-    raise CalendarAvailabilityUnavailable() from None
 
 
 @router.post("/bookings", response_model=BookLessonResponse)

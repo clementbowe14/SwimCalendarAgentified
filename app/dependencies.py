@@ -4,8 +4,10 @@ from typing import Optional
 
 from fastapi import Request, Response, Security
 from fastapi.security import APIKeyCookie
+from starlette.datastructures import State
 
-from app.api_errors import AuthenticationRequired, CsrfValidationFailed
+from app import db
+from app.api_errors import AuthenticationRequired, CalendarAvailabilityUnavailable, CsrfValidationFailed
 from app.auth import (
     CSRF_HEADER_NAME,
     CSRF_HEADER_VALUE,
@@ -13,6 +15,7 @@ from app.auth import (
     validate_coach_session,
 )
 from app.config import application_settings_from_env
+from app.google_calendar_availability_source import GoogleCalendarAvailabilitySource
 
 
 session_cookie_scheme = APIKeyCookie(
@@ -49,6 +52,20 @@ def get_current_coach(
         display_name=principal.display_name,
         expires_at=principal.expires_at,
     )
+
+
+def google_calendar_availability_source(
+    state: State, instructor_id: str
+) -> GoogleCalendarAvailabilitySource:
+    try:
+        return GoogleCalendarAvailabilitySource(
+            db.SessionLocal,
+            instructor_id=instructor_id,
+            busy_source_factory=state.calendar_busy_source_factory.create_for,
+        )
+    except (AttributeError, ValueError):
+        del state, instructor_id
+    raise CalendarAvailabilityUnavailable() from None
 
 
 def require_csrf_protection(request: Request) -> None:

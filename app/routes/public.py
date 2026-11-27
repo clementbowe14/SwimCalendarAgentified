@@ -1,6 +1,12 @@
-from fastapi import APIRouter, Response
-from fastapi.responses import PlainTextResponse
+from collections.abc import Iterator
+from contextlib import contextmanager
 
+from fastapi import APIRouter, Request, Response
+from fastapi.responses import PlainTextResponse
+from starlette.datastructures import State
+
+from app import db
+from app.api_errors import CalendarAvailabilityUnavailable
 from app.api_schemas import (
     ClientInviteAvailabilityRequest,
     ClientInviteAvailabilityResponse,
@@ -33,7 +39,15 @@ from app.client_invites import (
     select_client_lesson_request_alternative,
     submit_client_invite_intake,
 )
-from app.public_tokens import resolve_invite
+from app.dependencies import google_calendar_availability_source
+from app.external_calendar import CalendarBusySource
+from app.models import ProviderAccountDB
+from app.public_tokens import (
+    InviteContext,
+    require_active_invite,
+    require_unprovisioned_invite_instructor,
+    resolve_invite,
+)
 
 
 router = APIRouter(prefix="/api/public", tags=["public"])
@@ -48,8 +62,19 @@ def read_invite(token: str) -> PublicInviteResponse:
 def find_invite_availability(
     token: str,
     request: PublicAvailabilitySearchRequest,
+    http_request: Request,
 ) -> PublicAvailabilitySearchResponse:
-    return search_public_availability(resolve_invite(token), request)
+    try:
+        invite = resolve_invite(token)
+        with _invite_calendar_source(http_request.app.state, invite) as source:
+            result = search_public_availability(invite, request, calendar_busy_source=source)
+            with db.SessionLocal() as session:
+                if source is None:
+                    require_unprovisioned_invite_instructor(session, invite.instructor_id)
+                require_active_invite(session, invite.token, instructor_id=invite.instructor_id)
+            return result
+    finally:
+        del http_request
 
 
 @router.post("/invites/{token}/requests", response_model=PublicLessonRequestResponse)
@@ -79,8 +104,28 @@ def submit_client_intake(token: str, intake: ClientInviteIntake) -> ClientInvite
 def find_client_invite_slots(
     token: str,
     request: ClientInviteAvailabilityRequest,
+    http_request: Request,
 ) -> ClientInviteAvailabilityResponse:
-    return search_client_invite_slots(token, request)
+    try:
+        invite = resolve_invite(token)
+        with _invite_calendar_source(http_request.app.state, invite) as source:
+            return search_client_invite_slots(invite, request, calendar_busy_source=source)
+    finally:
+        del http_request
+
+
+@contextmanager
+def _invite_calendar_source(state: State, invite: InviteContext) -> Iterator[CalendarBusySource | None]:
+    permits = state.public_calendar_reads
+    if not permits.acquire(blocking=False):
+        raise CalendarAvailabilityUnavailable()
+    try:
+        with db.SessionLocal() as session:
+            owner = session.query(ProviderAccountDB.id).filter_by(instructor_id=invite.instructor_id).scalar()
+        # A legacy instructor without a provider account cannot have an external connection.
+        yield google_calendar_availability_source(state, invite.instructor_id) if owner else None
+    finally:
+        permits.release()
 
 
 @router.post("/client-invites/{token}/lesson-requests", response_model=ClientInviteLessonRequestResponse)
