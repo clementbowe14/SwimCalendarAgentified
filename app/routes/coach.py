@@ -1,7 +1,9 @@
 from datetime import date
+from functools import partial
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import State
 from starlette.responses import PlainTextResponse
 
 from app import db
@@ -391,7 +393,7 @@ def find_availability(
             coach.instructor_id,
             request,
             calendar_busy_source=_google_calendar_availability_source(
-                http_request, coach.instructor_id
+                http_request.app.state, coach.instructor_id
             ),
         )
     finally:
@@ -400,17 +402,17 @@ def find_availability(
 
 
 def _google_calendar_availability_source(
-    request: Request, instructor_id: str
+    state: State, instructor_id: str
 ) -> GoogleCalendarAvailabilitySource:
     try:
         return GoogleCalendarAvailabilitySource(
             db.SessionLocal,
             instructor_id=instructor_id,
-            busy_source_factory=request.app.state.calendar_busy_source_factory.create_for,
+            busy_source_factory=state.calendar_busy_source_factory.create_for,
         )
     except (AttributeError, ValueError):
         # A missing factory or invalid source configuration fails closed.
-        del request, instructor_id
+        del state, instructor_id
     raise CalendarAvailabilityUnavailable() from None
 
 
@@ -424,8 +426,8 @@ def create_booking(
         return book_coach_lesson(
             coach.instructor_id,
             request,
-            build_calendar_source=lambda: _google_calendar_availability_source(
-                http_request, coach.instructor_id
+            build_calendar_source=partial(
+                _google_calendar_availability_source, http_request.app.state, coach.instructor_id
             ),
         )
     finally:
@@ -476,20 +478,37 @@ async def approve_lesson_request(
 ) -> CoachLessonRequestActionResponse:
     if await request.body():
         raise ApiException("VALIDATION_ERROR", "This endpoint does not accept a request body.", 422)
-    return await run_in_threadpool(
-        approve_coach_lesson_request,
-        coach.instructor_id,
-        request_token,
-    )
+    try:
+        return await run_in_threadpool(
+            approve_coach_lesson_request,
+            coach.instructor_id,
+            request_token,
+            build_calendar_source=partial(
+                _google_calendar_availability_source, request.app.state, coach.instructor_id
+            ),
+        )
+    finally:
+        del request, coach
 
 
 @router.post("/lesson-requests/{request_token}/confirm", response_model=CoachLessonRequestConfirmResponse)
 def confirm_lesson_request(
     request_token: str,
+    http_request: Request,
     request: CoachLessonRequestConfirmRequest = CoachLessonRequestConfirmRequest(),
     coach: CoachContext = Depends(get_current_coach),
 ) -> CoachLessonRequestConfirmResponse:
-    return confirm_coach_lesson_request(coach.instructor_id, request_token, request)
+    try:
+        return confirm_coach_lesson_request(
+            coach.instructor_id,
+            request_token,
+            request,
+            build_calendar_source=partial(
+                _google_calendar_availability_source, http_request.app.state, coach.instructor_id
+            ),
+        )
+    finally:
+        del request, http_request, coach
 
 
 @router.post("/lesson-requests/{request_token}/alternatives", response_model=CoachLessonRequestActionResponse)
