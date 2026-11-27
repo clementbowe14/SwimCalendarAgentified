@@ -251,7 +251,7 @@ class AvailabilitySearchBudgetExceeded(ApiException):
     def __init__(self):
         super().__init__(
             "AVAILABILITY_SEARCH_BUDGET_EXCEEDED",
-            "The search could not check every time. Try a shorter date range.",
+            "The search could not check every time. Try again or choose a shorter date range.",
             status_code=503,
         )
 

@@ -7,6 +7,7 @@ from starlette.responses import PlainTextResponse
 
 from app.api_errors import (
     ApiException,
+    AvailabilitySearchBudgetExceeded,
     SchedulingPolicyEndpointMoved,
 )
 from app.calendar_connection_access import (
@@ -455,6 +456,9 @@ def find_availability_range(
     http_request: Request,
     coach: CoachContext = Depends(get_expected_instructor_coach),
 ) -> CoachAvailabilityRangeResponse:
+    permits = http_request.app.state.provider_availability_reads
+    if not permits.acquire(blocking=False):
+        raise AvailabilitySearchBudgetExceeded()
     try:
         return search_coach_availability_range(
             coach.instructor_id,
@@ -464,6 +468,7 @@ def find_availability_range(
             ),
         )
     finally:
+        permits.release()
         del request, http_request, coach
 
 

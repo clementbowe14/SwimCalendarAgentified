@@ -7,7 +7,7 @@ from functools import partial
 from time import monotonic
 from typing import TypeVar
 
-from sqlalchemy import event, text
+from sqlalchemy import event
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -35,6 +35,7 @@ from app.google_calendar_availability_fence import (
 from app.models import LocationInfo, TimeSlotDTO
 from app.provider_settings import ProviderConfiguration, require_provider_setup
 from app.routing import BaseRoutingProvider, RouteEstimate
+from app.routing_cache import route_cache_session_factory
 from app.routing_providers import routing_request_deadline
 from app.scheduler_settings import load_buffer_policy
 
@@ -56,16 +57,15 @@ def _search_session(deadline: float) -> Session:
     _remaining_seconds(deadline)
     session = db.SessionLocal()
 
-    @event.listens_for(session, "after_begin", once=True)
-    def set_query_timeouts(_session, _transaction, connection):
-        remaining_ms = max(1, int(_remaining_seconds(deadline) * 1000))
-        connection.execute(
-            text(
-                "SELECT set_config('statement_timeout', :statement, true), "
-                "set_config('lock_timeout', :lock, true)"
-            ),
-            {"statement": f"{remaining_ms}ms", "lock": f"{min(remaining_ms, 500)}ms"},
-        )
+    @event.listens_for(session, "after_begin")
+    def apply_query_timeouts(_session, _transaction, connection):
+        @event.listens_for(connection, "before_cursor_execute")
+        def set_timeouts(_connection, cursor, _statement, _parameters, _context, _executemany):
+            remaining_ms = max(1, int(_remaining_seconds(deadline) * 1000))
+            cursor.execute(
+                "SELECT set_config('statement_timeout', %s, true), set_config('lock_timeout', %s, true)",
+                (f"{remaining_ms}ms", f"{min(remaining_ms, 500)}ms"),
+            )
 
     return session
 
@@ -85,9 +85,15 @@ class _BoundedRouting(BaseRoutingProvider):
             raise AvailabilitySearchBudgetExceeded()
         self.remaining -= 1
         token = routing_request_deadline.set(self.deadline)
+        cache_token = route_cache_session_factory.set(partial(_search_session, self.deadline))
         try:
             result = operation()
+        except OperationalError as exc:
+            if getattr(exc.orig, "sqlstate", None) in {"55P03", "57014"}:
+                raise AvailabilitySearchBudgetExceeded() from None
+            raise
         finally:
+            route_cache_session_factory.reset(cache_token)
             routing_request_deadline.reset(token)
         self.check_deadline()
         return result

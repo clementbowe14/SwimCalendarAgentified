@@ -4,9 +4,12 @@ import urllib.error
 import urllib.request
 from contextlib import nullcontext
 from http.client import HTTPException, IncompleteRead
+from time import monotonic
 from unittest.mock import Mock
 from urllib.parse import parse_qs, urlparse
 
+import anyio
+import httpx
 import pytest
 
 from app.routing import (
@@ -16,7 +19,7 @@ from app.routing import (
     RoutingProviderUnavailable,
     RoutingTimeout,
 )
-from app.routing_providers import MapboxRoutingProvider
+from app.routing_providers import MapboxRoutingProvider, routing_request_deadline
 
 
 def test_mapbox_geocode_parses_forward_geocoding_response():
@@ -35,6 +38,35 @@ def test_mapbox_geocode_parses_forward_geocoding_response():
     assert provider.geocode("100 Main St, Austin, TX") == (30.2672, -97.7431)
     assert "/geocoding/v5/mapbox.places/" in calls[0][0]
     assert calls[0][1] == 2.5
+
+
+def test_range_routing_stops_on_an_oversized_or_stalled_response(monkeypatch):
+    class StalledBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"{"
+            await anyio.sleep_forever()
+
+    async_client = httpx.AsyncClient
+    response = httpx.Response(200, content=b" " * (300 * 1024))
+    monkeypatch.setattr(
+        httpx, "AsyncClient",
+        lambda **kwargs: async_client(transport=httpx.MockTransport(lambda _: response), **kwargs),
+    )
+    provider = MapboxRoutingProvider("synthetic")
+    deadline = routing_request_deadline.set(monotonic() + 2.0)
+    try:
+        with pytest.raises(RoutingProviderUnavailable, match="too large"):
+            provider.geocode("Test address")
+    finally:
+        routing_request_deadline.reset(deadline)
+
+    response = httpx.Response(200, stream=StalledBody())
+    deadline = routing_request_deadline.set(monotonic() + 0.1)
+    try:
+        with pytest.raises(RoutingTimeout):
+            provider.geocode("Test address")
+    finally:
+        routing_request_deadline.reset(deadline)
 
 
 def test_mapbox_geocode_no_results_raises_geocode_failed():

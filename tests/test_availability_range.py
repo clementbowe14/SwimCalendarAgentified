@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app import api_services, availability_search, db, timezones, tools
+from app import api_services, availability_search, db, routing_cache, timezones, tools
 from app.calendar_connections import disconnect_google_calendar, replace_google_calendar_connection
 from app.calendar_credentials import CalendarCredentialCipher
 from app.external_calendar import MAX_BUSY_QUERY_WINDOW, CalendarBusyInterval, CalendarBusySnapshot, ExternalCalendarTimeout
@@ -430,3 +430,42 @@ def test_google_source_receives_a_bounded_database_session_factory(provider, mon
 
     assert response.status_code == 200, response.text
     read.assert_called_once()
+
+
+def test_routing_cache_statements_use_the_remaining_budget(provider, monkeypatch):
+    clock = 10.0
+
+    def verify_cache_session(session, _key):
+        nonlocal clock
+        read_timeout = text("SELECT current_setting('statement_timeout')::interval")
+        first = session.execute(read_timeout).scalar_one()
+        clock += 1
+        second = session.execute(read_timeout).scalar_one()
+        assert first - second == timedelta(seconds=1)
+        return None
+
+    monkeypatch.setattr(availability_search, "monotonic", lambda: clock)
+    cache = routing_cache.DatabaseRouteEstimateCache()
+    monkeypatch.setattr(routing_cache, "_query_cache_row", verify_cache_session)
+    monkeypatch.setattr(tools, "routing_provider", routing_cache.CachingRoutingProvider(tools.routing_provider, cache))
+    response = provider.post(PATH, json={**REQUEST, "limit": 1})
+
+    assert response.status_code == 200, response.text
+    assert routing_cache.route_cache_session_factory.get() is None
+
+
+def test_search_capacity_fails_before_planning(provider, monkeypatch):
+    permits = provider.app.state.provider_availability_reads
+    start = Mock()
+    monkeypatch.setattr(api_services, "search_one_time_availability", start)
+    for _ in range(4):
+        assert permits.acquire(blocking=False)
+    try:
+        response = provider.post(PATH, json=REQUEST)
+    finally:
+        for _ in range(4):
+            permits.release()
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "AVAILABILITY_SEARCH_BUDGET_EXCEEDED"
+    start.assert_not_called()

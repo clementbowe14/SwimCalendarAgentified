@@ -1,10 +1,12 @@
 import datetime
 import math
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Protocol, Tuple
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app import db, timezones
 from app.models import RouteEstimateDB
@@ -13,6 +15,9 @@ from app.routing import BaseRoutingProvider, RouteEstimate, RoutingProviderNotCo
 
 NO_DEPARTURE_BUCKET = datetime.datetime(1970, 1, 1)
 SUPPORTED_TRAFFIC_MODES = {"none", "typical", "live"}
+route_cache_session_factory: ContextVar[Callable[[], Session] | None] = ContextVar(
+    "route_cache_session_factory", default=None,
+)
 
 
 @dataclass(frozen=True)
@@ -70,7 +75,7 @@ class InMemoryRouteEstimateCache:
 class DatabaseRouteEstimateCache:
     def get(self, key: RouteCacheKey, now: datetime.datetime) -> Optional[RouteEstimate]:
         now = timezones.to_utc_storage(now)
-        session = db.SessionLocal()
+        session = (route_cache_session_factory.get() or db.SessionLocal)()
         try:
             row = _query_cache_row(session, key)
             if row is None or row.expires_at <= now:
@@ -88,7 +93,7 @@ class DatabaseRouteEstimateCache:
         expires_at: datetime.datetime,
     ) -> RouteEstimate:
         expires_at = timezones.to_utc_storage(expires_at)
-        session = db.SessionLocal()
+        session = (route_cache_session_factory.get() or db.SessionLocal)()
         try:
             row = RouteEstimateDB(
                 id=f"route_{uuid.uuid4().hex[:12]}",
