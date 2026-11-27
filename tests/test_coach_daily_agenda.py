@@ -592,6 +592,54 @@ def test_new_shift_starts_at_base_when_the_return_route_fits(authenticated_api_c
     assert datetime.fromisoformat(opening["start_times"][0]) == _hour(8, 30)
 
 
+def test_return_to_base_cannot_cross_busy_time_over_shift_start(authenticated_api_client, monkeypatch):
+    midnight = _hour(0)
+    previous_end = midnight - timedelta(minutes=45)
+    busy = CalendarBusyInterval(previous_end + timedelta(minutes=5), _hour(0, 5))
+    with db.SessionLocal.begin() as session:
+        provider = session.get(InstructorDB, PROVIDER)
+        provider.timezone = "UTC"
+        provider.base_address, provider.base_lat, provider.base_lng = SERVICE
+        provider.service_address, provider.service_lat, provider.service_lng = SERVICE
+        provider.default_duration_mins = 45
+        hours = session.get(ProviderWorkingHoursDB, (PROVIDER, DAY.weekday()))
+        hours.start_time = time(0)
+        hours.end_time = time(3)
+        _add_event(session, "previous-day-offsite", previous_end - timedelta(minutes=45), previous_end)
+
+    rules = default_scheduler_rules().model_copy(update={"buffers_enabled": False})
+    db.save_scheduler_settings(PROVIDER, rules.model_dump(mode="json"))
+
+    def route(origin, destination, **_):
+        return (0, 0) if origin == destination else (4, 20)
+
+    monkeypatch.setattr(coach_routes, "get_coach_agenda", partial(coach_agenda.get_coach_agenda, now=midnight))
+    monkeypatch.setattr(tools, "routing_provider", SimpleNamespace(get_distance_and_travel_time=route))
+    _connect_calendar(monkeypatch, Mock(return_value=CalendarBusySnapshot("verified", (busy,))))
+
+    agenda = _agenda(authenticated_api_client)
+    opening, = (item for item in agenda["items"] if item["kind"] == "open_gap")
+    assert datetime.fromisoformat(opening["start_times"][0]) == _hour(0, 30)
+    response = authenticated_api_client.post("/api/coach/availability", json={
+        "client_name": "Midnight client",
+        "client_address": SERVICE[0],
+        "is_instructor_facility": True,
+        "duration_mins": 45,
+        "requested_date": DAY.isoformat(),
+    })
+    assert response.status_code == 200, response.text
+    assert datetime.fromisoformat(response.json()["available_slots"][0]["start_iso"]) == _hour(0, 30)
+    booking = authenticated_api_client.post("/api/coach/bookings", json={
+        "client_name": "Midnight client",
+        "client_address": SERVICE[0],
+        "is_instructor_facility": True,
+        "duration_mins": 45,
+        "start_time": _hour(0, 15).isoformat(),
+        "idempotency_key": "midnight-return-blocked-by-calendar",
+    })
+    assert booking.status_code == 409, booking.text
+
+
 def test_opening_bands_expose_only_verified_start_times():
     service = ProviderService("Appointment", 45, ProviderLocation(SERVICE[0], SERVICE[1], SERVICE[2]))
     slots = [

@@ -330,6 +330,7 @@ def working_schedule_context(
     base_position = SchedulePosition(work_start, (base.lat, base.lng))
     position = base_position
     last_located_end = None
+    return_deadline = work_start
     working_events = []
     for event in sorted(events, key=lambda event: (event["start_time"], event["end_time"])):
         if event["end_time"] <= work_start:
@@ -339,13 +340,14 @@ def working_schedule_context(
             if event_coordinates(event) is not None:
                 last_located_end = event["end_time"]
         else:
+            return_deadline = min(return_deadline, event["start_time"])
             working_events.append({**event, "start_time": max(event["start_time"], work_start)})
     if last_located_end is None and position.free_at < work_start:
         position = replace(position, free_at=work_start)
-    elif last_located_end is not None and last_located_end <= local_day_start and position.free_at < work_start:
+    elif last_located_end is not None and last_located_end <= local_day_start and position.free_at < return_deadline:
         # Start a new shift at base when it was possible to return there.
         back_to_base = engine.inbound_transition(position, base_position.coordinates)
-        if position.free_at + back_to_base.duration <= work_start:
+        if position.free_at + back_to_base.duration <= return_deadline:
             position = base_position
     return position, working_events
 
