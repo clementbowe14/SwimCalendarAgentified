@@ -359,15 +359,12 @@ class CoachClientLocationMutation(BaseModel):
         return value.strip()
 
 
-_CLIENT_WINDOW_TIME_PATTERN = r"^ *(?:[01][0-9]|2[0-3]):[0-5][0-9] *$"
-
-
 class CoachClientAvailabilityWindowMutation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     days: list[ProviderWeekday] = Field(min_length=1, max_length=7)
-    start_time: str = Field(strict=True, pattern=_CLIENT_WINDOW_TIME_PATTERN)
-    end_time: str = Field(strict=True, pattern=_CLIENT_WINDOW_TIME_PATTERN)
+    start_time: str = Field(strict=True, pattern=r"^ *(?:[01]\d|2[0-3]):[0-5]\d *$")
+    end_time: str = Field(strict=True, pattern=r"^ *(?:[01]\d|2[0-3]):[0-5]\d *$")
 
     @field_validator("days")
     @classmethod
@@ -383,8 +380,9 @@ class CoachClientAvailabilityWindowMutation(BaseModel):
     @classmethod
     def normalize_time(cls, value: object) -> object:
         if not isinstance(value, str) or not re.fullmatch(
-            _CLIENT_WINDOW_TIME_PATTERN,
+            r" *(?:[01]\d|2[0-3]):[0-5]\d *",
             value,
+            flags=re.ASCII,
         ):
             raise ValueError("Time must use 24-hour HH:MM format.")
         return value.strip(" ")
