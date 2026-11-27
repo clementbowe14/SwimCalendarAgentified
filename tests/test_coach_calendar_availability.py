@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app import api_services, config, db, google_calendar_freebusy_deadline, google_calendar_token_deadline
 from app.api import create_app
+from app.api_schemas import CoachLessonRequestConfirmRequest
 from app.auth import provision_provider_account
 from app.calendar_connections import replace_google_calendar_connection
 from app.calendar_credentials import CalendarCredentialCipher
@@ -163,8 +164,10 @@ def test_confirmation_checks_later_week_before_booking_series(connected_calendar
     assert _request_booking_state() == before
 
 
-def test_confirmation_rejects_calendar_replaced_after_verification(connected_calendar, monkeypatch):
-    query = Mock(return_value=CalendarBusySnapshot("verified", ()))
+@pytest.mark.parametrize("busy", [False, True], ids=["free", "busy"])
+def test_confirmation_rejects_calendar_replaced_after_verification(connected_calendar, monkeypatch, busy):
+    periods = (CalendarBusyInterval(WINDOW_START, WINDOW_END),) if busy else ()
+    query = Mock(return_value=CalendarBusySnapshot("verified", periods))
     monkeypatch.setattr(
         GoogleCalendarBusySourceFactory, "create_for", lambda *_: SimpleNamespace(query_busy_periods=query)
     )
@@ -184,7 +187,33 @@ def test_confirmation_rejects_calendar_replaced_after_verification(connected_cal
     assert response.status_code == 503
     assert response.json() == UNAVAILABLE
     assert _request_booking_state() == before
+    with db.SessionLocal() as session:
+        lesson = session.query(LessonRequestDB).filter_by(request_token="req_sofia_pending_0820").one()
+        assert lesson.validation_failure_code is None
     query.assert_called_once()
+
+
+def test_confirmation_replays_if_another_attempt_commits_during_calendar_timeout(
+    connected_calendar, monkeypatch
+):
+    committed = []
+
+    def query_busy(**kwargs):
+        concurrent = api_services.confirm_coach_lesson_request(
+            "inst_001", "req_sofia_pending_0820", CoachLessonRequestConfirmRequest()
+        )
+        committed.extend(concurrent.appointment_ids)
+        raise ExternalCalendarTimeout()
+
+    monkeypatch.setattr(
+        GoogleCalendarBusySourceFactory, "create_for", lambda *_: SimpleNamespace(query_busy_periods=query_busy)
+    )
+
+    response = connected_calendar.post(f"{REQUEST_PATH}/confirm")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["appointment_ids"] == committed
+    assert _request_booking_state()[:2] == ("confirmed", 1)
 
 
 def test_confirmation_validates_the_persisted_duration_across_fall_dst(connected_calendar, monkeypatch):

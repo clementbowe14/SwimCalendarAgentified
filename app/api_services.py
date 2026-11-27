@@ -1239,11 +1239,15 @@ def confirm_coach_lesson_request(
     *,
     build_calendar_source: Callable[[], CalendarBusySource] | None = None,
 ) -> CoachLessonRequestConfirmResponse:
-    calendar = (
-        _prepare_confirmation_calendar(instructor_id, request_token, request.slot_id, build_calendar_source)
-        if build_calendar_source is not None
-        else None
-    )
+    calendar = None
+    calendar_check_failed = False
+    if build_calendar_source is not None:
+        try:
+            calendar = _prepare_confirmation_calendar(
+                instructor_id, request_token, request.slot_id, build_calendar_source
+            )
+        except CalendarAvailabilityUnavailable:
+            calendar_check_failed = True
     session = db.SessionLocal()
     try:
         lesson_request = _load_request_for_confirmation(session, instructor_id, request_token, lock=True)
@@ -1269,6 +1273,8 @@ def confirm_coach_lesson_request(
             )
         if lesson_request.status not in {"pending", "alternatives_sent"}:
             raise InvalidSchedulingRequest("Only pending lesson requests can be confirmed.")
+        if calendar_check_failed:
+            _raise_calendar_availability_unavailable()
 
         _require_coach_provider_setup(lesson_request.instructor_id)
         explicit_offer = _resolve_confirm_offer(session, lesson_request, request.slot_id)
@@ -1280,13 +1286,13 @@ def confirm_coach_lesson_request(
 
         policy = load_buffer_policy(instructor_id, operation="confirm_lesson_request")
         try:
-            _validate_current_facility_request(lesson_request)
-            _validate_occurrences(lesson_request, occurrences, policy, calendar_busy_source=calendar)
-            if calendar is not None and calendar.fence is not None:
-                try:
-                    lock_current_google_calendar_availability_fence(session, fence=calendar.fence)
-                except ExternalCalendarUnavailable:
-                    _raise_calendar_availability_unavailable()
+            try:
+                _validate_current_facility_request(lesson_request)
+                _validate_occurrences(lesson_request, occurrences, policy, calendar_busy_source=calendar)
+            except SchedulingConflict:
+                _lock_confirmation_calendar(session, calendar)
+                raise
+            _lock_confirmation_calendar(session, calendar)
             appointments = _insert_occurrence_appointments(session, lesson_request, occurrences)
             # Force database overlap and integrity checks while they can still
             # be translated into the canonical scheduling-conflict contract.
@@ -1351,6 +1357,17 @@ class _ConfirmationCalendar:
         if instructor_id != self.instructor_id or snapshot is None:
             raise ExternalCalendarUnavailable("provider_unavailable")
         return snapshot
+
+
+def _lock_confirmation_calendar(session, calendar: _ConfirmationCalendar | None) -> None:
+    if calendar is not None and calendar.fence is not None:
+        try:
+            lock_current_google_calendar_availability_fence(session, fence=calendar.fence)
+        except ExternalCalendarUnavailable:
+            calendar = None
+        else:
+            return
+        _raise_calendar_availability_unavailable()
 
 
 def _prepare_confirmation_calendar(
