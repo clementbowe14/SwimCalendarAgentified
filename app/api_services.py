@@ -456,7 +456,7 @@ def get_coach_command_center_snapshot(
         for client in db.get_clients_for_instructor(instructor_id)
     ]
     schedule = [
-        _schedule_item_response(appointment, coach_instructor)
+        coach_schedule_item(appointment, service_address=coach_instructor.main_address)
         for appointment in db.get_appointments_for_date(instructor_id, snapshot_date.isoformat())
     ]
     requests = [
@@ -578,6 +578,7 @@ def create_coach_blocker(
     if replay is not None:
         return replay
     configuration = _blocker_provider_configuration(instructor_id)
+    _require_blocker_timezone(request, configuration.timezone)
     start_time, end_time = _blocker_instants(request, configuration.timezone)
     address, lat, lng = _blocker_location(request)
     try:
@@ -645,6 +646,7 @@ def update_coach_blocker(
         raise ResourceNotFound("The schedule event could not be found.")
     if existing["revision"] != request.expected_revision:
         raise BlockerStale()
+    _require_blocker_timezone(request, configuration.timezone)
     start_time, end_time = _blocker_instants(request, configuration.timezone)
     address, lat, lng = _blocker_location(request)
     try:
@@ -699,6 +701,15 @@ def _blocker_provider_configuration(instructor_id: str) -> ProviderConfiguration
     except timezones.InvalidTimezoneError as exc:
         raise ProviderSetupRequired(["timezone"]) from exc
     return configuration
+
+
+def _require_blocker_timezone(request: CoachBlockerMutation, timezone_name: str) -> None:
+    if request.expected_timezone is not None and request.expected_timezone != timezone_name:
+        raise ApiException(
+            "BLOCKER_TIMEZONE_CHANGED",
+            "Your provider time zone changed. Reload Schedule before saving this event.",
+            409,
+        )
 
 
 def _blocker_instants(
@@ -847,9 +858,10 @@ def _client_response(client: dict, instructor: CoachInstructorProfileResponse) -
     )
 
 
-def _schedule_item_response(
+def coach_schedule_item(
     appointment: dict,
-    instructor: CoachInstructorProfileResponse,
+    *,
+    service_address: str | None,
 ) -> CoachScheduleItemResponse:
     is_blocker = appointment["event_type"] == "block"
     blocker_kind = appointment["blocker_kind"] or "break"
@@ -858,7 +870,7 @@ def _schedule_item_response(
         and appointment["lat"] is not None
         and appointment["lng"] is not None
     )
-    is_facility = has_location and appointment["location_address"] == instructor.main_address
+    is_facility = has_location and appointment["location_address"] == service_address
     title = appointment["title"]
     if not is_blocker:
         title = title.replace("Lesson with ", "", 1)
@@ -1353,10 +1365,11 @@ class _ConfirmationCalendar:
     def query_busy_periods(
         self, *, instructor_id: str, window_start: datetime, window_end: datetime
     ) -> CalendarBusySnapshot:
-        snapshot = self.snapshots.get((window_start, window_end))
-        if instructor_id != self.instructor_id or snapshot is None:
-            raise ExternalCalendarUnavailable("provider_unavailable")
-        return snapshot
+        if instructor_id == self.instructor_id:
+            for (start, end), snapshot in self.snapshots.items():
+                if start <= window_start and window_end <= end:
+                    return snapshot
+        raise ExternalCalendarUnavailable("provider_unavailable")
 
 
 def _lock_confirmation_calendar(session, calendar: _ConfirmationCalendar | None) -> None:
@@ -1390,12 +1403,14 @@ def _prepare_confirmation_calendar(
             session.expunge(lesson_request)
             _apply_offer_to_request(lesson_request, offer)
         occurrences = _request_occurrences(lesson_request, timezone_name=provider.timezone)
-    dates = {timezones.storage_to_local(start, provider.timezone).date() for start, _ in occurrences}
-    windows = [
-        window
-        for local_date in sorted(dates)
-        if (window := tools.working_window_utc(provider, local_date)) is not None
-    ]
+        dates = {timezones.storage_to_local(start, provider.timezone).date() for start, _ in occurrences}
+        windows = set()
+        for local_date in dates:
+            working = tools.working_window_utc(provider, local_date)
+            if working is None:
+                continue
+            events = tools.routing_events_for_date(instructor_id, local_date, provider.timezone, session=session)
+            windows.add(tools.routing_calendar_window(*working, events))
     if not windows:
         return _ConfirmationCalendar(instructor_id, {})
     try:
@@ -1405,7 +1420,7 @@ def _prepare_confirmation_calendar(
             (start, end): query_calendar_busy_snapshot(
                 source, instructor_id=instructor_id, window_start=start, window_end=end
             )
-            for start, end in windows
+            for start, end in sorted(windows)
         }
     except ExternalCalendarUnavailable:
         pass

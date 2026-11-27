@@ -9,7 +9,12 @@ from app.api_errors import (
     ApiException,
     SchedulingPolicyEndpointMoved,
 )
-from app.calendar_connection_access import get_google_calendar_coach
+from app.calendar_connection_access import (
+    EXPECTED_CALENDAR_INSTRUCTOR_HEADER,
+    get_expected_instructor_coach,
+    require_expected_instructor,
+)
+from app.coach_agenda import get_coach_agenda
 from app.notifications import (
     correct_coach_email_delivery_contact,
     enqueue_invite_for_coach,
@@ -31,6 +36,7 @@ from app.api_schemas import (
     CoachClientProfileResponse,
     CoachCommandCenterSnapshot,
     CoachContext as CoachContextResponse,
+    CoachDailyAgendaResponse,
     CoachEmailContactUpdateRequest,
     CoachEmailDeliveryResponse,
     CoachLessonRequestAlternativesRequest,
@@ -92,7 +98,7 @@ BLOCKER_ERROR_RESPONSES = {
     },
     409: {
         "model": ErrorResponse,
-        "description": "The schedule, revision, setup, or idempotency key conflicts.",
+        "description": "The schedule, revision, setup, ownership, or idempotency key conflicts.",
     },
     422: {
         "model": ErrorResponse,
@@ -209,7 +215,7 @@ def read_provider_settings(
 )
 def read_google_calendar_connection_status(
     response: Response,
-    coach: CoachContext = Depends(get_google_calendar_coach),
+    coach: CoachContext = Depends(get_expected_instructor_coach),
 ) -> CoachCalendarConnectionResponse:
     _private_response(response)
     return get_coach_google_calendar_connection_status(coach.account_id)
@@ -222,7 +228,7 @@ def read_google_calendar_connection_status(
 )
 def delete_google_calendar_connection(
     response: Response,
-    coach: CoachContext = Depends(get_google_calendar_coach),
+    coach: CoachContext = Depends(get_expected_instructor_coach),
 ) -> CoachCalendarConnectionResponse:
     _private_response(response)
     return disconnect_coach_google_calendar(coach.account_id)
@@ -273,6 +279,28 @@ def read_schedule(
     return get_coach_schedule(coach.instructor_id, date_)
 
 
+@router.get("/agenda", response_model=CoachDailyAgendaResponse)
+def read_agenda(
+    http_request: Request,
+    response: Response,
+    expected_instructor: str = Header(alias=EXPECTED_CALENDAR_INSTRUCTOR_HEADER),
+    date_: date | None = Query(default=None, alias="date"),
+    coach: CoachContext = Depends(get_current_coach),
+) -> CoachDailyAgendaResponse:
+    _private_response(response)
+    try:
+        require_expected_instructor(coach, expected_instructor)
+        return get_coach_agenda(
+            coach.instructor_id,
+            date_,
+            build_calendar_source=partial(
+                _google_calendar_availability_source, http_request.app.state, coach.instructor_id
+            ),
+        )
+    finally:
+        del http_request, coach, expected_instructor
+
+
 @router.get(
     "/blockers",
     response_model=list[CoachBlockerResponse],
@@ -280,7 +308,7 @@ def read_schedule(
 )
 def read_blockers(
     date_: date = Query(alias="date"),
-    coach: CoachContext = Depends(get_current_coach),
+    coach: CoachContext = Depends(get_expected_instructor_coach),
 ) -> list[CoachBlockerResponse]:
     return get_coach_blockers(coach.instructor_id, date_)
 
@@ -294,7 +322,7 @@ def read_blockers(
 def create_blocker(
     blocker: CoachBlockerMutation,
     idempotency_key: str = Header(alias="Idempotency-Key", min_length=8, max_length=160),
-    coach: CoachContext = Depends(get_current_coach),
+    coach: CoachContext = Depends(get_expected_instructor_coach),
 ) -> CoachBlockerResponse:
     return create_coach_blocker(coach.instructor_id, blocker, idempotency_key)
 
@@ -307,7 +335,7 @@ def create_blocker(
 def update_blocker(
     blocker_id: str,
     blocker: CoachBlockerUpdate,
-    coach: CoachContext = Depends(get_current_coach),
+    coach: CoachContext = Depends(get_expected_instructor_coach),
 ) -> CoachBlockerResponse:
     return update_coach_blocker(coach.instructor_id, blocker_id, blocker)
 
@@ -320,7 +348,7 @@ def update_blocker(
 def remove_blocker(
     blocker_id: str,
     expected_revision: int = Query(ge=1),
-    coach: CoachContext = Depends(get_current_coach),
+    coach: CoachContext = Depends(get_expected_instructor_coach),
 ) -> Response:
     delete_coach_blocker(coach.instructor_id, blocker_id, expected_revision)
     return Response(status_code=204)

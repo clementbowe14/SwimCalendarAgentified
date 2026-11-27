@@ -766,6 +766,301 @@
         "title": "ClientInviteUnavailableWindow",
         "type": "object"
       },
+      "CoachAgendaNextUp": {
+        "properties": {
+          "appointment_id": {
+            "title": "Appointment Id",
+            "type": "string"
+          },
+          "buffer_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buffer Mins"
+          },
+          "leave_by": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leave By"
+          },
+          "travel_time_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Travel Time Mins"
+          }
+        },
+        "required": [
+          "appointment_id"
+        ],
+        "title": "CoachAgendaNextUp",
+        "type": "object"
+      },
+      "CoachAgendaOpeningScheduleItemResponse": {
+        "properties": {
+          "buffer_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buffer Mins"
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "end_time": {
+            "format": "date-time",
+            "title": "End Time",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "open_gap",
+            "default": "open_gap",
+            "title": "Kind",
+            "type": "string"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "start_time": {
+            "format": "date-time",
+            "title": "Start Time",
+            "type": "string"
+          },
+          "start_times": {
+            "items": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "title": "Start Times",
+            "type": "array"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "scheduled",
+                  "rescheduled",
+                  "canceled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "travel_time_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Travel Time Mins"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "start_time",
+          "end_time",
+          "start_times"
+        ],
+        "title": "CoachAgendaOpeningScheduleItemResponse",
+        "type": "object"
+      },
+      "CoachAgendaTransitionScheduleItemResponse": {
+        "properties": {
+          "buffer_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buffer Mins"
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "end_time": {
+            "format": "date-time",
+            "title": "End Time",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "travel",
+              "buffer"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "start_time": {
+            "format": "date-time",
+            "title": "Start Time",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "scheduled",
+                  "rescheduled",
+                  "canceled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "travel_time_mins": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Travel Time Mins"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "start_time",
+          "end_time",
+          "kind"
+        ],
+        "title": "CoachAgendaTransitionScheduleItemResponse",
+        "type": "object"
+      },
       "CoachAuthResponse": {
         "properties": {
           "authenticated": {
@@ -832,6 +1127,19 @@
           "end_time": {
             "title": "End Time",
             "type": "string"
+          },
+          "expected_timezone": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Timezone"
           },
           "kind": {
             "enum": [
@@ -1068,6 +1376,19 @@
             "title": "Expected Revision",
             "type": "integer"
           },
+          "expected_timezone": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Timezone"
+          },
           "kind": {
             "enum": [
               "break",
@@ -1163,6 +1484,71 @@
           "start_time"
         ],
         "title": "CoachBookLessonRequest",
+        "type": "object"
+      },
+      "CoachCalendarBusyScheduleItemResponse": {
+        "properties": {
+          "buffer_mins": {
+            "title": "Buffer Mins",
+            "type": "null"
+          },
+          "client_id": {
+            "title": "Client Id",
+            "type": "null"
+          },
+          "end_time": {
+            "format": "date-time",
+            "title": "End Time",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "calendar_busy",
+            "default": "calendar_busy",
+            "title": "Kind",
+            "type": "string"
+          },
+          "location": {
+            "title": "Location",
+            "type": "null"
+          },
+          "note": {
+            "title": "Note",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "null"
+          },
+          "start_time": {
+            "format": "date-time",
+            "title": "Start Time",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "null"
+          },
+          "title": {
+            "const": "Calendar busy",
+            "default": "Calendar busy",
+            "title": "Title",
+            "type": "string"
+          },
+          "travel_time_mins": {
+            "title": "Travel Time Mins",
+            "type": "null"
+          }
+        },
+        "required": [
+          "id",
+          "start_time",
+          "end_time"
+        ],
+        "title": "CoachCalendarBusyScheduleItemResponse",
         "type": "object"
       },
       "CoachCalendarConnectionResponse": {
@@ -1592,6 +1978,96 @@
           "display_name"
         ],
         "title": "CoachContext",
+        "type": "object"
+      },
+      "CoachDailyAgendaResponse": {
+        "properties": {
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "instructor_id": {
+            "title": "Instructor Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "break": "#/components/schemas/CoachBlockerScheduleItemResponse",
+                  "buffer": "#/components/schemas/CoachAgendaTransitionScheduleItemResponse",
+                  "calendar_busy": "#/components/schemas/CoachCalendarBusyScheduleItemResponse",
+                  "lesson": "#/components/schemas/CoachLessonScheduleItemResponse",
+                  "open_gap": "#/components/schemas/CoachAgendaOpeningScheduleItemResponse",
+                  "personal": "#/components/schemas/CoachBlockerScheduleItemResponse",
+                  "travel": "#/components/schemas/CoachAgendaTransitionScheduleItemResponse",
+                  "unavailable": "#/components/schemas/CoachBlockerScheduleItemResponse"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/CoachLessonScheduleItemResponse"
+                },
+                {
+                  "$ref": "#/components/schemas/CoachBlockerScheduleItemResponse"
+                },
+                {
+                  "$ref": "#/components/schemas/CoachAgendaTransitionScheduleItemResponse"
+                },
+                {
+                  "$ref": "#/components/schemas/CoachAgendaOpeningScheduleItemResponse"
+                },
+                {
+                  "$ref": "#/components/schemas/CoachCalendarBusyScheduleItemResponse"
+                }
+              ]
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_up": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CoachAgendaNextUp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "setup_required",
+              "calendar_unavailable",
+              "routing_unavailable",
+              "schedule_changed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          },
+          "today": {
+            "format": "date",
+            "title": "Today",
+            "type": "string"
+          }
+        },
+        "required": [
+          "instructor_id",
+          "date",
+          "today",
+          "timezone",
+          "status",
+          "items",
+          "next_up"
+        ],
+        "title": "CoachDailyAgendaResponse",
         "type": "object"
       },
       "CoachDistanceBufferTier": {
@@ -3824,6 +4300,70 @@
         ]
       }
     },
+    "/api/coach/agenda": {
+      "get": {
+        "operationId": "read_agenda_api_coach_agenda_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": true,
+            "schema": {
+              "title": "X-Expected-Instructor-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachDailyAgendaResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Read Agenda",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
     "/api/coach/appointments/{appointment_id}/calendar-links": {
       "get": {
         "operationId": "read_appointment_calendar_links_api_coach_appointments__appointment_id__calendar_links_get",
@@ -3993,6 +4533,22 @@
               "title": "Date",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
+            }
           }
         ],
         "responses": {
@@ -4028,7 +4584,7 @@
                 }
               }
             },
-            "description": "The schedule, revision, setup, or idempotency key conflicts."
+            "description": "The schedule, revision, setup, ownership, or idempotency key conflicts."
           },
           "422": {
             "content": {
@@ -4063,6 +4619,22 @@
               "minLength": 8,
               "title": "Idempotency-Key",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
             }
           },
           {
@@ -4119,7 +4691,7 @@
                 }
               }
             },
-            "description": "The schedule, revision, setup, or idempotency key conflicts."
+            "description": "The schedule, revision, setup, ownership, or idempotency key conflicts."
           },
           "422": {
             "content": {
@@ -4167,6 +4739,22 @@
             }
           },
           {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
+            }
+          },
+          {
             "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
             "example": "1",
             "in": "header",
@@ -4203,7 +4791,7 @@
                 }
               }
             },
-            "description": "The schedule, revision, setup, or idempotency key conflicts."
+            "description": "The schedule, revision, setup, ownership, or idempotency key conflicts."
           },
           "422": {
             "content": {
@@ -4236,6 +4824,22 @@
             "schema": {
               "title": "Blocker Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
             }
           },
           {
@@ -4292,7 +4896,7 @@
                 }
               }
             },
-            "description": "The schedule, revision, setup, or idempotency key conflicts."
+            "description": "The schedule, revision, setup, ownership, or idempotency key conflicts."
           },
           "422": {
             "content": {

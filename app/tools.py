@@ -1,9 +1,12 @@
 import datetime
 import threading
+from dataclasses import replace
 from typing import List, Optional
 
+from sqlalchemy.orm import Session
+
 from app import db, timezones
-from app.engine import BufferPolicy, SwimSchedulerConstraintEngine
+from app.engine import BufferPolicy, SchedulePosition, SwimSchedulerConstraintEngine, event_coordinates
 from app.external_calendar import (
     CalendarBusySnapshot,
     CalendarBusySource,
@@ -218,28 +221,26 @@ def _find_available_swim_slots(
             is_instructor_facility=False,
         )
 
-    internal_events = db.get_utc_appointment_events_for_date(
-        instructor_id,
-        date_str,
-    )
-    bounded_internal_events = _clip_events_to_working_interval(
-        internal_events,
-        day_start=day_start,
-        day_end=day_end,
-    )
+    internal_events = routing_events_for_date(instructor_id, target_date, provider.timezone)
+    busy_start, busy_end = routing_calendar_window(day_start, day_end, internal_events)
     external_events = _external_busy_events(
         calendar_busy_source_handoff,
         instructor_id=instructor_id,
-        day_start=day_start,
-        day_end=day_end,
-        internal_events=bounded_internal_events,
+        day_start=busy_start,
+        day_end=busy_end,
+        internal_events=internal_events,
     )
-    existing_events = [*bounded_internal_events, *external_events]
     policy = buffer_policy or load_buffer_policy(instructor_id, operation="availability")
     constraint_engine = SwimSchedulerConstraintEngine(
         routing_provider,
         policy,
         timezone_name=provider.timezone,
+    )
+    local_day_start, _ = timezones.local_day_window_utc_storage(target_date, provider.timezone)
+    position, existing_events = working_schedule_context(
+        day_start, instructor_base_loc, [*internal_events, *external_events],
+        local_day_start=timezones.storage_to_aware_utc(local_day_start),
+        engine=constraint_engine,
     )
     utc_slots = constraint_engine.find_available_slots_for_day(
         day_start=day_start,
@@ -248,6 +249,8 @@ def _find_available_swim_slots(
         existing_events=existing_events,
         target_location=target_loc,
         duration_mins=duration_mins,
+        initial_position=position,
+        next_shift_start=next_day_shift_start(provider, target_date),
     )
 
     return [
@@ -280,6 +283,95 @@ def working_window_utc(
     return timezones.ensure_aware_utc(start), timezones.ensure_aware_utc(end)
 
 
+def routing_events_for_date(
+    instructor_id: str,
+    target_date: datetime.date,
+    timezone_name: str,
+    *,
+    include_adjacent_days: bool = True,
+    session: Session | None = None,
+) -> list[dict]:
+    return db.get_utc_appointment_events_for_date(
+        instructor_id, target_date.isoformat(), timezone_name=timezone_name,
+        include_day_edges=True, include_adjacent_routing_anchors=include_adjacent_days,
+        session=session,
+    )
+
+def next_day_shift_start(provider: ProviderConfiguration, day: datetime.date) -> datetime.datetime | None:
+    if day == datetime.date.max:
+        return None
+    window = working_window_utc(provider, day + datetime.timedelta(days=1))
+    return window[0] if window else None
+
+
+def routing_calendar_window(
+    work_start: datetime.datetime,
+    work_end: datetime.datetime,
+    internal_events: List[dict],
+) -> tuple[datetime.datetime, datetime.datetime]:
+    """Verify busy time between working hours and adjacent routing anchors."""
+    busy_start = max(
+        (
+            event["end_time"] for event in internal_events
+            if event["end_time"] <= work_start and event_coordinates(event) is not None
+        ),
+        default=work_start,
+    )
+    busy_end = min(
+        (
+            event["start_time"]
+            for event in internal_events
+            if event["start_time"] >= work_end and event_coordinates(event) is not None
+        ),
+        default=work_end,
+    )
+    return busy_start, busy_end
+
+
+def working_schedule_context(
+    work_start: datetime.datetime,
+    base: LocationInfo,
+    events: List[dict],
+    *,
+    local_day_start: datetime.datetime,
+    engine: SwimSchedulerConstraintEngine,
+) -> tuple[SchedulePosition, List[dict]]:
+    """Keep the known location before work and travel anchors after it."""
+    base_position = SchedulePosition(work_start, (base.lat, base.lng))
+    position = base_position
+    last_location = None
+    first_block_start = None
+    return_deadline = work_start
+    working_events = []
+    for event in sorted(events, key=lambda event: (event["start_time"], event["end_time"])):
+        if event["end_time"] <= work_start:
+            if event.get("blocker_kind") == "external_calendar" and last_location is None:
+                continue
+            position = position.after_event(event)
+            if event_coordinates(event) is not None:
+                last_location = position
+                first_block_start = None
+            elif last_location is not None and first_block_start is None:
+                first_block_start = event["start_time"]
+        else:
+            return_deadline = min(return_deadline, event["start_time"])
+            working_events.append({**event, "start_time": max(event["start_time"], work_start)})
+    if last_location is None and position.free_at < work_start:
+        position = replace(position, free_at=work_start)
+    elif last_location is not None and last_location.free_at <= local_day_start:
+        return_windows = [(position, return_deadline)]
+        if first_block_start is not None:
+            return_windows.append((last_location, min(first_block_start, return_deadline)))
+        for origin, deadline in return_windows:
+            if origin.free_at >= deadline:
+                continue
+            back_to_base = engine.inbound_transition(origin, base_position.coordinates)
+            if origin.free_at + back_to_base.duration <= deadline:
+                position = replace(base_position, previous_break_end=position.previous_break_end)
+                break
+    return position, working_events
+
+
 def _external_busy_events(
     source_handoff: list[Optional[CalendarBusySource]],
     *,
@@ -302,7 +394,7 @@ def _external_busy_events(
             window_start=day_start,
             window_end=day_end,
         )
-        return _external_busy_events_from_snapshot(
+        return external_busy_events_from_snapshot(
             snapshot,
             internal_events=internal_events,
         )
@@ -314,7 +406,7 @@ def _external_busy_events(
             raise
 
 
-def _external_busy_events_from_snapshot(
+def external_busy_events_from_snapshot(
     snapshot: CalendarBusySnapshot,
     *,
     internal_events: List[dict],
@@ -374,13 +466,13 @@ def _external_busy_event(
     }
 
 
-def _clip_events_to_working_interval(
+def clip_schedule_events(
     events: List[dict],
     *,
     day_start: datetime.datetime,
     day_end: datetime.datetime,
 ) -> List[dict]:
-    """Keep scheduler inputs inside the provider's configured working interval."""
+    """Clip event copies to a half-open schedule window."""
     bounded_events: List[dict] = []
     for event in events:
         event_start = event["start_time"]

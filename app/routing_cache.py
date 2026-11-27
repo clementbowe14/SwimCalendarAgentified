@@ -196,6 +196,25 @@ class CachingRoutingProvider(BaseRoutingProvider):
         expires_at = now + datetime.timedelta(hours=self.ttl_hours)
         return self.cache.set(key, estimate, origin_coords, dest_coords, expires_at)
 
+    def get_distance_and_travel_time_at_exact_departure(
+        self,
+        origin_coords: Tuple[float, float],
+        dest_coords: Tuple[float, float],
+        *,
+        departure_time: datetime.datetime,
+    ) -> Tuple[float, int]:
+        """Quote the requested departure without bucketing traffic estimates."""
+        if self.traffic_mode == "none":
+            return self.get_distance_and_travel_time(
+                origin_coords, dest_coords, departure_time=departure_time
+            )
+        return self.provider.get_distance_and_travel_time(
+            origin_coords,
+            dest_coords,
+            departure_time=departure_time,
+            traffic_mode=self.traffic_mode,
+        )
+
     def geocode(self, address: str) -> Tuple[float, float]:
         return self.provider.geocode(address)
 

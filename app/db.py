@@ -6,9 +6,9 @@ import threading
 import uuid
 from contextlib import contextmanager
 from typing import Iterator, NoReturn, Optional, List
-from sqlalchemy import create_engine, func, inspect, or_, text
+from sqlalchemy import and_, create_engine, func, inspect, or_, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import selectinload, sessionmaker
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 from app import timezones
 from app.config import (
     ApplicationSettings,
@@ -47,6 +47,16 @@ _MAX_DATABASE_CONTROL_EXCEPTION_NODES = 4_096
 _MAX_DATABASE_CONTROL_EXCEPTION_ENTRIES = (
     _MAX_DATABASE_CONTROL_EXCEPTION_NODES * 2
 )
+
+
+@contextmanager
+def read_session(session: Session | None = None) -> Iterator[Session]:
+    if session is not None:
+        yield session
+        return
+    with SessionLocal() as owned_session:
+        yield owned_session
+
 
 def configure_database(database_url: str = DATABASE_URL):
     """Rebind the test database before an application starts serving."""
@@ -569,14 +579,27 @@ def get_local_appointments_for_date(instructor_id: str, date_str: str) -> List[d
     rows = _get_appointment_rows_for_local_date(instructor_id, date_str, timezone_name)
     return [_appointment_to_dict(row, timezone_name=timezone_name) for row in rows]
 
-def get_utc_appointment_events_for_date(instructor_id: str, date_str: str) -> List[dict]:
-    instructor = get_instructor_info(instructor_id)
-    if not instructor:
-        return []
+def get_utc_appointment_events_for_date(
+    instructor_id: str,
+    date_str: str,
+    *,
+    timezone_name: str | None = None,
+    include_day_edges: bool = False,
+    include_adjacent_routing_anchors: bool = False,
+    session: Session | None = None,
+) -> List[dict]:
+    if timezone_name is None:
+        instructor = get_instructor_info(instructor_id)
+        if not instructor:
+            return []
+        timezone_name = _read_timezone(instructor.timezone)
     rows = _get_appointment_rows_for_local_date(
         instructor_id,
         date_str,
-        _read_timezone(instructor.timezone),
+        timezone_name,
+        include_day_edges=include_day_edges,
+        include_adjacent_routing_anchors=include_adjacent_routing_anchors,
+        session=session,
     )
     return [_appointment_to_dict(row, aware_utc=True) for row in rows]
 
@@ -591,12 +614,15 @@ def _get_appointment_rows_for_local_date(
     instructor_id: str,
     date_str: str,
     timezone_name: str,
+    *,
+    include_day_edges: bool = False,
+    include_adjacent_routing_anchors: bool = False,
+    session: Session | None = None,
 ) -> List[AppointmentDB]:
-    session = SessionLocal()
-    try:
+    with read_session(session) as reading:
         target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
         start_of_day, end_of_day = timezones.local_day_window_utc_storage(target_date, timezone_name)
-        query = session.query(AppointmentDB)
+        query = reading.query(AppointmentDB)
         if not demo_data_access_enabled_from_env():
             query = (
                 query.outerjoin(
@@ -614,18 +640,42 @@ def _get_appointment_rows_for_local_date(
                     )
                 )
             )
-        apps = query.filter(
+        query = query.filter(
             AppointmentDB.instructor_id == instructor_id,
-            AppointmentDB.start_time < end_of_day,
-            AppointmentDB.end_time > start_of_day,
             AppointmentDB.status.in_(ACTIVE_APPOINTMENT_STATUSES),
             AppointmentDB.cancelled_at.is_(None),
-        ).order_by(AppointmentDB.start_time.asc()).all()
-        for appointment in apps:
-            session.expunge(appointment)
-        return apps
-    finally:
-        session.close()
+        )
+        start_condition = AppointmentDB.start_time <= end_of_day if include_day_edges else AppointmentDB.start_time < end_of_day
+        end_condition = AppointmentDB.end_time >= start_of_day if include_day_edges else AppointmentDB.end_time > start_of_day
+        window = and_(start_condition, end_condition)
+        if include_adjacent_routing_anchors:
+            located = query.filter(AppointmentDB.lat.is_not(None), AppointmentDB.lng.is_not(None))
+            try:
+                previous_day_start, _ = timezones.local_day_window_utc_storage(
+                    target_date - datetime.timedelta(days=1), timezone_name
+                )
+            except OverflowError:
+                previous_day_start = start_of_day
+            if previous_day_start < start_of_day:
+                preceding_day = AppointmentDB.end_time <= start_of_day
+                previous_located_end = located.with_entities(func.max(AppointmentDB.end_time)).filter(
+                    preceding_day, AppointmentDB.end_time > previous_day_start,
+                ).correlate(None).scalar_subquery()
+                window = or_(window, and_(preceding_day, AppointmentDB.end_time >= previous_located_end))
+            try:
+                _, next_day_end = timezones.local_day_window_utc_storage(
+                    target_date + datetime.timedelta(days=1), timezone_name
+                )
+            except OverflowError:
+                next_day_end = end_of_day
+            if next_day_end > end_of_day:
+                following_day = AppointmentDB.start_time >= end_of_day
+                next_located_start = located.with_entities(func.min(AppointmentDB.start_time)).filter(
+                    following_day,
+                    AppointmentDB.start_time < next_day_end,
+                ).correlate(None).scalar_subquery()
+                window = or_(window, and_(following_day, AppointmentDB.start_time <= next_located_start))
+        return query.filter(window).order_by(AppointmentDB.start_time.asc(), AppointmentDB.id.asc()).all()
 
 def get_clients_for_instructor(instructor_id: str) -> List[dict]:
     session = SessionLocal()
@@ -928,13 +978,12 @@ def get_scheduler_settings(instructor_id: str) -> Optional[dict]:
         session.close()
 
 
-def get_scheduling_policy(instructor_id: str) -> Optional[dict]:
+def get_scheduling_policy(instructor_id: str, *, session: Session | None = None) -> Optional[dict]:
     """Read only the physical columns owned by the canonical policy."""
 
-    session = SessionLocal()
-    try:
+    with read_session(session) as reading:
         row = (
-            session.execute(
+            reading.execute(
                 text(
                     """
                     SELECT
@@ -959,8 +1008,6 @@ def get_scheduling_policy(instructor_id: str) -> Optional[dict]:
             "post_break_buffer_mins": row["post_break_buffer_mins"],
             "distance_buffer_tiers": json.loads(row["distance_buffer_tiers"]),
         }
-    finally:
-        session.close()
 
 
 def save_scheduler_settings(

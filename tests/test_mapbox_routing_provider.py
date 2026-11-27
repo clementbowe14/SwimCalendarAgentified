@@ -1,6 +1,10 @@
 import datetime
 import json
 import urllib.error
+import urllib.request
+from contextlib import nullcontext
+from http.client import HTTPException, IncompleteRead
+from unittest.mock import Mock
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -162,6 +166,36 @@ def test_mapbox_malformed_json_maps_to_provider_unavailable():
 
     with pytest.raises(RoutingProviderUnavailable):
         provider.estimate_route((30.2672, -97.7431), (30.3300, -97.7200))
+
+
+@pytest.mark.parametrize(
+    ("read_error", "body", "message"),
+    [
+        pytest.param(
+            HTTPException("private provider response"), None, "Mapbox request failed.", id="http-protocol"
+        ),
+        pytest.param(
+            IncompleteRead(b"private provider response", 10), None, "Mapbox request failed.", id="truncated-body"
+        ),
+        pytest.param(
+            ConnectionResetError("private provider response"), None, "Mapbox request failed.", id="socket-reset"
+        ),
+        pytest.param(None, b"\xff", "Mapbox returned malformed JSON.", id="invalid-utf8"),
+    ],
+)
+def test_mapbox_urllib_response_failures_raise_sanitized_errors(monkeypatch, read_error, body, message):
+    response = Mock()
+    response.read.side_effect = read_error
+    response.read.return_value = body
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_args, **_kwargs: nullcontext(response))
+    provider = MapboxRoutingProvider(access_token="test-token")
+
+    with pytest.raises(RoutingProviderUnavailable) as raised:
+        provider.estimate_route((30.2672, -97.7431), (30.3300, -97.7200))
+
+    assert str(raised.value) == message
+    assert raised.value.__cause__ is None
+    assert raised.value.__suppress_context__
 
 
 def _http_error(status_code: int):

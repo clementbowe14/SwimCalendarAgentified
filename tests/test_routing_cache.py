@@ -1,4 +1,5 @@
 import datetime
+from unittest.mock import Mock
 
 import pytest
 
@@ -164,6 +165,45 @@ def test_live_no_departure_route_estimates_bypass_cache():
     assert len(provider.route_calls) == 2
     assert provider.route_calls[0][2] is None
     assert provider.route_calls[0][3] == "live"
+
+
+@pytest.mark.parametrize("traffic_mode", ["typical", "live"])
+def test_exact_traffic_departure_bypasses_the_bucketed_cache(traffic_mode):
+    provider = CountingProvider()
+    cache = Mock(wraps=InMemoryRouteEstimateCache())
+    cached = CachingRoutingProvider(provider, cache, bucket_minutes=15, traffic_mode=traffic_mode)
+    origin = (30.0, -97.0)
+    destination = (30.1, -97.1)
+    departure = datetime.datetime.fromisoformat("2026-08-20T09:07:45-05:00")
+    bucket_start = datetime.datetime(2026, 8, 20, 14, 0, tzinfo=datetime.timezone.utc)
+
+    cached.estimate_route(origin, destination, departure_time=departure)
+
+    assert cached.get_distance_and_travel_time_at_exact_departure(
+        origin, destination, departure_time=departure
+    ) == (2.0, 12)
+    assert provider.route_calls == [
+        (origin, destination, bucket_start, traffic_mode),
+        (origin, destination, departure, traffic_mode),
+    ]
+    assert cache.get.call_count == 1
+    assert cache.set.call_count == 1
+
+
+def test_exact_departure_reuses_the_cache_without_traffic():
+    provider = CountingProvider()
+    cached = CachingRoutingProvider(provider, InMemoryRouteEstimateCache(), bucket_minutes=15)
+    origin = (30.0, -97.0)
+    destination = (30.1, -97.1)
+    departure = datetime.datetime(2026, 8, 20, 9, 7, tzinfo=datetime.timezone.utc)
+    bucket_start = datetime.datetime(2026, 8, 20, 9, 0, tzinfo=datetime.timezone.utc)
+
+    cached.estimate_route(origin, destination, departure_time=departure)
+
+    assert cached.get_distance_and_travel_time_at_exact_departure(
+        origin, destination, departure_time=departure
+    ) == (2.0, 12)
+    assert provider.route_calls == [(origin, destination, bucket_start, "none")]
 
 
 def test_static_no_departure_route_estimates_can_use_cache():

@@ -79,7 +79,7 @@ def _event(start_hour: int, start_minute: int, end_hour: int, end_minute: int) -
 
 def _find_slots(monkeypatch: pytest.MonkeyPatch, events: list[dict]) -> list[TimeSlotDTO]:
     monkeypatch.setattr(tools, "require_provider_setup", lambda _instructor_id: _provider_with_thursday_hours())
-    monkeypatch.setattr(tools.db, "get_utc_appointment_events_for_date", lambda *_args: events)
+    monkeypatch.setattr(tools.db, "get_utc_appointment_events_for_date", lambda *_args, **_kwargs: events)
     monkeypatch.setattr(tools, "routing_provider", ZeroRoutingProvider())
     return tools.find_available_swim_slots(
         instructor_id="inst_review",
@@ -114,7 +114,7 @@ def test_events_outside_working_hours_cannot_expand_availability(
     )
 
 
-def test_scheduler_inputs_and_outputs_are_clipped_to_working_hours(
+def test_scheduler_keeps_outbound_routing_context_and_clips_available_slots(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_events: list[dict] = []
@@ -170,7 +170,11 @@ def test_scheduler_inputs_and_outputs_are_clipped_to_working_hours(
         ),
         (
             dt.datetime(2026, 8, 20, 16, 30, tzinfo=UTC),
-            dt.datetime(2026, 8, 20, 17, 0, tzinfo=UTC),
+            dt.datetime(2026, 8, 20, 18, 0, tzinfo=UTC),
+        ),
+        (
+            dt.datetime(2026, 8, 20, 18, 0, tzinfo=UTC),
+            dt.datetime(2026, 8, 20, 19, 0, tzinfo=UTC),
         ),
     ]
     assert [(slot.start_time, slot.end_time) for slot in slots] == [

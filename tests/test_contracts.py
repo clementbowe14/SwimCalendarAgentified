@@ -94,6 +94,13 @@ def test_openapi_contract_includes_public_and_coach_routes():
     assert "/api/auth/coach/sign-out" in paths
     assert "/api/auth/coach/logout" in paths
     assert "/api/coach/availability" in paths
+    agenda = openapi["paths"]["/api/coach/agenda"]["get"]
+    assert agenda["security"] == [{"CoachSessionCookie": []}]
+    assert any(parameter["name"] == "date" and not parameter["required"] for parameter in agenda["parameters"])
+    assert any(parameter["name"] == "X-Expected-Instructor-Id" and parameter["required"] for parameter in agenda["parameters"])
+    assert agenda["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/CoachDailyAgendaResponse"
+    }
     assert "/api/coach/blockers" in paths
     assert "/api/coach/blockers/{blocker_id}" in paths
     assert "/api/coach/command-center/snapshot" in paths
@@ -214,6 +221,12 @@ def test_openapi_contract_includes_public_and_coach_routes():
         blocker_delete,
     )
     for operation in blocker_operations:
+        assert any(
+            parameter["in"] == "header"
+            and parameter["name"] == "X-Expected-Instructor-Id"
+            and not parameter["required"]
+            for parameter in operation["parameters"]
+        )
         for status in ("404", "409", "422"):
             assert operation["responses"][status]["content"]["application/json"]["schema"] == {
                 "$ref": "#/components/schemas/ErrorResponse"

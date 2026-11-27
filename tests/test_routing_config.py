@@ -1,3 +1,6 @@
+from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlsplit
+
 import pytest
 
 from app.config import RoutingSettings, routing_settings_from_env
@@ -153,6 +156,26 @@ def test_configured_cache_wraps_selected_provider(monkeypatch):
     provider = build_routing_provider(routing_settings_from_env())
 
     assert isinstance(provider, CachingRoutingProvider)
+
+
+def test_uncached_mapbox_uses_the_configured_traffic_mode(monkeypatch):
+    calls = []
+
+    def transport(url, _timeout):
+        calls.append(urlsplit(url))
+        return {"routes": [{"distance": 1200, "duration": 600}]}
+
+    monkeypatch.setattr(MapboxRoutingProvider, "_urllib_fetch_json", staticmethod(transport))
+    provider = build_routing_provider(RoutingSettings(
+        provider="mapbox", mapbox_access_token="fixture", traffic_mode="typical", route_cache_enabled=False,
+    ))
+    provider.estimate_route(
+        (30.2, -97.7), (30.3, -97.8), departure_time=datetime(2026, 9, 12, 13, 52, tzinfo=timezone.utc)
+    )
+
+    request, = calls
+    assert "/mapbox/driving-traffic/" in request.path
+    assert parse_qs(request.query)["depart_at"] == ["2026-09-12T13:52:00Z"]
 
 
 def test_routing_settings_parse_cache_and_traffic_env(monkeypatch):

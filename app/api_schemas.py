@@ -278,6 +278,7 @@ class CoachBlockerMutation(BaseModel):
     start_time: str
     end_time: str
     location_address: Optional[str] = Field(default=None, max_length=300)
+    expected_timezone: str | None = Field(default=None, min_length=1, max_length=100)
 
     @field_validator("title", mode="before")
     @classmethod
@@ -606,6 +607,57 @@ CoachScheduleItemResponse = Annotated[
     | CoachUtilityScheduleItemResponse,
     Field(discriminator="kind"),
 ]
+
+
+class CoachCalendarBusyScheduleItemResponse(CoachScheduleItemBase):
+    kind: Literal["calendar_busy"] = "calendar_busy"
+    title: Literal["Calendar busy"] = "Calendar busy"
+    location: None = None
+    client_id: None = None
+    travel_time_mins: None = None
+    buffer_mins: None = None
+    note: None = None
+    revision: None = None
+    status: None = None
+
+
+class CoachAgendaTransitionScheduleItemResponse(CoachUtilityScheduleItemResponse):
+    kind: Literal["travel", "buffer"]
+
+
+class CoachAgendaOpeningScheduleItemResponse(CoachUtilityScheduleItemResponse):
+    kind: Literal["open_gap"] = "open_gap"
+    start_times: list[AwareDatetime]
+
+
+CoachAgendaItemResponse = Annotated[
+    CoachLessonScheduleItemResponse
+    | CoachBlockerScheduleItemResponse
+    | CoachAgendaTransitionScheduleItemResponse
+    | CoachAgendaOpeningScheduleItemResponse
+    | CoachCalendarBusyScheduleItemResponse,
+    Field(discriminator="kind"),
+]
+
+
+class CoachAgendaNextUp(BaseModel):
+    appointment_id: str
+    leave_by: AwareDatetime | None = None
+    travel_time_mins: int | None = None
+    buffer_mins: int | None = None
+
+
+CoachAgendaStatus = Literal["ready", "setup_required", "calendar_unavailable", "routing_unavailable", "schedule_changed"]
+
+
+class CoachDailyAgendaResponse(BaseModel):
+    instructor_id: str
+    date: date
+    today: date
+    timezone: str
+    status: CoachAgendaStatus
+    items: list[CoachAgendaItemResponse]
+    next_up: CoachAgendaNextUp | None
 
 
 class CoachLessonRequestResponse(BaseModel):
