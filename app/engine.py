@@ -176,13 +176,15 @@ class SwimSchedulerConstraintEngine:
         duration_mins: int = 60,
         *,
         initial_position: SchedulePosition | None = None,
+        next_shift_start: datetime.datetime | None = None,
     ) -> List[TimeSlotDTO]:
         valid_slots: List[TimeSlotDTO] = []
+        base_coordinates = (instructor_main_location.lat, instructor_main_location.lng)
         target_coords = (target_location.lat, target_location.lng)
         lesson_delta = datetime.timedelta(minutes=duration_mins)
         sorted_events = sorted(existing_events, key=lambda item: item["start_time"])
         position = initial_position or SchedulePosition(
-            day_start, (instructor_main_location.lat, instructor_main_location.lng)
+            day_start, base_coordinates
         )
 
         for index, event in enumerate(sorted_events):
@@ -198,6 +200,8 @@ class SwimSchedulerConstraintEngine:
                     outbound_departure_time=outbound_departure,
                     outbound_deadline=outbound_deadline,
                     target_coords=target_coords,
+                    base_coordinates=base_coordinates,
+                    next_shift_start=next_shift_start,
                     day_start=day_start,
                     day_end=day_end,
                     lesson_delta=lesson_delta,
@@ -213,6 +217,8 @@ class SwimSchedulerConstraintEngine:
                 outbound_departure_time=None,
                 outbound_deadline=None,
                 target_coords=target_coords,
+                base_coordinates=base_coordinates,
+                next_shift_start=next_shift_start,
                 day_start=day_start,
                 day_end=day_end,
                 lesson_delta=lesson_delta,
@@ -255,6 +261,8 @@ class SwimSchedulerConstraintEngine:
         outbound_departure_time: Optional[datetime.datetime],
         outbound_deadline: Optional[datetime.datetime],
         target_coords: Tuple[float, float],
+        base_coordinates: Tuple[float, float],
+        next_shift_start: datetime.datetime | None,
         day_start: datetime.datetime,
         day_end: datetime.datetime,
         lesson_delta: datetime.timedelta,
@@ -276,15 +284,17 @@ class SwimSchedulerConstraintEngine:
             if next_coords is not None:
                 route_departure = outbound_departure_time or candidate_end
                 route_deadline = outbound_deadline or next_start_time
-                dist_to_next, travel_to_next = self.routing.get_distance_and_travel_time(
-                    target_coords,
-                    next_coords,
-                    departure_time=route_departure,
-                )
-                buffer_to_next = self.buffer_policy.distance_buffer_minutes(dist_to_next)
-                if route_departure + datetime.timedelta(
-                    minutes=travel_to_next + buffer_to_next
-                ) > route_deadline:
+                fits = self._outbound_fits(target_coords, next_coords, route_departure, route_deadline)
+                if (
+                    not fits and outbound_departure_time is not None
+                    and next_shift_start is not None and route_deadline >= next_shift_start
+                    and next_coords == base_coordinates
+                ):
+                    # The return can finish before the first locationless block.
+                    fits = self._outbound_fits(
+                        target_coords, base_coordinates, candidate_end, min(next_start_time, next_shift_start),
+                    )
+                if not fits:
                     current_candidate += increment
                     continue
 
@@ -300,6 +310,21 @@ class SwimSchedulerConstraintEngine:
             current_candidate += increment
 
         return slots
+
+    def _outbound_fits(
+        self,
+        origin: Tuple[float, float],
+        destination: Tuple[float, float],
+        departure: datetime.datetime,
+        deadline: datetime.datetime,
+    ) -> bool:
+        if departure > deadline:
+            return False
+        distance, travel = self.routing.get_distance_and_travel_time(
+            origin, destination, departure_time=departure,
+        )
+        buffer = self.buffer_policy.distance_buffer_minutes(distance)
+        return departure + datetime.timedelta(minutes=travel + buffer) <= deadline
 
 
 def event_coordinates(event: dict) -> Optional[Tuple[float, float]]:

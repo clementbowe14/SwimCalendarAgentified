@@ -250,6 +250,7 @@ def _find_available_swim_slots(
         target_location=target_loc,
         duration_mins=duration_mins,
         initial_position=position,
+        next_shift_start=next_day_shift_start(provider, target_date),
     )
 
     return [
@@ -296,6 +297,12 @@ def routing_events_for_date(
         session=session,
     )
 
+def next_day_shift_start(provider: ProviderConfiguration, day: datetime.date) -> datetime.datetime | None:
+    if day == datetime.date.max:
+        return None
+    window = working_window_utc(provider, day + datetime.timedelta(days=1))
+    return window[0] if window else None
+
 
 def routing_calendar_window(
     work_start: datetime.datetime,
@@ -329,26 +336,36 @@ def working_schedule_context(
     """Keep the known location before work and travel anchors after it."""
     base_position = SchedulePosition(work_start, (base.lat, base.lng))
     position = base_position
-    last_located_end = None
+    last_location = None
+    first_block_start = None
     return_deadline = work_start
     working_events = []
     for event in sorted(events, key=lambda event: (event["start_time"], event["end_time"])):
         if event["end_time"] <= work_start:
-            if event.get("blocker_kind") == "external_calendar" and last_located_end is None:
+            if event.get("blocker_kind") == "external_calendar" and last_location is None:
                 continue
             position = position.after_event(event)
             if event_coordinates(event) is not None:
-                last_located_end = event["end_time"]
+                last_location = position
+                first_block_start = None
+            elif last_location is not None and first_block_start is None:
+                first_block_start = event["start_time"]
         else:
             return_deadline = min(return_deadline, event["start_time"])
             working_events.append({**event, "start_time": max(event["start_time"], work_start)})
-    if last_located_end is None and position.free_at < work_start:
+    if last_location is None and position.free_at < work_start:
         position = replace(position, free_at=work_start)
-    elif last_located_end is not None and last_located_end <= local_day_start and position.free_at < return_deadline:
-        # Start a new shift at base when it was possible to return there.
-        back_to_base = engine.inbound_transition(position, base_position.coordinates)
-        if position.free_at + back_to_base.duration <= return_deadline:
-            position = base_position
+    elif last_location is not None and last_location.free_at <= local_day_start:
+        return_windows = [(position, return_deadline)]
+        if first_block_start is not None:
+            return_windows.append((last_location, min(first_block_start, return_deadline)))
+        for origin, deadline in return_windows:
+            if origin.free_at >= deadline:
+                continue
+            back_to_base = engine.inbound_transition(origin, base_position.coordinates)
+            if origin.free_at + back_to_base.duration <= deadline:
+                position = replace(base_position, previous_break_end=position.previous_break_end)
+                break
     return position, working_events
 
 

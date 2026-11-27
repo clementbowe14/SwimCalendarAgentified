@@ -640,6 +640,52 @@ def test_return_to_base_cannot_cross_busy_time_over_shift_start(authenticated_ap
     assert booking.status_code == 409, booking.text
 
 
+@pytest.mark.parametrize("prior_first", [True, False], ids=["evening-first", "midnight-first"])
+def test_return_completed_before_busy_time_works_in_either_booking_order(
+    authenticated_api_client, monkeypatch, prior_first,
+):
+    midnight = _hour(0) + timedelta(days=1)
+    next_day = DAY + timedelta(days=1)
+    with db.SessionLocal.begin() as session:
+        provider = session.get(InstructorDB, PROVIDER)
+        provider.timezone = "UTC"
+        provider.base_address, provider.base_lat, provider.base_lng = SERVICE
+        provider.service_address, provider.service_lat, provider.service_lng = SERVICE
+        evening = session.get(ProviderWorkingHoursDB, (PROVIDER, DAY.weekday()))
+        morning = session.get(ProviderWorkingHoursDB, (PROVIDER, next_day.weekday()))
+        evening.start_time, evening.end_time = time(21), time(23, 59)
+        morning.start_time, morning.end_time = time(0), time(3)
+
+    rules = default_scheduler_rules().model_copy(update={"buffers_enabled": False})
+    db.save_scheduler_settings(PROVIDER, rules.model_dump(mode="json"))
+    monkeypatch.setattr(tools, "routing_provider", SimpleNamespace(
+        get_distance_and_travel_time=lambda origin, destination, **_: (0, 0) if origin == destination else (4, 20),
+        geocode=lambda _: HOME[1:],
+    ))
+    _connect_calendar(monkeypatch, Mock(return_value=CalendarBusySnapshot("verified", (
+        CalendarBusyInterval(midnight, midnight + timedelta(minutes=15)),
+    ))))
+
+    bookings = [
+        {
+            "client_name": "Evening route client", "client_address": HOME[0],
+            "is_instructor_facility": False, "duration_mins": 45,
+            "start_time": _hour(22, 45).isoformat(), "idempotency_key": "before-overnight-busy",
+        },
+        {
+            "client_name": "Midnight route client", "client_address": SERVICE[0],
+            "is_instructor_facility": True, "duration_mins": 45,
+            "start_time": (midnight + timedelta(minutes=15)).isoformat(),
+            "idempotency_key": "after-overnight-busy",
+        },
+    ]
+    if not prior_first:
+        bookings.reverse()
+    for payload in bookings:
+        response = authenticated_api_client.post("/api/coach/bookings", json=payload)
+        assert response.status_code == 200, response.text
+
+
 def test_opening_bands_expose_only_verified_start_times():
     service = ProviderService("Appointment", 45, ProviderLocation(SERVICE[0], SERVICE[1], SERVICE[2]))
     slots = [

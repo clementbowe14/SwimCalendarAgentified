@@ -254,6 +254,7 @@ def _working_plan(
             target_location=target,
             duration_mins=service.default_duration_mins,
             initial_position=position,
+            next_shift_start=tools.next_day_shift_start(provider, day.date),
         )
     return WorkingPlan(policy, service, transitions, arrivals, slots)
 
