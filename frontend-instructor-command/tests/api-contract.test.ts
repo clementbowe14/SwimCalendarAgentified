@@ -169,9 +169,10 @@ test("HTTP instructor adapter reads the coach command-center snapshot without ra
   );
 });
 
-test("HTTP instructor adapter uses provider-scoped blocker CRUD with CSRF and idempotency", async () => {
+test("HTTP instructor adapter sends the expected owner on blocker mutations with CSRF and idempotency", async () => {
   const calls: FetchCall[] = [];
   const api = new HttpInstructorCommandApi("http://api.test/api");
+  const expectedInstructorId = "inst /+%é";
   const blocker = {
     id: "app/blocker one",
     kind: "personal" as const,
@@ -203,21 +204,25 @@ test("HTTP instructor adapter uses provider-scoped blocker CRUD with CSRF and id
     if (init?.method === "DELETE") return new Response(null, { status: 204 });
     return jsonResponse(blocker);
   }, async () => {
-    await api.createBlocker(mutation, "blocker-idempotency-001");
-    await api.updateBlocker(blocker.id, { ...mutation, expected_revision: 1 });
-    await api.deleteBlocker(blocker.id, 1);
+    await api.createBlocker(mutation, "blocker-idempotency-001", expectedInstructorId);
+    await api.updateBlocker(blocker.id, { ...mutation, expected_revision: 1 }, expectedInstructorId);
+    await api.deleteBlocker(blocker.id, 1, expectedInstructorId);
   });
+
+  assert.equal(calls.length, 3);
+  for (const { init } of calls) {
+    assert.equal(init?.credentials, "include");
+    assert.equal(headerValue(init?.headers, "x-expected-instructor-id"), "inst%20%2F%2B%25%C3%A9");
+    assert.equal(headerValue(init?.headers, "x-csrf-protection"), "1");
+  }
 
   assert.equal(calls[0].url, "http://api.test/api/coach/blockers");
   assert.equal(calls[0].init?.method, "POST");
-  assert.equal(calls[0].init?.credentials, "include");
-  assert.equal(headerValue(calls[0].init?.headers, "x-csrf-protection"), "1");
   assert.equal(headerValue(calls[0].init?.headers, "idempotency-key"), "blocker-idempotency-001");
   assert.deepEqual(JSON.parse(String(calls[0].init?.body)), mutation);
 
   assert.equal(calls[1].url, "http://api.test/api/coach/blockers/app%2Fblocker%20one");
   assert.equal(calls[1].init?.method, "PUT");
-  assert.equal(headerValue(calls[1].init?.headers, "x-csrf-protection"), "1");
   assert.deepEqual(JSON.parse(String(calls[1].init?.body)), { ...mutation, expected_revision: 1 });
 
   assert.equal(
@@ -225,22 +230,23 @@ test("HTTP instructor adapter uses provider-scoped blocker CRUD with CSRF and id
     "http://api.test/api/coach/blockers/app%2Fblocker%20one?expected_revision=1",
   );
   assert.equal(calls[2].init?.method, "DELETE");
-  assert.equal(calls[2].init?.credentials, "include");
-  assert.equal(headerValue(calls[2].init?.headers, "x-csrf-protection"), "1");
   assert.equal(calls[2].init?.body, undefined);
 });
 
-test("HTTP instructor adapter encodes the provider-local blocker date", async () => {
+test("HTTP instructor adapter encodes the blocker date and expected owner on reads", async () => {
   const calls: FetchCall[] = [];
   const api = new HttpInstructorCommandApi("http://api.test/api");
   await withMockFetch(calls, async () => jsonResponse([]), async () => {
-    await api.getBlockers("2026-08-21&provider=other");
+    await api.getBlockers("2026-08-21&provider=other", "inst /+%é");
   });
   assert.equal(
     calls[0].url,
     "http://api.test/api/coach/blockers?date=2026-08-21%26provider%3Dother",
   );
+  assert.equal(calls[0].init?.method, "GET");
   assert.equal(calls[0].init?.credentials, "include");
+  assert.equal(headerValue(calls[0].init?.headers, "x-expected-instructor-id"), "inst%20%2F%2B%25%C3%A9");
+  assert.equal(headerValue(calls[0].init?.headers, "x-csrf-protection"), null);
 });
 
 test("mock blocker timestamps use the provider timezone winter offset", async () => {

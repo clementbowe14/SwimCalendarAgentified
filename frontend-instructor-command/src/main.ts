@@ -9,11 +9,11 @@ import {
 } from "./api/instructorApi.js";
 import type {
   BookingRequestDTO,
-  BlockerScheduleItem,
   BlockerMutation,
   CalendarLinks,
   CoachEmailDelivery,
   CommandCenterSnapshot,
+  ProviderBlocker,
   InstructorAuthSession,
   ProviderConfiguration,
   ProviderConfigurationUpdate,
@@ -49,8 +49,8 @@ import {
   renderProviderSettings,
 } from "./components/ProviderSettings.js";
 import { renderSettingsRules } from "./components/SettingsRules.js";
-import { renderTodaySchedule } from "./components/TodaySchedule.js";
-import { buildFindSlotsRequest, findFeaturedClient } from "./domain/screenModels.js";
+import { renderTodaySchedule, scheduleItems, type AgendaLoadState } from "./components/TodaySchedule.js";
+import { buildFindSlotsRequest, findFeaturedClient, isScheduleBlocker } from "./domain/screenModels.js";
 import { mergeEmailDeliveries } from "./domain/emailDelivery.js";
 import {
   availabilityAfterPolicySave,
@@ -76,6 +76,7 @@ import {
   validateProviderDraft,
   type ProviderFieldErrors,
 } from "./domain/providerSettings.js";
+import { dateKeyInTimeZone, scheduleLocalFields, scheduleTimeZone, shiftDateKey } from "./lib/format.js";
 import { escapeHtml } from "./lib/html.js";
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -104,6 +105,9 @@ type AppState = {
     | "sign_out_failed";
   authSession: InstructorAuthSession | null;
   snapshot: CommandCenterSnapshot | null;
+  scheduleDate: string | null;
+  agendaToday: { date: string; observedLocalDate: string } | null;
+  agenda: AgendaLoadState;
   emailDeliveries: CoachEmailDelivery[];
   deliveryCards: Record<string, DeliveryCardUiState>;
   deliveryRefreshPending: boolean;
@@ -141,7 +145,6 @@ const initialGoogleCalendarSettings: GoogleCalendarSettingsState = {
   pending: null,
   error: "",
   returnResult: null,
-  ownerChanged: false,
 };
 
 const googleCalendarActionErrors: Record<GoogleCalendarAction, string> = {
@@ -156,6 +159,9 @@ const state: AppState = {
   authStatus: instructorCommandApi.authMode === "live" ? "checking" : "signed_in",
   authSession: null,
   snapshot: null,
+  scheduleDate: null,
+  agendaToday: null,
+  agenda: { status: "loading" },
   emailDeliveries: [],
   deliveryCards: {},
   deliveryRefreshPending: false,
@@ -189,13 +195,17 @@ const state: AppState = {
 };
 
 const instructorId = import.meta.env?.VITE_INSTRUCTOR_ID || "inst_riley_001";
-const configuredCommandDate = import.meta.env?.VITE_INSTRUCTOR_COMMAND_DATE || "2026-08-27";
+const configuredCommandDate = parseCommandDate(import.meta.env?.VITE_INSTRUCTOR_COMMAND_DATE)
+  ?? (instructorCommandApi.authMode === "mock" ? "2026-08-27" : null);
 const instructorApiBaseUrl = instructorRuntimeConfig.mode === "http"
   ? instructorRuntimeConfig.apiBaseUrl
   : "";
 let authGeneration = 0;
 const availabilityRequestGate = new MonotonicRequestGate();
 const policyRequestGate = new MonotonicRequestGate();
+const agendaRequestGate = new MonotonicRequestGate();
+const scheduleSnapshotRequestGate = new MonotonicRequestGate();
+const blockerEditRequestGate = new MonotonicRequestGate();
 
 window.addEventListener("pageshow", (event) => {
   if (
@@ -267,21 +277,26 @@ async function loadCommandCenter(generation: number): Promise<void> {
   try {
     const provider = await instructorCommandApi.getProvider();
     if (!isCurrentSignedInGeneration(generation)) return;
+    if (instructorCommandApi.authMode === "live" && provider.id !== state.authSession?.coach.instructor_id) {
+      invalidateChangedProvider();
+      return;
+    }
     state.provider = provider;
     state.providerDraft = providerDraftFromConfiguration(provider);
-    const snapshot = await instructorCommandApi.getSnapshot(
-      instructorId,
-      initialCommandDate(configuredCommandDate),
-    );
+    state.scheduleDate = initialCommandDate();
+    const date = activeScheduleDate();
+    const snapshot = await instructorCommandApi.getSnapshot(instructorId, date);
     if (!isCurrentSignedInGeneration(generation)) return;
+    if (snapshot.date !== date) throw new Error("We couldn’t load the requested schedule date.");
+    if (!applySnapshot(snapshot)) return;
     const calendarReturn = instructorCommandApi.authMode === "live" ? consumeGoogleCalendarReturn() : null;
-    applySnapshot(snapshot, { preserveUrl: calendarReturn !== null });
     if (!state.snapshot) return;
     if (!state.snapshot.clients.some((client) => client.id === state.selectedClientId)) {
       state.selectedClientId = state.snapshot.clients[0]?.id ?? "client_new";
     }
     state.googleCalendar.returnResult = calendarReturn;
     if (calendarReturn || !provider.setup_complete || state.activeScreen === "settings") openSettings();
+    void refreshAgenda(generation);
     if (!provider.setup_complete) {
       clearAvailability("idle");
     } else {
@@ -311,6 +326,7 @@ function render(): void {
   }
 
   const body = renderActiveScreen(state.snapshot);
+  const focused = document.activeElement instanceof HTMLButtonElement ? document.activeElement : null;
   const modal = state.calendarHandoff
     ? renderCalendarHandoffModal(state.calendarHandoff, instructorApiBaseUrl, window.location.href)
     : "";
@@ -331,6 +347,19 @@ function render(): void {
   restoreDeliveryFocus();
   restorePolicyFocus();
   restoreBlockerFocus();
+  if (state.activeScreen === "today" && focused && !hasModal) {
+    const { scheduleDate, scheduleStep, editBlocker } = focused.dataset;
+    if (scheduleDate) focusScheduleControl(`[data-schedule-date="${scheduleDate}"]`);
+    if (scheduleStep) focusScheduleControl(`[data-schedule-step="${scheduleStep}"]`);
+    if (editBlocker) focusScheduleControl(`[data-edit-blocker="${CSS.escape(editBlocker)}"]`);
+    if (focused.hasAttribute("data-add-blocker")) {
+      const emptyAction = focused.closest(".empty-schedule-state")
+        && app.querySelector<HTMLButtonElement>(".empty-schedule-state [data-add-blocker]");
+      if (emptyAction) emptyAction.focus({ preventScroll: true });
+      else focusScheduleControl(".schedule-add-button");
+    }
+    if (focused.matches('.nav-item[data-screen="today"]')) focusActiveScreenNavigation("today");
+  }
 }
 
 function renderLockedScreen(): string {
@@ -421,10 +450,14 @@ function renderAuthStatusScreen(heading: string, body: string, action = ""): str
 }
 
 function renderActiveScreen(snapshot: CommandCenterSnapshot): string {
-  if (state.activeScreen === "today") return renderTodaySchedule(snapshot);
+  if (state.activeScreen === "today") {
+    return instructorCommandApi.authMode === "live"
+      ? renderTodaySchedule(snapshot, activeScheduleDate(), state.agenda)
+      : renderTodaySchedule(snapshot);
+  }
   if (state.activeScreen === "finder") {
     return renderAvailabilityFinder(
-      snapshot,
+      { ...snapshot, date: activeScheduleDate() },
       findFeaturedClient(snapshot, state.selectedClientId),
       state.recommendedSlots,
       state.availability,
@@ -469,30 +502,38 @@ function wireEvents(): void {
   app.querySelectorAll<HTMLButtonElement>("[data-screen]").forEach((button) => {
     button.addEventListener("click", () => {
       const nextScreen = button.dataset.screen as ScreenId;
+      if (nextScreen !== state.activeScreen) blockerEditRequestGate.invalidate();
       if (nextScreen === "settings") openSettings();
       else state.activeScreen = nextScreen;
       state.providerSetupPrompt = "";
+      if (nextScreen === "today") void refreshAgenda(authGeneration);
       render();
       focusActiveScreenNavigation(nextScreen);
     });
   });
 
   app.querySelectorAll<HTMLButtonElement>("[data-schedule-date]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const date = button.dataset.scheduleDate ?? "";
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date === state.snapshot?.date) return;
-      await runAction(async (generation) => {
-        const snapshot = await instructorCommandApi.getSnapshot(instructorId, date);
-        if (!isCurrentSignedInGeneration(generation)) return;
-        applySnapshot(snapshot);
-        clearAvailability();
-      });
-      app.querySelector<HTMLButtonElement>(`[data-schedule-date="${date}"]`)?.focus({ preventScroll: true });
+    button.addEventListener("click", () => {
+      const date = parseCommandDate(button.dataset.scheduleDate);
+      if (date) void changeScheduleDate(date);
     });
   });
 
-  app.querySelector<HTMLButtonElement>("[data-add-blocker]")?.addEventListener("click", () => {
-    openCreateBlockerEditor();
+  app.querySelectorAll<HTMLButtonElement>("[data-schedule-step]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const step = button.dataset.scheduleStep;
+      void changeScheduleDate(step === "today" ? null : shiftDateKey(activeScheduleDate(), step === "previous" ? -1 : 1));
+    });
+  });
+
+  app.querySelector<HTMLButtonElement>("[data-retry-agenda]")?.addEventListener("click", () => {
+    void refreshAgenda(authGeneration);
+    void refreshAgendaSnapshot(authGeneration, activeScheduleDate());
+    render();
+    focusScheduleControl('[data-schedule-date][aria-current="date"]');
+  });
+  app.querySelectorAll<HTMLButtonElement>("[data-add-blocker]").forEach((button) => {
+    button.addEventListener("click", openCreateBlockerEditor);
   });
 
   app.querySelectorAll<HTMLButtonElement>("[data-edit-blocker]").forEach((button) => {
@@ -568,9 +609,8 @@ function wireEvents(): void {
       await runAction(async (generation) => {
         await instructorCommandApi.requestAlternatives(button.dataset.alternativesRequest ?? "", []);
         if (!isCurrentSignedInGeneration(generation)) return;
-        const snapshot = await instructorCommandApi.getSnapshot(instructorId, activeScheduleDate());
+        await refreshScheduleSnapshot(generation);
         if (!isCurrentSignedInGeneration(generation)) return;
-        applySnapshot(snapshot);
         state.toast = "Alternatives requested.";
       });
     });
@@ -588,22 +628,170 @@ function focusActiveScreenNavigation(screen: ScreenId): void {
   controls.at(-1)?.focus({ preventScroll: true });
 }
 
+function focusScheduleControl(selector: string): void {
+  app.querySelector<HTMLButtonElement>(selector)?.focus({ preventScroll: true });
+}
+
+function renderScheduleUpdate(): void {
+  if (state.activeScreen === "today" && !state.blockerEditor && !state.calendarHandoff) render();
+}
+
+async function changeScheduleDate(date: string | null): Promise<void> {
+  if (date !== null && date === activeScheduleDate()) return;
+  blockerEditRequestGate.invalidate();
+  const generation = authGeneration;
+  state.scheduleDate = date ?? (instructorCommandApi.authMode === "mock" ? providerLocalToday() : null);
+  if (date === null) state.agendaToday = null;
+  persistScheduleSelection();
+  clearAvailability();
+  state.error = "";
+  void refreshAgenda(generation);
+  render();
+  try {
+    if (await refreshScheduleSnapshot(generation)) renderScheduleUpdate();
+  } catch (error) {
+    if (handleAuthFailure(error, undefined, generation)) return;
+    if (instructorCommandApi.authMode === "mock" && state.snapshot) {
+      state.scheduleDate = state.snapshot.date;
+      persistScheduleSelection();
+      state.error = formatApiError(error);
+      renderScheduleUpdate();
+    }
+  }
+}
+
+async function refreshScheduleSnapshot(
+  generation: number,
+  date = activeScheduleDate(),
+): Promise<boolean> {
+  const token = scheduleSnapshotRequestGate.next();
+  const current = () => (
+    isCurrentSignedInGeneration(generation)
+    && scheduleSnapshotRequestGate.isCurrent(token)
+    && activeScheduleDate() === date
+  );
+  try {
+    const snapshot = await instructorCommandApi.getSnapshot(instructorId, date);
+    if (!isCurrentSignedInGeneration(generation)) return false;
+    if (!snapshotBelongsToSession(snapshot)) {
+      invalidateChangedProvider();
+      return false;
+    }
+    if (!current()) return false;
+    if (snapshot.date !== date) throw new Error("We couldn’t load the requested schedule date.");
+    return applySnapshot(snapshot);
+  } catch (error) {
+    if (!current()) return false;
+    throw error;
+  }
+}
+
+async function refreshAgenda(
+  generation: number, persistedMessage?: string, retryMidnight = true,
+): Promise<void> {
+  if (
+    instructorCommandApi.authMode !== "live"
+    || !isCurrentSignedInGeneration(generation)
+    || state.activeScreen !== "today"
+    || !state.snapshot
+  ) return;
+  const instructor = state.authSession?.coach.instructor_id;
+  if (!instructor || instructor !== state.snapshot.instructor.id) {
+    invalidateChangedProvider();
+    return;
+  }
+
+  const token = agendaRequestGate.next();
+  const date = state.scheduleDate;
+  const localDateAtRequest = providerLocalToday();
+  const sameSession = () => (
+    isCurrentSignedInGeneration(generation)
+    && state.authSession?.coach.instructor_id === instructor
+  );
+  const current = () => (
+    sameSession()
+    && state.activeScreen === "today"
+    && state.scheduleDate === date
+    && agendaRequestGate.isCurrent(token)
+  );
+  state.agenda = { status: "loading" };
+  try {
+    const agenda = await instructorCommandApi.getAgenda(instructor, date ?? undefined);
+    if (!sameSession()) return;
+    if (agenda.instructor_id !== instructor) {
+      invalidateChangedProvider();
+      return;
+    }
+    if (!current()) return;
+    const localDate = providerLocalToday();
+    const rolledOver = agenda.date !== agenda.today
+      || (localDateAtRequest !== localDate && agenda.today !== localDate);
+    if (date === null && retryMidnight && rolledOver) {
+      state.agendaToday = null;
+      void refreshAgenda(generation, persistedMessage, false);
+      return;
+    }
+    if (
+      agenda.date !== (date ?? agenda.today)
+      || parseCommandDate(agenda.today) !== agenda.today
+      || !Array.isArray(agenda.items)
+    ) {
+      state.agenda = { status: "error" };
+    } else {
+      state.agenda = { status: "loaded", response: agenda };
+      state.agendaToday = { date: agenda.today, observedLocalDate: localDate };
+      if (date === null && agenda.date !== state.snapshot?.date) {
+        persistScheduleSelection();
+        clearAvailability();
+        void refreshAgendaSnapshot(generation, agenda.date, persistedMessage);
+      }
+    }
+  } catch (error) {
+    if (!sameSession() || handleAuthFailure(error, persistedMessage, generation)) return;
+    if (handleChangedProvider(error, generation)) return;
+    if (!current()) return;
+    if (date === null) {
+      state.agendaToday = null;
+      const fallbackDate = activeScheduleDate();
+      if (state.snapshot?.date !== fallbackDate) {
+        clearAvailability();
+        void refreshAgendaSnapshot(generation, fallbackDate, persistedMessage);
+      }
+    }
+    state.agenda = { status: "error" };
+  }
+  renderScheduleUpdate();
+}
+
+async function refreshAgendaSnapshot(generation: number, date: string, persistedMessage?: string): Promise<void> {
+  try {
+    if (await refreshScheduleSnapshot(generation, date)) renderScheduleUpdate();
+  } catch (error) {
+    handleAuthFailure(error, persistedMessage, generation);
+  }
+}
+
 function openCreateBlockerEditor(): void {
   if (!state.snapshot) return;
+  blockerEditRequestGate.invalidate();
+  const date = activeScheduleDate();
   state.blockerReturnFocus = { kind: "add" };
   const draft: BlockerMutation = {
     kind: "break",
     title: "Break",
-    date: state.snapshot.date,
+    date,
     start_time: "12:00",
     end_time: "12:30",
     location_address: null,
   };
   state.blockerEditor = {
     mode: "create",
+    instructorId: state.snapshot.instructor.id,
+    timeZone: state.agenda.status === "loaded" ? state.agenda.response.timezone : state.snapshot.instructor.timezone,
     blockerId: null,
     revision: null,
-    idempotencyKey: newBlockerIdempotencyKey(state.snapshot.date),
+    crossesMidnight: false,
+    idempotencyKey: newBlockerIdempotencyKey(date),
     draft: copyBlockerDraft(draft),
     initialDraft: copyBlockerDraft(draft),
     pending: false,
@@ -614,27 +802,67 @@ function openCreateBlockerEditor(): void {
   render();
 }
 
-function openEditBlockerEditor(blockerId: string): void {
-  const blocker = state.snapshot?.schedule.find((item) => item.id === blockerId);
-  if (!blocker || !isBlockerScheduleItem(blocker)) return;
+async function openEditBlockerEditor(blockerId: string): Promise<void> {
+  const snapshot = state.snapshot;
+  if (!snapshot) return;
+  const generation = authGeneration;
+  const token = blockerEditRequestGate.next();
+  const agenda = instructorCommandApi.authMode === "live" ? state.agenda : undefined;
+  const date = activeScheduleDate();
+  const blocker = scheduleItems(snapshot, date, agenda).find((item) => item.id === blockerId);
+  if (!blocker || !isScheduleBlocker(blocker)) return;
   if (!Number.isInteger(blocker.revision) || blocker.revision < 1) {
     state.error = "This schedule event is missing its revision. Reload before editing it.";
     render();
     return;
   }
-  state.blockerReturnFocus = { kind: "edit", id: blocker.id };
+  const current = () => (
+    isCurrentSignedInGeneration(generation)
+    && blockerEditRequestGate.isCurrent(token)
+    && state.activeScreen === "today"
+    && activeScheduleDate() === date
+    && !state.blockerEditor
+  );
+  let saved: ProviderBlocker | undefined;
+  // Agenda intervals may be clipped at midnight, so edit only the full saved event.
+  if (agenda) {
+    try {
+      const blockers = await instructorCommandApi.getBlockers(date, snapshot.instructor.id);
+      if (!current()) return;
+      saved = blockers.find((item) => item.id === blockerId && item.revision === blocker.revision);
+    } catch (error) {
+      if (handleAuthFailure(error, undefined, generation) || handleChangedProvider(error, generation)) return;
+      if (!current()) return;
+    }
+    if (!saved) {
+      state.error = "The saved event couldn’t be loaded. Refresh Schedule before editing it.";
+      render();
+      return;
+    }
+  }
+  const timeZone = saved?.timezone ?? snapshot.instructor.timezone;
+  const start = saved
+    ? { date: saved.local_date, time: saved.local_start_time }
+    : scheduleLocalFields(blocker.start_time, scheduleTimeZone(timeZone));
+  const end = saved
+    ? { date: saved.end_time.slice(0, 10), time: saved.local_end_time }
+    : scheduleLocalFields(blocker.end_time, scheduleTimeZone(timeZone));
   const draft: BlockerMutation = {
     kind: blocker.kind,
     title: blocker.title,
-    date: blocker.start_time.slice(0, 10),
-    start_time: blocker.start_time.slice(11, 16),
-    end_time: blocker.end_time.slice(11, 16),
+    date: start.date,
+    start_time: start.time,
+    end_time: end.time,
     location_address: blocker.location?.address ?? null,
   };
+  state.blockerReturnFocus = { kind: "edit", id: blocker.id };
   state.blockerEditor = {
     mode: "edit",
+    instructorId: snapshot.instructor.id,
+    timeZone,
     blockerId: blocker.id,
     revision: blocker.revision,
+    crossesMidnight: start.date !== end.date,
     idempotencyKey: "",
     draft: copyBlockerDraft(draft),
     initialDraft: copyBlockerDraft(draft),
@@ -676,7 +904,7 @@ function wireBlockerEditorEvents(): void {
   app.querySelector<HTMLButtonElement>("[data-blocker-remove]")?.addEventListener("click", () => {
     if (!state.blockerEditor || state.blockerEditor.pending) return;
     const form = app.querySelector<HTMLFormElement>("[data-blocker-form]");
-    if (form) state.blockerEditor.draft = blockerDraftFromForm(form);
+    if (form && !state.blockerEditor.crossesMidnight) state.blockerEditor.draft = blockerDraftFromForm(form);
     state.blockerEditor.deleteConfirm = true;
     state.blockerEditor.error = "";
     render();
@@ -719,7 +947,7 @@ function closeBlockerEditor(): void {
     return;
   }
   const form = app.querySelector<HTMLFormElement>("[data-blocker-form]");
-  if (form) {
+  if (form && !state.blockerEditor.crossesMidnight) {
     state.blockerEditor.draft = blockerDraftFromForm(form);
   }
   if (!sameBlockerDraft(state.blockerEditor.draft, state.blockerEditor.initialDraft)) {
@@ -775,7 +1003,7 @@ function blockerDraftError(draft: BlockerMutation): string {
 
 async function saveBlockerEditor(form: HTMLFormElement): Promise<void> {
   const editor = state.blockerEditor;
-  if (!editor || editor.pending) return;
+  if (!editor || editor.pending || editor.crossesMidnight) return;
   editor.draft = blockerDraftFromForm(form);
   editor.error = blockerDraftError(editor.draft);
   if (editor.error) {
@@ -796,15 +1024,16 @@ async function saveBlockerEditor(form: HTMLFormElement): Promise<void> {
   render();
   let persisted = false;
   try {
+    const payload = { ...editor.draft, expected_timezone: editor.timeZone || undefined };
     const saved = editor.mode === "create"
-      ? await instructorCommandApi.createBlocker(editor.draft, editor.idempotencyKey)
+      ? await instructorCommandApi.createBlocker(payload, editor.idempotencyKey, editor.instructorId)
       : await instructorCommandApi.updateBlocker(editor.blockerId ?? "", {
-          ...editor.draft,
+          ...payload,
           expected_revision: editor.revision!,
-        });
+        }, editor.instructorId);
     persisted = true;
     if (!isCurrentSignedInGeneration(generation)) return;
-    await refreshAfterBlockerMutation(generation, saved.local_date);
+    await refreshAfterBlockerMutation(generation, saved.local_date, saved.id, "saved");
     if (!isCurrentSignedInGeneration(generation)) return;
     state.blockerEditor = null;
     state.blockerReturnFocus = null;
@@ -819,7 +1048,7 @@ async function saveBlockerEditor(form: HTMLFormElement): Promise<void> {
         ? "The schedule event was saved, but your session expired before the agenda refreshed. Sign in again; do not save it again."
         : undefined,
       generation,
-    )) return;
+    ) || handleChangedProvider(error, generation)) return;
     if (persisted) {
       state.blockerEditor = null;
       state.blockerReturnFocus = null;
@@ -847,15 +1076,16 @@ async function removeBlockerEditorEvent(): Promise<void> {
     || editor.revision === null
   ) return;
   const generation = authGeneration;
+  const date = activeScheduleDate();
   editor.pending = true;
   editor.error = "";
   render();
   let persisted = false;
   try {
-    await instructorCommandApi.deleteBlocker(editor.blockerId, editor.revision);
+    await instructorCommandApi.deleteBlocker(editor.blockerId, editor.revision, editor.instructorId);
     persisted = true;
     if (!isCurrentSignedInGeneration(generation)) return;
-    await refreshAfterBlockerMutation(generation, editor.initialDraft.date);
+    await refreshAfterBlockerMutation(generation, date, editor.blockerId, "removed");
     if (!isCurrentSignedInGeneration(generation)) return;
     state.blockerEditor = null;
     state.blockerReturnFocus = null;
@@ -870,7 +1100,7 @@ async function removeBlockerEditorEvent(): Promise<void> {
         ? "The schedule event was removed, but your session expired before the agenda refreshed. Sign in again; do not remove it again."
         : undefined,
       generation,
-    )) return;
+    ) || handleChangedProvider(error, generation)) return;
     if (persisted) {
       state.blockerEditor = null;
       state.blockerReturnFocus = null;
@@ -891,13 +1121,22 @@ async function removeBlockerEditorEvent(): Promise<void> {
 async function refreshAfterBlockerMutation(
   generation: number,
   date: string,
+  updatedId: string,
+  action: "saved" | "removed",
 ): Promise<void> {
   if (!isCurrentSignedInGeneration(generation)) return;
-  persistCommandDate(date);
-  const snapshot = await instructorCommandApi.getSnapshot(instructorId, date);
-  if (!isCurrentSignedInGeneration(generation)) return;
-  applySnapshot(snapshot);
+  if (date !== activeScheduleDate()) state.scheduleDate = date;
+  persistScheduleSelection();
   clearAvailability("stale");
+  if (state.snapshot && instructorCommandApi.authMode === "live") {
+    state.snapshot.schedule = state.snapshot.schedule.filter((item) => item.id !== updatedId);
+  }
+  await Promise.all([
+    refreshAgenda(generation, `The schedule event was ${action}. Sign in again to see the updated agenda.`),
+    refreshScheduleSnapshot(generation, date).catch((error) => {
+      if (instructorCommandApi.authMode === "mock" || isAuthenticationFailure(error)) throw error;
+    }),
+  ]);
 }
 
 function trapBlockerDialogFocus(event: KeyboardEvent, dialog: HTMLElement): void {
@@ -947,12 +1186,6 @@ function restoreBlockerFocus(): void {
 
 function isBlockerKind(value: string): value is "break" | "personal" | "unavailable" {
   return value === "break" || value === "personal" || value === "unavailable";
-}
-
-function isBlockerScheduleItem(
-  item: CommandCenterSnapshot["schedule"][number],
-): item is BlockerScheduleItem {
-  return isBlockerKind(item.kind);
 }
 
 function newBlockerIdempotencyKey(date: string): string {
@@ -1045,6 +1278,7 @@ async function saveSchedulingPolicy(form: HTMLFormElement): Promise<void> {
     }
     state.policySuccess = "Scheduling policy saved.";
     state.toast = "Scheduling policy saved.";
+    void refreshAgenda(generation);
   } catch (error) {
     if (!isCurrentGeneration(generation) || !policyRequestGate.isCurrent(requestToken)) return;
     if (handleAuthFailure(error, undefined, generation)) return;
@@ -1244,9 +1478,7 @@ function wireGoogleCalendarSettingsEvents(): void {
       ? event.target.closest<HTMLButtonElement>("[data-google-calendar-action]")
       : null;
     const action = button?.dataset.googleCalendarAction;
-    if (action === "reload") {
-      window.location.reload();
-    } else if (action === "status" || action === "authorize" || action === "disconnect") {
+    if (action === "status" || action === "authorize" || action === "disconnect") {
       void runGoogleCalendarAction(action);
     }
   });
@@ -1276,7 +1508,6 @@ async function runGoogleCalendarAction(action: GoogleCalendarAction): Promise<vo
     || !isCurrentSignedInGeneration(generation)
     || !expectedInstructorId
     || calendar.pending
-    || calendar.ownerChanged
   ) return;
 
   calendar.pending = action;
@@ -1302,21 +1533,13 @@ async function runGoogleCalendarAction(action: GoogleCalendarAction): Promise<vo
     }
     if (action === "disconnect" && connection.state === "disconnected") {
       clearAvailability();
+      void refreshAgenda(generation);
       if (state.activeScreen === "finder") render();
     }
   } catch (error) {
     if (!isCurrentSignedInGeneration(generation) || handleAuthFailure(error, undefined, generation)) return;
-    if (
-      error instanceof InstructorCommandApiError
-      && error.status === 409
-      && error.code === "CALENDAR_CONNECTION_OWNER_CHANGED"
-    ) {
-      calendar.connection = null;
-      calendar.returnResult = null;
-      calendar.ownerChanged = true;
-    } else {
-      calendar.error = googleCalendarActionErrors[action];
-    }
+    if (handleChangedProvider(error, generation)) return;
+    calendar.error = googleCalendarActionErrors[action];
   }
 
   calendar.pending = null;
@@ -1387,6 +1610,12 @@ async function saveProviderSettings(form: HTMLFormElement): Promise<void> {
   try {
     const saved = await instructorCommandApi.saveProvider(payload);
     if (!isCurrentSignedInGeneration(generation)) return;
+    const timezoneChanged = saved.timezone !== state.provider?.timezone;
+    if (timezoneChanged) {
+      state.agendaToday = null;
+      agendaRequestGate.invalidate();
+      state.agenda = { status: "loading" };
+    }
     state.provider = saved;
     state.providerDraft = providerDraftFromConfiguration(saved);
     state.providerFieldErrors = {};
@@ -1397,8 +1626,11 @@ async function saveProviderSettings(form: HTMLFormElement): Promise<void> {
       state.snapshot = {
         ...state.snapshot,
         instructor: projectProviderOntoInstructor(state.snapshot.instructor, saved),
+        schedule: timezoneChanged ? [] : state.snapshot.schedule,
       };
     }
+    if (timezoneChanged) void refreshAgendaSnapshot(generation, activeScheduleDate());
+    void refreshAgenda(generation);
 
     if (saved.setup_complete) {
       try {
@@ -1617,7 +1849,17 @@ function isValidEmailAddress(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
-function applySnapshot(snapshot: CommandCenterSnapshot, { preserveUrl = false } = {}): void {
+function snapshotBelongsToSession(snapshot: CommandCenterSnapshot): boolean {
+  return instructorCommandApi.authMode === "mock"
+    || (snapshot.instructor.id === state.authSession?.coach.instructor_id
+      && snapshot.instructor.id === state.provider?.id);
+}
+
+function applySnapshot(snapshot: CommandCenterSnapshot): boolean {
+  if (!snapshotBelongsToSession(snapshot)) {
+    invalidateChangedProvider();
+    return false;
+  }
   const currentPolicy = state.schedulingPolicy;
   const draft = state.schedulingPolicyDraft;
   const incomingPolicy = snapshot.scheduling_policy;
@@ -1653,21 +1895,24 @@ function applySnapshot(snapshot: CommandCenterSnapshot, { preserveUrl = false } 
       : snapshot.instructor,
     email_deliveries: mergedDeliveries,
   };
-  if (!preserveUrl) persistCommandDate(snapshot.date);
+  return true;
 }
 
-function initialCommandDate(fallback: string): string {
-  const requested = new URLSearchParams(window.location.search).get("date")?.trim() ?? "";
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(requested)) return fallback;
-  const parsed = new Date(`${requested}T00:00:00Z`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === requested
-    ? requested
-    : fallback;
+function initialCommandDate(): string | null {
+  return parseCommandDate(new URLSearchParams(window.location.search).get("date")) ?? configuredCommandDate;
 }
 
-function persistCommandDate(date: string): void {
+function parseCommandDate(value?: string | null): string | null {
+  const date = value?.trim() ?? "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const parsed = new Date(`${date}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date ? date : null;
+}
+
+function persistScheduleSelection(): void {
   const url = new URL(window.location.href);
-  if (date === configuredCommandDate) {
+  const date = state.scheduleDate ?? (configuredCommandDate ? activeScheduleDate() : null);
+  if (!date || date === configuredCommandDate) {
     url.searchParams.delete("date");
   } else {
     url.searchParams.set("date", date);
@@ -1676,7 +1921,14 @@ function persistCommandDate(date: string): void {
 }
 
 function activeScheduleDate(): string {
-  return state.snapshot?.date ?? initialCommandDate(configuredCommandDate);
+  if (state.scheduleDate) return state.scheduleDate;
+  const localDate = providerLocalToday();
+  return state.agendaToday?.observedLocalDate === localDate ? state.agendaToday.date : localDate;
+}
+
+function providerLocalToday(): string {
+  const timeZone = scheduleTimeZone(state.provider?.timezone ?? state.snapshot?.instructor.timezone);
+  return dateKeyInTimeZone(new Date(), timeZone);
 }
 
 function patchEmailDeliveries(deliveries: CoachEmailDelivery[]): void {
@@ -1779,7 +2031,7 @@ async function refreshSlots(generation: number): Promise<boolean> {
     return false;
   }
   const selectedClient = findFeaturedClient(state.snapshot, state.selectedClientId);
-  const request = buildFindSlotsRequest(state.snapshot.instructor.id, selectedClient, state.snapshot.date);
+  const request = buildFindSlotsRequest(state.snapshot.instructor.id, selectedClient, activeScheduleDate());
   state.availabilityContext = structuredClone(request);
   state.recommendedSlots = [];
   state.availability = { status: "refreshing", message: "Finding safe starts…" };
@@ -1911,11 +2163,9 @@ function unavailableHandoff(
 
 async function refreshAfterPersistence(generation: number): Promise<void> {
   if (!isCurrentSignedInGeneration(generation)) return;
+  void refreshAgenda(generation, persistedRefreshAuthMessage());
   try {
-    const snapshot = await instructorCommandApi.getSnapshot(instructorId, activeScheduleDate());
-    if (!isCurrentSignedInGeneration(generation)) return;
-    applySnapshot(snapshot);
-    await refreshSlots(generation);
+    if (await refreshScheduleSnapshot(generation)) await refreshSlots(generation);
   } catch (error) {
     if (!isCurrentGeneration(generation)) return;
     if (
@@ -1953,6 +2203,20 @@ function handleAuthFailure(error: unknown, persistedMessage?: string, generation
   state.authStatus = "expired";
   state.error = persistedMessage ?? "Your session expired. Sign in again to continue.";
   render();
+  return true;
+}
+
+function invalidateChangedProvider(): void {
+  nextAuthGeneration();
+  clearProtectedState();
+  state.authStatus = "unavailable";
+  state.error = "Your signed-in provider changed. Verify your session to continue.";
+  render();
+}
+
+function handleChangedProvider(error: unknown, generation: number): boolean {
+  if (!(error instanceof InstructorCommandApiError) || error.code !== "CALENDAR_CONNECTION_OWNER_CHANGED") return false;
+  if (isCurrentGeneration(generation)) invalidateChangedProvider();
   return true;
 }
 
@@ -2007,8 +2271,14 @@ function isCurrentSignedInGeneration(generation: number): boolean {
 function clearProtectedState(): void {
   availabilityRequestGate.invalidate();
   policyRequestGate.invalidate();
+  agendaRequestGate.invalidate();
+  scheduleSnapshotRequestGate.invalidate();
+  blockerEditRequestGate.invalidate();
   state.authSession = null;
   state.snapshot = null;
+  state.scheduleDate = null;
+  state.agendaToday = null;
+  state.agenda = { status: "loading" };
   state.recommendedSlots = [];
   state.availabilityContext = null;
   state.availability = { status: "idle", message: "" };

@@ -9,7 +9,6 @@ export type GoogleCalendarSettingsState = {
   pending: GoogleCalendarAction | null;
   error: string;
   returnResult: GoogleCalendarReturn | null;
-  ownerChanged: boolean;
 };
 
 const connectionLabels = {
@@ -40,15 +39,6 @@ export function renderGoogleCalendarSettings(state: GoogleCalendarSettingsState)
 }
 
 export function renderGoogleCalendarSettingsContent(state: GoogleCalendarSettingsState): string {
-  if (state.ownerChanged) {
-    return `
-      <p class="error-banner" role="alert">Your signed-in provider changed. Reload Dayweave and sign in if prompted.</p>
-      <div class="google-calendar-actions">
-        <button class="primary-action" data-google-calendar-action="reload" type="button">Reload Dayweave</button>
-      </div>
-    `;
-  }
-
   const { connection, pending, returnResult } = state;
   const status = pending ? pendingLabels[pending] : connection ? connectionLabels[connection] : "";
   const error = state.error || (!pending && connection ? returnError(returnResult, connection) : "");

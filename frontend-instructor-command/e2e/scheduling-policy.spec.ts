@@ -1,5 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import type { SchedulingPolicy, SchedulingPolicyUpdate } from "../src/api/types";
+import { agendaResponse } from "./agenda-fixture";
 
 const SESSION_COOKIE_NAME = "swim_session";
 const SESSION_COOKIE_VALUE = "scheduling-policy-session";
@@ -211,7 +212,8 @@ async function installSchedulingPolicyApi(page: Page, options: ApiOptions = {}):
 
   await page.route(/\/api\/(?:auth|coach)\//, async (route) => {
     const request = route.request();
-    const pathname = new URL(request.url()).pathname;
+    const url = new URL(request.url());
+    const { pathname } = url;
     if (pathname.endsWith("/auth/coach/session")) {
       await route.fulfill({ json: authSession() });
       return;
@@ -221,7 +223,14 @@ async function installSchedulingPolicyApi(page: Page, options: ApiOptions = {}):
       return;
     }
     if (pathname.endsWith("/coach/command-center/snapshot")) {
-      await route.fulfill({ json: snapshotResponse(policy, setupComplete) });
+      await route.fulfill({ json: { ...snapshotResponse(policy, setupComplete), date: url.searchParams.get("date") } });
+      return;
+    }
+    if (pathname.endsWith("/coach/agenda")) {
+      await route.fulfill({ json: agendaResponse({
+        date: url.searchParams.get("date") ?? undefined,
+        status: setupComplete ? "ready" : "setup_required",
+      }) });
       return;
     }
     if (pathname.endsWith("/coach/scheduling-policy") && request.method() === "GET") {

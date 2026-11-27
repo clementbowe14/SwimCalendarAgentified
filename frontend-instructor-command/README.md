@@ -13,11 +13,12 @@ VITE_USE_MOCK_API=true npm run dev
 HTTP is the default mode and requires the FastAPI base URL:
 
 ```bash
-VITE_USE_MOCK_API=false VITE_INSTRUCTOR_API_URL=http://127.0.0.1:8000/api VITE_INSTRUCTOR_COMMAND_DATE=2026-08-20 npm run dev
+VITE_USE_MOCK_API=false VITE_INSTRUCTOR_API_URL=http://127.0.0.1:8000/api npm run dev
 ```
 
 The backend must be running with a provisioned provider account, or with both explicit local/test demo
-flags described in the root README. The frontend never supplies or selects an instructor ID.
+flags described in the root README. Schedule opens on the provider's local date. Set
+`VITE_INSTRUCTOR_COMMAND_DATE=2026-08-20` to pin the initial date for a local test.
 
 The `VITE_USE_MOCK_API=false` value may be omitted because HTTP is the default. Starting or building
 without an API URL fails instead of falling back to fixtures. Mock mode and an API URL cannot be set
@@ -56,6 +57,8 @@ Expected sign-in response:
 Protected coach endpoints:
 
 - `GET /api/coach/command-center/snapshot?date=YYYY-MM-DD`
+- `GET /api/coach/agenda` accepts an optional `date=YYYY-MM-DD`. Its
+  `X-Expected-Instructor-Id` header checks the already validated session owner.
 - `GET /api/coach/schedule?date=YYYY-MM-DD`
 - `POST /api/coach/availability`
 - `POST /api/coach/bookings`

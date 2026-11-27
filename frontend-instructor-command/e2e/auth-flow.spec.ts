@@ -1,4 +1,5 @@
 import { expect, type Page, type Route, test } from "@playwright/test";
+import { agendaResponse } from "./agenda-fixture";
 
 const SESSION_COOKIE_NAME = "swim_session";
 const SESSION_COOKIE_VALUE = "playwright-opaque-session";
@@ -100,12 +101,13 @@ test.describe("MVP coach auth flow", () => {
     await signInThroughUi(page);
     const priorSessionChecks = api.sessionCalls();
     const priorProtectedCalls = api.protectedCalls().length;
+    const priorRequestCount = api.requestOrder().length;
 
     await page.reload();
 
     await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
     expect(api.sessionCalls()).toBe(priorSessionChecks + 1);
-    const reloadOrder = api.requestOrder().slice(-4);
+    const reloadOrder = api.requestOrder().slice(priorRequestCount);
     expect(reloadOrder[0]).toBe("session");
     expect(api.protectedCalls().slice(priorProtectedCalls).every((call) => !call.beforeValidation)).toBe(true);
   });
@@ -741,7 +743,16 @@ async function fulfillProtectedCoachRoute(
   }
 
   if (pathname.endsWith("/coach/command-center/snapshot")) {
-    await route.fulfill({ json: commandCenterSnapshot(state.emailDeliveries) });
+    const date = new URL(route.request().url()).searchParams.get("date");
+    await route.fulfill({ json: { ...commandCenterSnapshot(state.emailDeliveries), date } });
+    return;
+  }
+
+  if (pathname.endsWith("/coach/agenda")) {
+    const date = new URL(route.request().url()).searchParams.get("date") ?? undefined;
+    await route.fulfill({
+      json: { ...agendaResponse(date ? { date } : {}), items: commandCenterSnapshot(state.emailDeliveries).schedule },
+    });
     return;
   }
 

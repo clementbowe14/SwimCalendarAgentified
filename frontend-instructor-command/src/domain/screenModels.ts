@@ -1,5 +1,6 @@
 import type {
   BookingRequestDTO,
+  BlockerScheduleItem,
   Client,
   CommandCenterSnapshot,
   LessonRequest,
@@ -11,7 +12,7 @@ import { formatShortDate, formatTimeRange, minutesBetween } from "../lib/format.
 
 export type AgendaRow = {
   id: string;
-  tone: "lesson" | "travel" | "buffer" | "break" | "personal" | "unavailable" | "open";
+  tone: ScheduleItem["kind"] | "open";
   kind: ScheduleItem["kind"];
   time: string;
   title: string;
@@ -38,7 +39,7 @@ export function buildAgendaRows(schedule: ScheduleItem[], timeZone?: string): Ag
     tone: agendaTone(item.kind),
     kind: item.kind,
     time: formatTimeRange(item.start_time, item.end_time, timeZone),
-    title: item.title,
+    title: item.kind === "calendar_busy" ? "Busy on Google Calendar" : item.title,
     detail: itemDetail(item),
     status: item.status ?? undefined,
   }));
@@ -57,6 +58,10 @@ export function buildFindSlotsRequest(
     requested_date: requestedDate,
     duration_mins: client.lesson_duration_mins,
   };
+}
+
+export function isScheduleBlocker(item: ScheduleItem): item is BlockerScheduleItem {
+  return item.kind === "break" || item.kind === "personal" || item.kind === "unavailable";
 }
 
 export function slotSafetyFacts(slot: TimeSlotDTO): string {
@@ -95,9 +100,9 @@ export function buildReadinessReport(): ScreenReadiness[] {
   return [
     {
       screen: "Today schedule",
-      isReadyForBackend: false,
-      requiredApiMethods: ["getSnapshot"],
-      missingApiContracts: ["schedule response does not include travel, buffer, open-gap, or computed next-lesson summary rows"],
+      isReadyForBackend: true,
+      requiredApiMethods: ["getSnapshot", "getAgenda"],
+      missingApiContracts: [],
     },
     {
       screen: "Availability Finder/New Client",
@@ -143,18 +148,28 @@ export function requestDateLabel(request: LessonRequest, timeZone?: string): str
 }
 
 function agendaTone(kind: ScheduleItem["kind"]): AgendaRow["tone"] {
-  if (kind === "lesson") return "lesson";
-  if (kind === "travel") return "travel";
-  if (kind === "buffer") return "buffer";
-  if (kind === "break") return "break";
-  if (kind === "personal") return "personal";
-  if (kind === "unavailable") return "unavailable";
-  return "open";
+  switch (kind) {
+    case "lesson": return "lesson";
+    case "travel": return "travel";
+    case "buffer": return "buffer";
+    case "break": return "break";
+    case "personal": return "personal";
+    case "unavailable": return "unavailable";
+    case "calendar_busy": return "calendar_busy";
+    default: return "open";
+  }
 }
 
 function itemDetail(item: ScheduleItem): string {
-  if (item.kind === "travel") return `${item.travel_time_mins ?? 0} min drive | ${item.note ?? item.location?.address ?? "Travel"}`;
-  if (item.kind === "buffer") return `${item.buffer_mins ?? 0} min reset | ${item.note ?? "Protected transition"}`;
+  if (item.kind === "travel") return [
+    item.travel_time_mins == null ? null : `${item.travel_time_mins} min drive`,
+    item.note ?? item.location?.address ?? "Travel",
+  ].filter(Boolean).join(" | ");
+  if (item.kind === "buffer") return [
+    item.buffer_mins == null ? null : `${item.buffer_mins} min reset`,
+    item.note ?? "Protected transition",
+  ].filter(Boolean).join(" | ");
+  if (item.kind === "calendar_busy") return "";
   if (item.kind === "open_gap") return item.note ?? "Safe booking space";
   if (item.kind === "break") return `Break${item.location ? ` | ${item.location.address}` : ""}`;
   if (item.kind === "personal") return `Personal event${item.location ? ` | ${item.location.address}` : ""}`;

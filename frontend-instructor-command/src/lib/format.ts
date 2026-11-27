@@ -1,9 +1,10 @@
-export function formatTime(isoDateTime: string, timeZone?: string): string {
+export function formatTime(isoDateTime: string, timeZone?: string, showTimeZone = false): string {
   const date = new Date(isoDateTime);
   return new Intl.DateTimeFormat("en-US", {
     hour: "numeric",
     minute: "2-digit",
     timeZone: explicitTimeZone(isoDateTime, timeZone),
+    timeZoneName: showTimeZone ? "short" : undefined,
   }).format(date);
 }
 
@@ -23,6 +24,52 @@ export function formatTimeRange(startIso: string, endIso: string, timeZone?: str
 
 export function minutesBetween(startIso: string, endIso: string): number {
   return Math.round((new Date(endIso).getTime() - new Date(startIso).getTime()) / 60000);
+}
+
+export function dateKeyInTimeZone(date: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-CA-u-ca-iso8601-nu-latn", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+export function supportedScheduleTimeZone(value?: string): string | null {
+  if (value) {
+    try {
+      return new Intl.DateTimeFormat("en-US", { timeZone: value }).resolvedOptions().timeZone;
+    } catch (error) {
+      if (!(error instanceof RangeError)) throw error;
+    }
+  }
+  return null;
+}
+
+export function scheduleTimeZone(value?: string): string {
+  return supportedScheduleTimeZone(value) ?? "America/Chicago";
+}
+
+export function shiftDateKey(date: string, days: number): string {
+  const day = new Date(`${date}T00:00:00Z`);
+  day.setUTCDate(day.getUTCDate() + days);
+  return day.toISOString().slice(0, 10);
+}
+
+export function scheduleLocalFields(isoDateTime: string, timeZone: string): { date: string; time: string } {
+  if (!explicitTimeZone(isoDateTime, timeZone)) {
+    return { date: isoDateTime.slice(0, 10), time: isoDateTime.slice(11, 16) };
+  }
+  const instant = new Date(isoDateTime);
+  return {
+    date: dateKeyInTimeZone(instant, timeZone),
+    time: new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      hourCycle: "h23",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(instant),
+  };
 }
 
 export function fullNameInitials(name: string): string {

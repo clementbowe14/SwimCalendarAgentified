@@ -1,6 +1,7 @@
 import { expect, type Page, type Request, type Route, test } from "@playwright/test";
 import { candidateSlots, providerConfiguration, snapshot } from "../src/api/mockData";
 import type { GoogleCalendarConnection } from "../src/api/types";
+import { agendaResponse } from "./agenda-fixture";
 
 const calendarPath = "/api/coach/calendar-connections/google";
 const googleAuthorization = "https://accounts.google.com/o/oauth2/v2/auth?state=local-state";
@@ -146,7 +147,7 @@ test("retries status, rejects an unsafe authorization URL, and recovers from a f
   await expect(card.getByRole("alert")).toHaveCount(0);
 });
 
-test("a stale Settings tab clears Calendar state after another provider takes over the session", async ({ page, baseURL }) => {
+test("Google Calendar detects a changed provider and clears the protected Settings workspace", async ({ page, baseURL }) => {
   const api = await installFakeCalendarProvider(page, baseURL, { connection: "connected" });
   await page.goto("/");
   await page.getByRole("button", { name: "Settings", exact: true }).click();
@@ -164,21 +165,13 @@ test("a stale Settings tab clears Calendar state after another provider takes ov
   expect(await response.request().headerValue("x-expected-instructor-id"))
     .toBe(encodeURIComponent(snapshot.instructor.id));
 
-  await expect(card.getByRole("alert")).toContainText("Reload Dayweave and sign in if prompted");
-  await expect(card.getByRole("status")).toHaveCount(0);
-  await expect(card.getByRole("button")).toHaveCount(1);
-  await expect(card.getByText(ownerChangedError.error.message)).toHaveCount(0);
-
-  await page.getByRole("button", { name: "Schedule", exact: true }).click();
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await expect(card.getByRole("button", { name: "Reload Dayweave" })).toBeEnabled();
+  await expect(page.getByRole("heading", { name: "Session check unavailable" })).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("Your signed-in provider changed");
+  await expect(page.locator("[data-provider-form]")).toHaveCount(0);
+  await expect(card).toHaveCount(0);
   expect(api.calendarRequests).toHaveLength(2);
 
-  await Promise.all([
-    page.waitForEvent("domcontentloaded"),
-    card.getByRole("button", { name: "Reload Dayweave" }).click(),
-  ]);
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Retry session check" }).click();
   await expect(card.getByRole("status")).toHaveText("Disconnected");
   expect(api.calendarRequests.map((request) => request.method())).toEqual(["GET", "DELETE", "GET"]);
   expect(await api.calendarRequests[2].headerValue("x-expected-instructor-id")).toBe(switchedInstructorId);
@@ -330,9 +323,25 @@ async function installFakeCalendarProvider(
     if (!cookie?.includes(activeSessionCookie)) return route.fulfill({ status: 401, json: apiError });
 
     if (path === "/api/auth/coach/session") return route.fulfill({ json: session });
-    if (path === "/api/coach/provider") return route.fulfill({ json: providerConfiguration });
+    if (path === "/api/coach/provider") {
+      return route.fulfill({ json: { ...providerConfiguration, id: session.coach.instructor_id } });
+    }
     if (path === "/api/coach/command-center/snapshot") {
-      return route.fulfill({ json: { ...snapshot, date: url.searchParams.get("date") ?? snapshot.date } });
+      return route.fulfill({ json: {
+        ...snapshot,
+        date: url.searchParams.get("date") ?? snapshot.date,
+        instructor: { ...snapshot.instructor, id: session.coach.instructor_id },
+      } });
+    }
+    if (path === "/api/coach/agenda") {
+      if (await request.headerValue("x-expected-instructor-id") !== encodeURIComponent(session.coach.instructor_id)) {
+        return route.fulfill({ status: 409, json: ownerChangedError });
+      }
+      return route.fulfill({ json: agendaResponse({
+        instructor_id: session.coach.instructor_id,
+        date: url.searchParams.get("date") ?? snapshot.date,
+        timezone: providerConfiguration.timezone,
+      }) });
     }
     if (path === "/api/coach/availability") {
       availabilityReads += 1;
