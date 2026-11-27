@@ -891,6 +891,47 @@ class AvailabilitySearchResponse(BaseModel):
     available_slots: list[TimeSlotResponse]
 
 
+PILOT_AVAILABILITY_DAYS = 14
+AvailabilityEmptyReason = Literal["no_working_hours", "outside_client_windows", "no_safe_slots"]
+
+
+class OneTimeAvailabilityCriteria(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_date: date
+    end_date: date
+    windows: list[CoachClientAvailabilityWindowMutation] = Field(default_factory=list, max_length=64)
+    duration_mins: int = Field(default=60, ge=15, le=240, multiple_of=15)
+    limit: int = Field(default=24, ge=1, le=48)
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> "OneTimeAvailabilityCriteria":
+        if not 0 <= (self.end_date - self.start_date).days < PILOT_AVAILABILITY_DAYS:
+            raise ValueError("Choose a date range of 1 to 14 days.")
+        return self
+
+
+class CoachAvailabilityRangeRequest(OneTimeAvailabilityCriteria):
+    client_address: str | None = Field(default=None, max_length=300)
+    is_instructor_facility: bool = False
+
+    @model_validator(mode="after")
+    def validate_location(self) -> "CoachAvailabilityRangeRequest":
+        if not self.is_instructor_facility:
+            self.client_address = CoachClientLocationMutation(address=self.client_address or "").address
+        return self
+
+
+class CoachAvailabilityRangeResponse(BaseModel):
+    start_date: date
+    end_date: date
+    duration_mins: int
+    timezone: str
+    location: LocationResponse
+    available_slots: list[TimeSlotResponse]
+    empty_reason: AvailabilityEmptyReason | None
+
+
 class GoogleCalendarEvent(BaseModel):
     start_iso: datetime
     end_iso: datetime

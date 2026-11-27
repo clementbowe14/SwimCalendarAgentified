@@ -1,0 +1,229 @@
+from datetime import date, datetime, time, timedelta
+from functools import partial
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+
+from app import api_services, availability_search, db, timezones, tools
+from app.calendar_connections import replace_google_calendar_connection
+from app.calendar_credentials import CalendarCredentialCipher
+from app.external_calendar import MAX_BUSY_QUERY_WINDOW, CalendarBusyInterval, CalendarBusySnapshot, ExternalCalendarTimeout
+from app.google_calendar_busy_source_factory import GoogleCalendarBusySourceFactory
+from app.models import AppointmentDB, InstructorDB, ProviderAccountDB, ProviderWorkingHoursDB
+
+
+PATH = "/api/coach/availability/search"
+INSTRUCTOR = "inst_001"
+NOW = datetime.fromisoformat("2026-11-24T15:30:00+00:00")
+SERVICE_ADDRESS = "10 Main Street"
+BASE_COORDS = (30.26, -97.75)
+REQUEST = {
+    "start_date": "2026-11-24",
+    "end_date": "2026-11-27",
+    "duration_mins": 30,
+    "is_instructor_facility": True,
+}
+
+
+@pytest.fixture(autouse=True)
+def fixed_clock(monkeypatch):
+    _set_clock(monkeypatch, NOW)
+
+
+def _set_clock(monkeypatch, now):
+    monkeypatch.setattr(
+        api_services, "search_one_time_availability",
+        partial(availability_search.search_one_time_availability, now=now),
+    )
+
+
+@pytest.fixture()
+def provider(authenticated_api_client):
+    with db.SessionLocal.begin() as session:
+        settings = session.get(InstructorDB, INSTRUCTOR)
+        settings.base_address = settings.service_address = SERVICE_ADDRESS
+        settings.base_lat = settings.service_lat = BASE_COORDS[0]
+        settings.base_lng = settings.service_lng = BASE_COORDS[1]
+        for row in session.query(ProviderWorkingHoursDB).filter_by(instructor_id=INSTRUCTOR):
+            row.enabled = True
+            row.start_time, row.end_time = time(8), time(17)
+    return authenticated_api_client
+
+
+def _block(identifier, start, end, *, located=False):
+    return AppointmentDB(
+        id=identifier, instructor_id=INSTRUCTOR, title=identifier,
+        start_time=timezones.to_utc_storage(datetime.fromisoformat(start)),
+        end_time=timezones.to_utc_storage(datetime.fromisoformat(end)),
+        event_type="block", blocker_kind="personal",
+        location_address=SERVICE_ADDRESS if located else None,
+        lat=BASE_COORDS[0] if located else None,
+        lng=BASE_COORDS[1] if located else None,
+    )
+
+
+def _connect_calendar(monkeypatch, query):
+    with db.SessionLocal.begin() as session:
+        account = session.query(ProviderAccountDB).filter_by(instructor_id=INSTRUCTOR).one()
+        replace_google_calendar_connection(
+            session, account_id=account.id, refresh_token="synthetic-range-refresh",
+            cipher=CalendarCredentialCipher(active_key_id="test", keys={"test": b"k" * 32}), now=NOW,
+        )
+    monkeypatch.setattr(
+        GoogleCalendarBusySourceFactory, "create_for", lambda *_: SimpleNamespace(query_busy_periods=query),
+    )
+
+
+def test_bounded_search_filters_whole_slots_and_applies_internal_and_google_busy_time(provider, monkeypatch):
+    with db.SessionLocal.begin() as session:
+        wednesday = session.get(ProviderWorkingHoursDB, (INSTRUCTOR, 2))
+        wednesday.enabled, wednesday.start_time, wednesday.end_time = False, None, None
+        session.add(_block("Personal appointment", "2026-11-24T09:45:00-06:00", "2026-11-24T10:00:00-06:00"))
+
+    query = Mock(return_value=CalendarBusySnapshot("verified", (
+        CalendarBusyInterval(
+            datetime.fromisoformat("2026-11-26T09:00:00-06:00"),
+            datetime.fromisoformat("2026-11-26T09:15:00-06:00"),
+        ),
+    )))
+    _connect_calendar(monkeypatch, query)
+    geocode = Mock()
+    monkeypatch.setattr(tools.routing_provider, "geocode", geocode)
+    windows = [
+        {"days": ["tuesday", "wednesday", "thursday", "friday"], "start_time": "09:00", "end_time": "09:30"},
+        {"days": ["tuesday", "wednesday", "thursday", "friday"], "start_time": "09:30", "end_time": "10:00"},
+    ]
+
+    response = provider.post(PATH, json={**REQUEST, "windows": windows, "limit": 3})
+
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "private, no-store"
+    result = response.json()
+    assert result["timezone"] == "America/Chicago"
+    assert result["location"]["address"] == SERVICE_ADDRESS
+    assert result["empty_reason"] is None
+    assert [slot["start_iso"] for slot in result["available_slots"]] == [
+        "2026-11-26T09:30:00-06:00", "2026-11-27T09:00:00-06:00", "2026-11-27T09:15:00-06:00",
+    ]
+    assert result["available_slots"][0]["buffer_mins"] == 10
+    query.assert_called_once_with(
+        instructor_id=INSTRUCTOR, window_start=datetime.fromisoformat("2026-11-24T14:00:00+00:00"),
+        window_end=datetime.fromisoformat("2026-11-27T23:00:00+00:00"),
+    )
+    geocode.assert_not_called()
+
+
+def test_home_is_geocoded_once_across_multiple_days(provider, monkeypatch):
+    coords = (30.255, -97.655)
+    geocode = Mock(return_value=coords)
+    monkeypatch.setattr(tools.routing_provider, "geocode", geocode)
+    windows = [{"days": ["thursday", "friday"], "start_time": "14:00", "end_time": "14:30"}]
+    response = provider.post(PATH, json={
+        **REQUEST, "windows": windows, "is_instructor_facility": False, "client_address": " 20 Main Street ",
+    })
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["location"] == {
+        "address": "20 Main Street", "lat": coords[0], "lng": coords[1], "is_instructor_facility": False,
+    }
+    assert [slot["start_iso"] for slot in result["available_slots"]] == [
+        "2026-11-26T14:00:00-06:00", "2026-11-27T14:00:00-06:00",
+    ]
+    assert all(slot["travel_time_mins"] > 0 for slot in result["available_slots"])
+    geocode.assert_called_once_with("20 Main Street")
+
+
+def test_dst_fall_back_requires_entire_elapsed_slot_in_client_window(provider, monkeypatch):
+    _set_clock(monkeypatch, datetime.fromisoformat("2026-11-01T05:00:00+00:00"))
+    with db.SessionLocal.begin() as session:
+        sunday = session.get(ProviderWorkingHoursDB, (INSTRUCTOR, 6))
+        sunday.start_time, sunday.end_time = time(0, 30), time(4)
+
+    response = provider.post(PATH, json={
+        **REQUEST, "start_date": "2026-11-01", "end_date": "2026-11-01", "duration_mins": 60,
+        "windows": [{"days": ["sunday"], "start_time": "01:30", "end_time": "02:30"}],
+    })
+
+    assert response.status_code == 200, response.text
+    assert [slot["start_iso"] for slot in response.json()["available_slots"]] == ["2026-11-01T01:30:00-06:00"]
+
+
+def test_calendar_fails_closed_if_any_chunk_is_unverified(provider, monkeypatch):
+    with db.SessionLocal.begin() as session:
+        session.add_all([
+            _block("before search", "2026-11-23T01:00:00-06:00", "2026-11-23T01:30:00-06:00", located=True),
+            _block("after search", "2026-12-08T22:00:00-06:00", "2026-12-08T22:30:00-06:00", located=True),
+        ])
+    query = Mock(side_effect=[CalendarBusySnapshot("verified", ()), ExternalCalendarTimeout()])
+    _connect_calendar(monkeypatch, query)
+
+    response = provider.post(PATH, json={**REQUEST, "end_date": "2026-12-07"})
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "CALENDAR_AVAILABILITY_UNAVAILABLE"
+    first, second = (call.kwargs for call in query.call_args_list)
+    assert first["window_end"] - first["window_start"] == MAX_BUSY_QUERY_WINDOW
+    assert second["window_start"] == first["window_end"]
+    assert second["window_end"] == datetime.fromisoformat("2026-12-09T04:00:00+00:00")
+
+
+def test_returns_actionable_empty_outcomes_without_searching_irrelevant_days(provider):
+    with db.SessionLocal.begin() as session:
+        tuesday = session.get(ProviderWorkingHoursDB, (INSTRUCTOR, 1))
+        tuesday.enabled, tuesday.start_time, tuesday.end_time = False, None, None
+    no_work = provider.post(PATH, json={**REQUEST, "end_date": REQUEST["start_date"]})
+    other_days = provider.post(PATH, json={
+        **REQUEST, "windows": [{"days": ["saturday"], "start_time": "09:00", "end_time": "10:00"}],
+    })
+    no_safe_slots = provider.post(PATH, json={
+        **REQUEST, "windows": [{"days": ["thursday"], "start_time": "19:00", "end_time": "20:00"}],
+    })
+
+    for response, reason in zip((no_work, other_days, no_safe_slots), (
+        "no_working_hours", "outside_client_windows", "no_safe_slots",
+    )):
+        assert response.status_code == 200, response.text
+        assert response.json()["available_slots"] == []
+        assert response.json()["empty_reason"] == reason
+
+
+@pytest.mark.parametrize("changes", [
+    {"end_date": "2026-11-23"},
+    {"end_date": "2026-12-08"},
+    {"limit": 49},
+    {"recurrence": "weekly"},
+    {"is_instructor_facility": False},
+    {"windows": [{"days": ["thursday"], "start_time": "15:00", "end_time": "14:00"}]},
+])
+def test_validates_range_filters_and_one_time_scope(provider, changes):
+    response = provider.post(PATH, json={**REQUEST, **changes})
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_fences_search_to_fourteen_days_on_the_provider_calendar(provider, monkeypatch):
+    # It is already November 25 in UTC, but still November 24 in Chicago.
+    _set_clock(monkeypatch, datetime.fromisoformat("2026-11-25T02:00:00+00:00"))
+    end_date = (date.fromisoformat(REQUEST["start_date"]) + timedelta(days=13)).isoformat()
+    allowed = provider.post(PATH, json={**REQUEST, "end_date": end_date, "limit": 1})
+    outside = provider.post(PATH, json={**REQUEST, "start_date": "2026-12-08", "end_date": "2026-12-09"})
+    past = provider.post(PATH, json={**REQUEST, "start_date": "2026-11-23"})
+
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["available_slots"][0]["start_iso"].startswith("2026-11-25")
+    for response in (outside, past):
+        assert response.status_code == 400, response.text
+        assert response.json()["error"]["code"] == "INVALID_SCHEDULING_REQUEST"
+
+
+def test_requires_authenticated_provider_and_rejects_a_changed_owner(api_client, coach_auth_headers):
+    unauthenticated = api_client.post(PATH, json=REQUEST)
+    changed_owner = api_client.post(PATH, json=REQUEST, headers={
+        **coach_auth_headers, "X-Expected-Instructor-Id": "another-provider",
+    })
+
+    assert unauthenticated.status_code == 401
+    assert changed_owner.status_code == 409
+    assert changed_owner.json()["error"]["code"] == "CALENDAR_CONNECTION_OWNER_CHANGED"

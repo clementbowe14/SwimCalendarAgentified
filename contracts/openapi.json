@@ -1085,6 +1085,126 @@
         "title": "CoachAuthResponse",
         "type": "object"
       },
+      "CoachAvailabilityRangeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "client_address": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Address"
+          },
+          "duration_mins": {
+            "default": 60,
+            "maximum": 240.0,
+            "minimum": 15.0,
+            "multipleOf": 15.0,
+            "title": "Duration Mins",
+            "type": "integer"
+          },
+          "end_date": {
+            "format": "date",
+            "title": "End Date",
+            "type": "string"
+          },
+          "is_instructor_facility": {
+            "default": false,
+            "title": "Is Instructor Facility",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 24,
+            "maximum": 48.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "start_date": {
+            "format": "date",
+            "title": "Start Date",
+            "type": "string"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/CoachClientAvailabilityWindowMutation"
+            },
+            "maxItems": 64,
+            "title": "Windows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "start_date",
+          "end_date"
+        ],
+        "title": "CoachAvailabilityRangeRequest",
+        "type": "object"
+      },
+      "CoachAvailabilityRangeResponse": {
+        "properties": {
+          "available_slots": {
+            "items": {
+              "$ref": "#/components/schemas/TimeSlotResponse"
+            },
+            "title": "Available Slots",
+            "type": "array"
+          },
+          "duration_mins": {
+            "title": "Duration Mins",
+            "type": "integer"
+          },
+          "empty_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "no_working_hours",
+                  "outside_client_windows",
+                  "no_safe_slots"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Empty Reason"
+          },
+          "end_date": {
+            "format": "date",
+            "title": "End Date",
+            "type": "string"
+          },
+          "location": {
+            "$ref": "#/components/schemas/LocationResponse"
+          },
+          "start_date": {
+            "format": "date",
+            "title": "Start Date",
+            "type": "string"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_date",
+          "end_date",
+          "duration_mins",
+          "timezone",
+          "location",
+          "available_slots",
+          "empty_reason"
+        ],
+        "title": "CoachAvailabilityRangeResponse",
+        "type": "object"
+      },
       "CoachAvailabilityWindow": {
         "properties": {
           "days": {
@@ -1613,6 +1733,46 @@
           "authorization_required_at"
         ],
         "title": "CoachCalendarConnectionResponse",
+        "type": "object"
+      },
+      "CoachClientAvailabilityWindowMutation": {
+        "additionalProperties": false,
+        "properties": {
+          "days": {
+            "items": {
+              "enum": [
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday"
+              ],
+              "type": "string"
+            },
+            "maxItems": 7,
+            "minItems": 1,
+            "title": "Days",
+            "type": "array"
+          },
+          "end_time": {
+            "pattern": "^ *(?:[01]\\d|2[0-3]):[0-5]\\d *$",
+            "title": "End Time",
+            "type": "string"
+          },
+          "start_time": {
+            "pattern": "^ *(?:[01]\\d|2[0-3]):[0-5]\\d *$",
+            "title": "Start Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "days",
+          "start_time",
+          "end_time"
+        ],
+        "title": "CoachClientAvailabilityWindowMutation",
         "type": "object"
       },
       "CoachClientAvailabilityWindowResponse": {
@@ -4515,6 +4675,84 @@
           }
         ],
         "summary": "Find Availability",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/availability/search": {
+      "post": {
+        "operationId": "find_availability_range_api_coach_availability_search_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
+            }
+          },
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoachAvailabilityRangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachAvailabilityRangeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Find Availability Range",
         "tags": [
           "coach"
         ]

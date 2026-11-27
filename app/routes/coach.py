@@ -27,6 +27,8 @@ from app.api_schemas import (
     AvailabilitySearchResponse,
     BookLessonResponse,
     ClientInviteCalendarLinks,
+    CoachAvailabilityRangeRequest,
+    CoachAvailabilityRangeResponse,
     CoachBlockerMutation,
     CoachBlockerResponse,
     CoachBlockerUpdate,
@@ -73,6 +75,7 @@ from app.api_services import (
     list_coach_clients,
     request_alternatives_for_coach_lesson_request,
     search_coach_availability,
+    search_coach_availability_range,
     update_coach_provider_settings,
     update_coach_blocker,
     update_coach_scheduling_policy,
@@ -434,6 +437,24 @@ def find_availability(
         )
     finally:
         # Keep request data and the authenticated principal out of route tracebacks.
+        del request, http_request, coach
+
+
+@router.post("/availability/search", response_model=CoachAvailabilityRangeResponse)
+def find_availability_range(
+    request: CoachAvailabilityRangeRequest,
+    http_request: Request,
+    coach: CoachContext = Depends(get_expected_instructor_coach),
+) -> CoachAvailabilityRangeResponse:
+    try:
+        return search_coach_availability_range(
+            coach.instructor_id,
+            request,
+            calendar_busy_source=_google_calendar_availability_source(
+                http_request.app.state, coach.instructor_id
+            ),
+        )
+    finally:
         del request, http_request, coach
 
 

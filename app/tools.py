@@ -197,30 +197,7 @@ def _find_available_swim_slots(
         return []
     day_start, day_end = working_window
 
-    instructor_base_loc = LocationInfo(
-        address=provider.base_location.address,
-        lat=provider.base_location.lat,
-        lng=provider.base_location.lng,
-        is_instructor_facility=False,
-    )
-    instructor_service_loc = LocationInfo(
-        address=provider.service_location.address,
-        lat=provider.service_location.lat,
-        lng=provider.service_location.lng,
-        is_instructor_facility=True,
-    )
-
-    if is_instructor_facility:
-        target_loc = instructor_service_loc
-    else:
-        lat, lng = routing_provider.geocode(client_address)
-        target_loc = LocationInfo(
-            address=client_address,
-            lat=lat,
-            lng=lng,
-            is_instructor_facility=False,
-        )
-
+    target_loc = resolve_availability_location(provider, client_address, is_instructor_facility)
     internal_events = routing_events_for_date(instructor_id, target_date, provider.timezone)
     busy_start, busy_end = routing_calendar_window(day_start, day_end, internal_events)
     external_events = _external_busy_events(
@@ -231,6 +208,43 @@ def _find_available_swim_slots(
         internal_events=internal_events,
     )
     policy = buffer_policy or load_buffer_policy(instructor_id, operation="availability")
+    return slots_for_working_day(
+        provider, target_date, working_window, target_loc, [*internal_events, *external_events],
+        policy=policy, duration_mins=duration_mins,
+    )
+
+
+def resolve_availability_location(
+    provider: ProviderConfiguration,
+    client_address: str,
+    is_instructor_facility: bool,
+) -> LocationInfo:
+    if is_instructor_facility:
+        service = provider.service_location
+        if service is None:
+            raise ProviderSetupIncomplete(provider.setup_missing_fields)
+        return LocationInfo(
+            address=service.address, lat=service.lat, lng=service.lng, is_instructor_facility=True,
+        )
+    lat, lng = routing_provider.geocode(client_address)
+    return LocationInfo(address=client_address, lat=lat, lng=lng)
+
+
+def slots_for_working_day(
+    provider: ProviderConfiguration,
+    target_date: datetime.date,
+    working_window: tuple[datetime.datetime, datetime.datetime],
+    target_location: LocationInfo,
+    events: List[dict],
+    *,
+    policy: BufferPolicy,
+    duration_mins: int,
+) -> List[TimeSlotDTO]:
+    base = provider.base_location
+    if base is None:
+        raise ProviderSetupIncomplete(provider.setup_missing_fields)
+    base_location = LocationInfo(address=base.address, lat=base.lat, lng=base.lng)
+    day_start, day_end = working_window
     constraint_engine = SwimSchedulerConstraintEngine(
         routing_provider,
         policy,
@@ -238,16 +252,16 @@ def _find_available_swim_slots(
     )
     local_day_start, _ = timezones.local_day_window_utc_storage(target_date, provider.timezone)
     position, existing_events = working_schedule_context(
-        day_start, instructor_base_loc, [*internal_events, *external_events],
+        day_start, base_location, events,
         local_day_start=timezones.storage_to_aware_utc(local_day_start),
         engine=constraint_engine,
     )
     utc_slots = constraint_engine.find_available_slots_for_day(
         day_start=day_start,
         day_end=day_end,
-        instructor_main_location=instructor_base_loc,
+        instructor_main_location=base_location,
         existing_events=existing_events,
-        target_location=target_loc,
+        target_location=target_location,
         duration_mins=duration_mins,
         initial_position=position,
         next_shift_start=next_day_shift_start(provider, target_date),
