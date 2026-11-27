@@ -76,7 +76,7 @@ import {
   validateProviderDraft,
   type ProviderFieldErrors,
 } from "./domain/providerSettings.js";
-import { dateKeyInTimeZone, scheduleLocalFields, scheduleTimeZone, shiftDateKey } from "./lib/format.js";
+import { dateKeyInTimeZone, scheduleLocalFields, scheduleTimeZone, shiftDateKey, supportedScheduleTimeZone } from "./lib/format.js";
 import { escapeHtml } from "./lib/html.js";
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -704,7 +704,7 @@ async function refreshAgenda(
   const token = agendaRequestGate.next();
   const date = state.scheduleDate;
   const previousTimeZone = agendaTimeZone(state.agenda);
-  const localDateAtRequest = providerLocalToday();
+  const requestedAt = new Date();
   const sameSession = () => (
     isCurrentSignedInGeneration(generation)
     && state.authSession?.coach.instructor_id === instructor
@@ -724,9 +724,11 @@ async function refreshAgenda(
       return;
     }
     if (!current()) return;
-    const localDate = providerLocalToday();
+    const responseTimeZone = supportedScheduleTimeZone(agenda.timezone);
+    const localDate = dateKeyInTimeZone(new Date(), responseTimeZone ?? scheduleTimeZone());
     const rolledOver = agenda.date !== agenda.today
-      || (localDateAtRequest !== localDate && agenda.today !== localDate);
+      || (responseTimeZone !== null && agenda.today !== localDate
+        && dateKeyInTimeZone(requestedAt, responseTimeZone) !== localDate);
     if (date === null && retryMidnight && rolledOver) {
       state.agendaToday = null;
       void refreshAgenda(generation, persistedMessage, false);
@@ -741,7 +743,7 @@ async function refreshAgenda(
       state.agenda = { status: "error", timezone: previousTimeZone };
     } else {
       state.agenda = { status: "loaded", response: agenda };
-      state.agendaToday = { date: agenda.today, observedLocalDate: providerLocalToday() };
+      state.agendaToday = { date: agenda.today, observedLocalDate: localDate };
       const snapshotTimeZoneChanged = agenda.timezone !== state.snapshot?.instructor.timezone;
       if (snapshotTimeZoneChanged || (date === null && agenda.date !== state.snapshot?.date)) {
         if (date === null) persistScheduleSelection();
@@ -1592,7 +1594,8 @@ function wireProviderSettingsEvents(): void {
 }
 
 async function saveProviderSettings(form: HTMLFormElement): Promise<void> {
-  if (!state.providerDraft) return;
+  const provider = state.provider;
+  if (!state.providerDraft || !provider) return;
   const payload = normalizeProviderDraft(providerDraftFromForm(form, state.providerDraft));
   const errors = validateProviderDraft(payload);
   state.providerDraft = payload;
@@ -1611,12 +1614,16 @@ async function saveProviderSettings(form: HTMLFormElement): Promise<void> {
   render();
 
   try {
-    const saved = await instructorCommandApi.saveProvider(payload);
+    const saved = await instructorCommandApi.saveProvider(payload, provider.id);
     if (!isCurrentSignedInGeneration(generation)) return;
-    const knownTimeZone = agendaTimeZone(state.agenda) ?? state.snapshot?.instructor.timezone ?? state.provider?.timezone;
+    if (saved.id !== provider.id) {
+      invalidateChangedProvider();
+      return;
+    }
+    const knownTimeZone = agendaTimeZone(state.agenda) ?? state.snapshot?.instructor.timezone ?? provider.timezone;
     const timezoneChanged = saved.timezone !== knownTimeZone;
-    if (timezoneChanged) {
-      state.agendaToday = null;
+    if (timezoneChanged) state.agendaToday = null;
+    if (timezoneChanged || state.agenda.status !== "loaded") {
       agendaRequestGate.invalidate();
       state.agenda = { status: "loading", timezone: saved.timezone };
     }
@@ -1653,6 +1660,7 @@ async function saveProviderSettings(form: HTMLFormElement): Promise<void> {
     }
   } catch (error) {
     if (!isCurrentGeneration(generation)) return;
+    if (handleChangedProvider(error, generation)) return;
     if (!handleAuthFailure(error, undefined, generation)) {
       const fieldErrors = providerFieldErrorsFromApi(error, payload);
       state.providerFieldErrors = fieldErrors;

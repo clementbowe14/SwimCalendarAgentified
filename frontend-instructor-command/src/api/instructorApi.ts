@@ -124,7 +124,7 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
     return this.getGoogleCalendarConnection(expectedInstructorId);
   }
 
-  async saveProvider(payload: ProviderConfigurationUpdate): Promise<ProviderConfiguration> {
+  async saveProvider(payload: ProviderConfigurationUpdate, _expectedInstructorId?: Id): Promise<ProviderConfiguration> {
     const base_location = mockGeocodedLocation(payload.base_address, this.currentProvider.base_location, 0);
     const service_location = mockGeocodedLocation(
       payload.service_address,
@@ -634,8 +634,8 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     return this.get("/coach/provider");
   }
 
-  saveProvider(provider: ProviderConfigurationUpdate): Promise<ProviderConfiguration> {
-    return this.put("/coach/provider", provider);
+  saveProvider(provider: ProviderConfigurationUpdate, expectedInstructorId?: Id): Promise<ProviderConfiguration> {
+    return this.put("/coach/provider", provider, expectedInstructorId);
   }
 
   async getGoogleCalendarConnection(expectedInstructorId: Id): Promise<GoogleCalendarConnection> {

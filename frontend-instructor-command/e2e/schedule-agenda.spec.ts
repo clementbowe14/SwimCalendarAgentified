@@ -435,6 +435,52 @@ test("does not fall back to rows selected in a previous provider timezone", asyn
   await expect(page.locator('[data-agenda-row="current-zone"]')).toBeVisible();
 });
 
+for (const rejectedSave of [true, false]) {
+  test(`clears protected Settings when the save ${rejectedSave ? "rejects a changed provider" : "returns a different provider"}`, async ({ page }) => {
+    await mockApi(page, (date) => ({ json: agenda(date) }), {
+      saveProvider: (route) => rejectedSave
+        ? route.fulfill({ status: 409, json: error("Provider changed", "CALENDAR_CONNECTION_OWNER_CHANGED") })
+        : route.fulfill({ json: { ...providerConfiguration, id: "another-provider" } }),
+    });
+    await page.goto(`/?date=${day}`);
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    const save = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/coach/provider"
+      && request.method() === "PUT");
+    await page.getByRole("button", { name: "Save provider settings", exact: true }).click();
+
+    expect(await (await save).headerValue("x-expected-instructor-id")).toBe(encodeURIComponent(providerId));
+    await expect(page.getByRole("heading", { name: "Session check unavailable" })).toBeVisible();
+    await expect(page.getByRole("alert")).toContainText("Your signed-in provider changed");
+    await expect(page.locator("[data-provider-form]")).toHaveCount(0);
+  });
+}
+
+test("keeps a confirmed timezone from Settings before the first agenda read", async ({ page }) => {
+  const moved = appointment("moved", "Different day in the saved timezone", "04:30", "04:50");
+  let changedTimezone = false;
+  const api = await mockApi(page, () => ({ status: 503, json: error("Agenda unavailable") }), {
+    setupComplete: false,
+    snapshotTimezone: () => changedTimezone ? "America/New_York" : timeZone,
+    snapshotItems: () => changedTimezone ? [moved] : [],
+    snapshotHasPendingRequests: () => changedTimezone,
+    saveProvider: (route) => route.fulfill({
+      json: { ...providerConfiguration, id: providerId, timezone: timeZone, setup_complete: true },
+    }),
+  });
+  await page.goto(`/?date=${day}`);
+  await page.getByRole("button", { name: "Save provider settings", exact: true }).click();
+  await expect(page.locator("[data-provider-save-status]")).toContainText("Provider settings saved");
+  expect(api.agendaRequests).toHaveLength(0);
+
+  await page.getByRole("button", { name: "Schedule", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("The agenda couldn’t load");
+  changedTimezone = true;
+  await page.getByRole("button", { name: "Retry agenda" }).click();
+
+  await expect(page.getByRole("region", { name: "Pending request from Sofia Martinez" })).toBeVisible();
+  await expect(page.locator('[data-agenda-row="moved"]')).toHaveCount(0);
+});
+
 test("discards stale fallback after Schedule observes a timezone change in another tab", async ({ page }) => {
   const moved = appointment("moved", "Moved to tomorrow", "04:30", "04:50", address, "2026-08-28");
   const known = appointment("known", "Still on the selected day", "13:00", "13:30");
@@ -497,10 +543,15 @@ test("uses the new local day's known rows after midnight when an unpinned agenda
   await expect(page.locator('[data-agenda-row="old"]')).toHaveCount(0);
 });
 
-for (const finalizedAfterMidnight of [false, true]) {
-  test(`rechecks Today when a response ${finalizedAfterMidnight ? "finishes" : "arrives"} after local midnight`, async ({ page }) => {
+for (const scenario of [
+  { label: "arrives after local midnight", midnight: "05:00", timezone: timeZone, today: day },
+  { label: "finishes after local midnight", midnight: "05:00", timezone: timeZone, today: "2026-08-28" },
+  { label: "arrives after midnight in a newly observed timezone", midnight: "04:00", timezone: "America/New_York", today: day },
+]) {
+  test(`rechecks Today when a response ${scenario.label}`, async ({ page }) => {
     const pinnedDay = "2026-08-26";
     const nextDay = "2026-08-28";
+    const midnight = Date.parse(`${nextDay}T${scenario.midnight}:00Z`);
     const oldLesson = appointment("old", "Yesterday’s lesson", "14:00", "14:45");
     const newLesson = appointment("new", "Today’s lesson", "14:00", "14:45", address, nextDay);
     let respond!: () => void;
@@ -510,17 +561,17 @@ for (const finalizedAfterMidnight of [false, true]) {
       if (date === pinnedDay) return { json: agenda(date, { today: day }) };
       if (++requestsForToday === 1) {
         await pending;
-        return { json: agenda(day, { today: finalizedAfterMidnight ? nextDay : day, items: [oldLesson] }) };
+        return { json: agenda(day, { today: scenario.today, timezone: scenario.timezone, items: [oldLesson] }) };
       }
-      return { json: agenda(nextDay, { today: nextDay, items: [newLesson] }) };
+      return { json: agenda(nextDay, { today: nextDay, timezone: scenario.timezone, items: [newLesson] }) };
     }, { today: day });
-    await page.clock.setFixedTime(new Date("2026-08-28T04:59:00Z"));
+    await page.clock.setFixedTime(new Date(midnight - 60_000));
     await page.goto(`/?date=${pinnedDay}`);
     await expect(page.getByRole("heading", { name: "Nothing on the route yet" })).toBeVisible();
     await page.getByRole("button", { name: "Today", exact: true }).click();
     await expect.poll(() => requestsForToday).toBe(1);
 
-    await page.clock.setFixedTime(new Date("2026-08-28T05:01:00Z"));
+    await page.clock.setFixedTime(new Date(midnight + 60_000));
     respond();
 
     await expect(page.getByRole("heading", { name: "Friday, August 28" })).toBeVisible();
@@ -656,6 +707,7 @@ async function mockApi(
     snapshotOwner?: string;
     snapshotItems?: (date: string) => ScheduleItem[];
     snapshotTimezone?: () => string;
+    snapshotHasPendingRequests?: () => boolean;
     failSnapshot?: () => boolean;
     saveProvider?: (route: Route) => Promise<void>;
     blockers?: () => ProviderBlocker[] | Promise<ProviderBlocker[]>;
@@ -697,7 +749,9 @@ async function mockApi(
             id: options.snapshotOwner ?? providerId,
             timezone: options.snapshotTimezone?.() ?? provider.timezone,
           },
-          schedule: options.snapshotItems?.(date) ?? [], requests: [], email_deliveries: [],
+          schedule: options.snapshotItems?.(date) ?? [],
+          requests: options.snapshotHasPendingRequests?.() ? snapshot.requests : [],
+          email_deliveries: [],
         } });
       case "/api/coach/agenda":
         agendaRequests.push(request);

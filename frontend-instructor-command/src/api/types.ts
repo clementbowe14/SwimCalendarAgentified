@@ -405,7 +405,7 @@ export type InstructorCommandApi = {
   signIn(credentials: InstructorAuthCredentials): Promise<InstructorAuthSession>;
   signOut(): Promise<void>;
   getProvider(): Promise<ProviderConfiguration>;
-  saveProvider(provider: ProviderConfigurationUpdate): Promise<ProviderConfiguration>;
+  saveProvider(provider: ProviderConfigurationUpdate, expectedInstructorId?: Id): Promise<ProviderConfiguration>;
   getGoogleCalendarConnection(expectedInstructorId: Id): Promise<GoogleCalendarConnection>;
   authorizeGoogleCalendar(expectedInstructorId: Id): Promise<string>;
   disconnectGoogleCalendar(expectedInstructorId: Id): Promise<GoogleCalendarConnection>;

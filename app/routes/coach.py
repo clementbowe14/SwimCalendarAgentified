@@ -234,11 +234,15 @@ def delete_google_calendar_connection(
     return disconnect_coach_google_calendar(coach.account_id)
 
 
-@router.put("/provider", response_model=CoachProviderSettingsResponse)
+@router.put(
+    "/provider",
+    response_model=CoachProviderSettingsResponse,
+    responses={409: {"model": ErrorResponse, "description": "The signed-in provider changed."}},
+)
 def save_provider_settings(
     settings: CoachProviderSettingsUpdate,
     response: Response,
-    coach: CoachContext = Depends(get_current_coach),
+    coach: CoachContext = Depends(get_expected_instructor_coach),
 ) -> CoachProviderSettingsResponse:
     _private_response(response)
     return update_coach_provider_settings(coach.instructor_id, settings)

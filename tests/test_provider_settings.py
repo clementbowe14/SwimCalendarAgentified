@@ -262,7 +262,7 @@ def test_provider_auth_csrf_and_tenant_identity_are_enforced(
     second_saved = api_client.put(
         "/api/coach/provider",
         json=second_payload,
-        headers=second_headers,
+        headers={**second_headers, "X-Expected-Instructor-Id": "inst_002"},
     )
     first_after = api_client.get("/api/coach/provider", headers=coach_auth_headers)
 
@@ -271,6 +271,15 @@ def test_provider_auth_csrf_and_tenant_identity_are_enforced(
     assert second_saved.json()["display_name"] == "Coach Jamie Updated"
     assert first_after.status_code == 200
     assert first_after.json() == first_before
+
+    changed_provider = api_client.put(
+        "/api/coach/provider",
+        json={**second_payload, "display_name": "Stale draft"},
+        headers={**second_headers, "X-Expected-Instructor-Id": "inst_001"},
+    )
+    assert changed_provider.status_code == 409
+    assert changed_provider.json()["error"]["code"] == "CALENDAR_CONNECTION_OWNER_CHANGED"
+    assert api_client.get("/api/coach/provider", headers=second_headers).json() == second_saved.json()
 
     spoofed = deepcopy(second_payload)
     spoofed["id"] = "inst_001"
