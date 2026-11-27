@@ -7,8 +7,12 @@ type SchedulePhase = "past" | "today" | "future";
 type DepartureTiming = { regionLabel: string; eyebrow: string; badge: string; heading: string };
 
 export type AgendaLoadState =
-  | { status: "loading" | "error" }
+  | { status: "loading" | "error"; timezone?: string }
   | { status: "loaded"; response: CoachAgenda };
+
+export function agendaTimeZone(agenda?: AgendaLoadState): string | undefined {
+  return agenda?.status === "loaded" ? agenda.response.timezone : agenda?.timezone;
+}
 
 export function scheduleItems(
   snapshot: CommandCenterSnapshot,
@@ -19,7 +23,10 @@ export function scheduleItems(
   if (agenda.status === "loaded" && agenda.response.date === date) {
     return agenda.response.items.filter((item) => item.kind !== "open_gap" || item.start_times?.length);
   }
-  if (agenda.status === "error" && snapshot.date === date) {
+  if (
+    agenda.status === "error" && snapshot.date === date
+    && (!agenda.timezone || snapshot.instructor.timezone === agenda.timezone)
+  ) {
     return snapshot.schedule.filter((item) => item.kind === "lesson" || isScheduleBlocker(item));
   }
   return [];
@@ -32,7 +39,7 @@ export function renderTodaySchedule(
 ): string {
   const now = new Date();
   const response = agenda?.status === "loaded" && agenda.response.date === date ? agenda.response : null;
-  const providerTimeZone = response?.timezone ?? snapshot.instructor.timezone;
+  const providerTimeZone = agendaTimeZone(agenda) ?? snapshot.instructor.timezone;
   const supportedTimeZone = supportedScheduleTimeZone(providerTimeZone);
   const timeZone = supportedTimeZone ?? (agenda ? "UTC" : scheduleTimeZone());
   const today = response?.today ?? dateKeyInTimeZone(now, supportedTimeZone ?? scheduleTimeZone());

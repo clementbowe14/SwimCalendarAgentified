@@ -410,6 +410,7 @@ test("does not fall back to rows selected in a previous provider timezone", asyn
     ? { status: 503, json: error("Agenda unavailable") }
     : { json: agenda(date, { items: [previousZone] }) }, {
     snapshotItems: () => saved ? [currentZone] : [previousZone],
+    snapshotTimezone: () => saved ? "America/New_York" : timeZone,
     failSnapshot: () => saved && !fallbackAvailable,
     saveProvider: async (route) => {
       expect(route.request().postDataJSON()).toMatchObject({ timezone: "America/New_York" });
@@ -432,6 +433,43 @@ test("does not fall back to rows selected in a previous provider timezone", asyn
   fallbackAvailable = true;
   await page.getByRole("button", { name: "Retry agenda" }).click();
   await expect(page.locator('[data-agenda-row="current-zone"]')).toBeVisible();
+});
+
+test("discards stale fallback after Schedule observes a timezone change in another tab", async ({ page }) => {
+  const moved = appointment("moved", "Moved to tomorrow", "04:30", "04:50", address, "2026-08-28");
+  const known = appointment("known", "Still on the selected day", "13:00", "13:30");
+  let changedTimezone = false;
+  let agendaUnavailable = false;
+  let snapshotAvailable = false;
+  const api = await mockApi(page, (date) => agendaUnavailable
+    ? { status: 503, json: error("Agenda unavailable") }
+    : { json: agenda(date, {
+      timezone: changedTimezone ? "America/New_York" : timeZone,
+      items: changedTimezone ? [known] : [moved],
+    }) }, {
+    snapshotItems: () => changedTimezone ? [known] : [moved],
+    snapshotTimezone: () => changedTimezone ? "America/New_York" : timeZone,
+    failSnapshot: () => changedTimezone && !snapshotAvailable,
+  });
+
+  await page.goto(`/?date=${day}`);
+  await expect(page.locator('[data-agenda-row="moved"]')).toBeVisible();
+  changedTimezone = true;
+  await page.getByRole("button", { name: "Find", exact: true }).click();
+  await page.getByRole("button", { name: "Schedule", exact: true }).click();
+  await expect(page.locator('[data-agenda-row="known"]')).toBeVisible();
+
+  agendaUnavailable = true;
+  await page.getByRole("button", { name: "Find", exact: true }).click();
+  await page.getByRole("button", { name: "Schedule", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("The agenda couldn’t load");
+  await expect(page.locator('[data-agenda-row="moved"]')).toHaveCount(0);
+  expect(api.snapshotDates).toEqual([day, day]);
+
+  snapshotAvailable = true;
+  await page.getByRole("button", { name: "Retry agenda" }).click();
+  await expect(page.locator('[data-agenda-row="known"]')).toContainText("9:00 AM-9:30 AM");
+  await expect(page.locator('[data-agenda-row="moved"]')).toHaveCount(0);
 });
 
 test("uses the new local day's known rows after midnight when an unpinned agenda fails", async ({ page }) => {
@@ -617,6 +655,7 @@ async function mockApi(
     missingTimezone?: boolean;
     snapshotOwner?: string;
     snapshotItems?: (date: string) => ScheduleItem[];
+    snapshotTimezone?: () => string;
     failSnapshot?: () => boolean;
     saveProvider?: (route: Route) => Promise<void>;
     blockers?: () => ProviderBlocker[] | Promise<ProviderBlocker[]>;
@@ -653,7 +692,11 @@ async function mockApi(
         snapshotDates.push(date);
         if (options.failSnapshot?.()) return route.fulfill({ status: 503, json: error("Snapshot unavailable") });
         return route.fulfill({ json: {
-          ...snapshot, date, instructor: { ...snapshot.instructor, id: options.snapshotOwner ?? providerId, timezone: provider.timezone },
+          ...snapshot, date, instructor: {
+            ...snapshot.instructor,
+            id: options.snapshotOwner ?? providerId,
+            timezone: options.snapshotTimezone?.() ?? provider.timezone,
+          },
           schedule: options.snapshotItems?.(date) ?? [], requests: [], email_deliveries: [],
         } });
       case "/api/coach/agenda":

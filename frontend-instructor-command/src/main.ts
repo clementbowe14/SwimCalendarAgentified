@@ -49,7 +49,7 @@ import {
   renderProviderSettings,
 } from "./components/ProviderSettings.js";
 import { renderSettingsRules } from "./components/SettingsRules.js";
-import { renderTodaySchedule, scheduleItems, type AgendaLoadState } from "./components/TodaySchedule.js";
+import { agendaTimeZone, renderTodaySchedule, scheduleItems, type AgendaLoadState } from "./components/TodaySchedule.js";
 import { buildFindSlotsRequest, findFeaturedClient, isScheduleBlocker } from "./domain/screenModels.js";
 import { mergeEmailDeliveries } from "./domain/emailDelivery.js";
 import {
@@ -703,6 +703,7 @@ async function refreshAgenda(
 
   const token = agendaRequestGate.next();
   const date = state.scheduleDate;
+  const previousTimeZone = agendaTimeZone(state.agenda);
   const localDateAtRequest = providerLocalToday();
   const sameSession = () => (
     isCurrentSignedInGeneration(generation)
@@ -714,7 +715,7 @@ async function refreshAgenda(
     && state.scheduleDate === date
     && agendaRequestGate.isCurrent(token)
   );
-  state.agenda = { status: "loading" };
+  state.agenda = { status: "loading", timezone: previousTimeZone };
   try {
     const agenda = await instructorCommandApi.getAgenda(instructor, date ?? undefined);
     if (!sameSession()) return;
@@ -734,14 +735,16 @@ async function refreshAgenda(
     if (
       agenda.date !== (date ?? agenda.today)
       || parseCommandDate(agenda.today) !== agenda.today
+      || typeof agenda.timezone !== "string" || !agenda.timezone
       || !Array.isArray(agenda.items)
     ) {
-      state.agenda = { status: "error" };
+      state.agenda = { status: "error", timezone: previousTimeZone };
     } else {
       state.agenda = { status: "loaded", response: agenda };
-      state.agendaToday = { date: agenda.today, observedLocalDate: localDate };
-      if (date === null && agenda.date !== state.snapshot?.date) {
-        persistScheduleSelection();
+      state.agendaToday = { date: agenda.today, observedLocalDate: providerLocalToday() };
+      const snapshotTimeZoneChanged = agenda.timezone !== state.snapshot?.instructor.timezone;
+      if (snapshotTimeZoneChanged || (date === null && agenda.date !== state.snapshot?.date)) {
+        if (date === null) persistScheduleSelection();
         clearAvailability();
         void refreshAgendaSnapshot(generation, agenda.date, persistedMessage);
       }
@@ -758,7 +761,7 @@ async function refreshAgenda(
         void refreshAgendaSnapshot(generation, fallbackDate, persistedMessage);
       }
     }
-    state.agenda = { status: "error" };
+    state.agenda = { status: "error", timezone: previousTimeZone };
   }
   renderScheduleUpdate();
 }
@@ -787,7 +790,7 @@ function openCreateBlockerEditor(): void {
   state.blockerEditor = {
     mode: "create",
     instructorId: state.snapshot.instructor.id,
-    timeZone: state.agenda.status === "loaded" ? state.agenda.response.timezone : state.snapshot.instructor.timezone,
+    timeZone: agendaTimeZone(state.agenda) ?? state.snapshot.instructor.timezone,
     blockerId: null,
     revision: null,
     crossesMidnight: false,
@@ -1610,11 +1613,12 @@ async function saveProviderSettings(form: HTMLFormElement): Promise<void> {
   try {
     const saved = await instructorCommandApi.saveProvider(payload);
     if (!isCurrentSignedInGeneration(generation)) return;
-    const timezoneChanged = saved.timezone !== state.provider?.timezone;
+    const knownTimeZone = agendaTimeZone(state.agenda) ?? state.snapshot?.instructor.timezone ?? state.provider?.timezone;
+    const timezoneChanged = saved.timezone !== knownTimeZone;
     if (timezoneChanged) {
       state.agendaToday = null;
       agendaRequestGate.invalidate();
-      state.agenda = { status: "loading" };
+      state.agenda = { status: "loading", timezone: saved.timezone };
     }
     state.provider = saved;
     state.providerDraft = providerDraftFromConfiguration(saved);
@@ -1625,7 +1629,10 @@ async function saveProviderSettings(form: HTMLFormElement): Promise<void> {
     if (state.snapshot) {
       state.snapshot = {
         ...state.snapshot,
-        instructor: projectProviderOntoInstructor(state.snapshot.instructor, saved),
+        instructor: {
+          ...projectProviderOntoInstructor(state.snapshot.instructor, saved),
+          timezone: state.snapshot.instructor.timezone,
+        },
         schedule: timezoneChanged ? [] : state.snapshot.schedule,
       };
     }
@@ -1891,7 +1898,11 @@ function applySnapshot(snapshot: CommandCenterSnapshot): boolean {
     ...snapshot,
     scheduling_policy: state.schedulingPolicy ?? incomingPolicy,
     instructor: state.provider
-      ? projectProviderOntoInstructor(snapshot.instructor, state.provider)
+      ? {
+          ...projectProviderOntoInstructor(snapshot.instructor, state.provider),
+          // Keep the server timezone that determined which rows belong to the snapshot date.
+          timezone: snapshot.instructor.timezone,
+        }
       : snapshot.instructor,
     email_deliveries: mergedDeliveries,
   };
@@ -1927,7 +1938,7 @@ function activeScheduleDate(): string {
 }
 
 function providerLocalToday(): string {
-  const timeZone = scheduleTimeZone(state.provider?.timezone ?? state.snapshot?.instructor.timezone);
+  const timeZone = scheduleTimeZone(agendaTimeZone(state.agenda) ?? state.snapshot?.instructor.timezone ?? state.provider?.timezone);
   return dateKeyInTimeZone(new Date(), timeZone);
 }
 
