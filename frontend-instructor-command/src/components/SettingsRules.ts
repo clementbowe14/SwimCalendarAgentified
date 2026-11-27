@@ -20,12 +20,14 @@ export function renderSettingsRules(
   showSignOut = false,
   status: SchedulingPolicyRenderState = {},
   providerSettings = "",
+  calendarSettings = "",
 ): string {
   const controlsDisabled = status.pending ? " disabled" : "";
   const saveDisabled = status.pending || status.conflict ? " disabled" : "";
   const availability = status.availability ?? { status: "idle", message: "" };
   return `
     <section class="screen-grid settings-screen" aria-label="Settings">
+      ${calendarSettings}
       ${providerSettings}
       <form
         class="scheduler-rules-form scheduling-policy-form"

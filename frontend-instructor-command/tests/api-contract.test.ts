@@ -11,6 +11,7 @@ import type {
   BookingRequestDTO,
   CoachEmailDelivery,
   CommandCenterSnapshot,
+  GoogleCalendarConnection,
   InstructorAuthSession,
   ProviderConfiguration,
   ProviderConfigurationUpdate,
@@ -626,6 +627,53 @@ test("HTTP instructor adapter refreshes, resends without a body, and corrects em
   }
   assert.equal(headerValue(calls[1].init?.headers, "x-csrf-protection"), "1");
   assert.equal(headerValue(calls[2].init?.headers, "x-csrf-protection"), "1");
+});
+
+test("Google Calendar Settings sends the encoded instructor precondition on each credentialed request", async () => {
+  const calls: FetchCall[] = [];
+  const api = new HttpInstructorCommandApi("https://api.test/api/");
+  const expectedInstructorId = "inst /+%é";
+  const authorizationUrl = "https://accounts.google.com/o/oauth2/v2/auth?state=local-state";
+  const disconnected: GoogleCalendarConnection = {
+    provider: "google",
+    state: "disconnected",
+    connected_at: null,
+    updated_at: null,
+    authorization_required_at: null,
+  };
+  const connected: GoogleCalendarConnection = {
+    ...disconnected,
+    state: "connected",
+    connected_at: "2026-08-27T12:00:00Z",
+    updated_at: "2026-08-27T12:00:00Z",
+  };
+
+  await withMockFetch(calls, async (_input, init) => {
+    if (init?.method === "POST") return jsonResponse({ authorization_url: authorizationUrl });
+    return jsonResponse(init?.method === "DELETE" ? disconnected : connected);
+  }, async () => {
+    assert.deepEqual(await api.getGoogleCalendarConnection(expectedInstructorId), connected);
+    assert.equal(await api.authorizeGoogleCalendar(expectedInstructorId), authorizationUrl);
+    assert.deepEqual(await api.disconnectGoogleCalendar(expectedInstructorId), disconnected);
+    await assert.rejects(() => api.authorizeGoogleCalendar(""), /requires a signed-in provider/);
+    await assert.rejects(() => api.disconnectGoogleCalendar(""), /requires a signed-in provider/);
+  });
+
+  const path = "https://api.test/api/coach/calendar-connections/google";
+  assert.deepEqual(calls.map(({ url, init }) => [init?.method, url]), [
+    ["GET", path],
+    ["POST", `${path}/authorize`],
+    ["DELETE", path],
+  ]);
+  for (const { init } of calls) {
+    assert.equal(init?.credentials, "include");
+    assert.equal(init?.body, undefined);
+    assert.equal(headerValue(init?.headers, "authorization"), null);
+    assert.equal(headerValue(init?.headers, "content-type"), null);
+    assert.equal(headerValue(init?.headers, "x-csrf-protection"), init?.method === "GET" ? null : "1");
+    assert.equal(headerValue(init?.headers, "x-expected-instructor-id"), "inst%20%2F%2B%25%C3%A9");
+  }
+  assert.equal(calls[1].init?.redirect, "error");
 });
 
 test("HTTP instructor adapter reads handoff by exact appointment and downloads authenticated ICS", async () => {

@@ -1,5 +1,5 @@
 import { candidateSlots, providerConfiguration, snapshot } from "./mockData.js";
-import { trustedInstructorCalendarUrl } from "./calendar.js";
+import { trustedGoogleCalendarAuthorizationUrl, trustedInstructorCalendarUrl } from "./calendar.js";
 import {
   resolveInstructorDataMode,
   type InstructorDataModeEnvironment,
@@ -16,6 +16,7 @@ import type {
   CoachLessonRequestActionResponse,
   CoachLessonRequestConfirmResponse,
   CommandCenterSnapshot,
+  GoogleCalendarConnection,
   Id,
   InstructorAuthCredentials,
   InstructorAuthSession,
@@ -33,6 +34,7 @@ import type {
 const LEGACY_AUTH_STORAGE_KEY = "swim-command:coach-session:v1";
 const CSRF_HEADER_NAME = "X-CSRF-Protection";
 const CSRF_HEADER_VALUE = "1";
+const GOOGLE_CALENDAR_CONNECTION_PATH = "/coach/calendar-connections/google";
 const mockLocalDayBoundaryCache = new Map<string, number>();
 
 function clone<T>(value: T): T {
@@ -101,6 +103,24 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
 
   async getProvider(): Promise<ProviderConfiguration> {
     return clone(this.currentProvider);
+  }
+
+  async getGoogleCalendarConnection(_expectedInstructorId: Id): Promise<GoogleCalendarConnection> {
+    return {
+      provider: "google",
+      state: "disconnected",
+      connected_at: null,
+      updated_at: null,
+      authorization_required_at: null,
+    };
+  }
+
+  async authorizeGoogleCalendar(_expectedInstructorId: Id): Promise<string> {
+    throw new Error("Google Calendar authorization requires the instructor API.");
+  }
+
+  disconnectGoogleCalendar(expectedInstructorId: Id): Promise<GoogleCalendarConnection> {
+    return this.getGoogleCalendarConnection(expectedInstructorId);
   }
 
   async saveProvider(payload: ProviderConfigurationUpdate): Promise<ProviderConfiguration> {
@@ -617,6 +637,31 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     return this.put("/coach/provider", provider);
   }
 
+  async getGoogleCalendarConnection(expectedInstructorId: Id): Promise<GoogleCalendarConnection> {
+    const response = await fetch(
+      `${this.baseUrl}${GOOGLE_CALENDAR_CONNECTION_PATH}`,
+      googleCalendarRequestInit("GET", expectedInstructorId),
+    );
+    return validateGoogleCalendarConnection(await parseResponse(response));
+  }
+
+  async authorizeGoogleCalendar(expectedInstructorId: Id): Promise<string> {
+    const response = await fetch(`${this.baseUrl}${GOOGLE_CALENDAR_CONNECTION_PATH}/authorize`, {
+      ...googleCalendarRequestInit("POST", expectedInstructorId),
+      redirect: "error",
+    });
+    const authorization = await parseResponse<{ authorization_url: unknown } | null>(response);
+    return trustedGoogleCalendarAuthorizationUrl(authorization?.authorization_url);
+  }
+
+  async disconnectGoogleCalendar(expectedInstructorId: Id): Promise<GoogleCalendarConnection> {
+    const response = await fetch(
+      `${this.baseUrl}${GOOGLE_CALENDAR_CONNECTION_PATH}`,
+      googleCalendarRequestInit("DELETE", expectedInstructorId),
+    );
+    return validateGoogleCalendarConnection(await parseResponse(response));
+  }
+
   getSchedulingPolicy(): Promise<SchedulingPolicy> {
     return this.get("/coach/scheduling-policy");
   }
@@ -838,6 +883,15 @@ function unsafeNoBodyInit(method: "POST" | "DELETE"): RequestInit {
     credentials: "include",
     headers: { [CSRF_HEADER_NAME]: CSRF_HEADER_VALUE },
   };
+}
+
+function googleCalendarRequestInit(method: "GET" | "POST" | "DELETE", expectedInstructorId: Id): RequestInit {
+  if (!expectedInstructorId) throw new Error("Google Calendar requires a signed-in provider.");
+
+  const init = method === "GET" ? credentialedGetInit() : unsafeNoBodyInit(method);
+  const headers = new Headers(init.headers);
+  headers.set("X-Expected-Instructor-Id", encodeURIComponent(expectedInstructorId));
+  return { ...init, headers };
 }
 
 function isBlockerKind(value: string): value is ProviderBlocker["kind"] {
@@ -1209,6 +1263,18 @@ async function parseResponse<T>(response: Response): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+function validateGoogleCalendarConnection(
+  connection: GoogleCalendarConnection | null,
+): GoogleCalendarConnection {
+  if (
+    connection?.provider !== "google"
+    || !["disconnected", "connected", "authorization_required"].includes(connection.state)
+  ) {
+    throw new Error("Google Calendar connection status is unavailable.");
+  }
+  return connection;
 }
 
 function metadataOnlySession(session: InstructorAuthSession): InstructorAuthSession {

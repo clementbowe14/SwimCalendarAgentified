@@ -31,6 +31,13 @@ import {
   type CalendarHandoffModalModel,
 } from "./components/CalendarHandoffModal.js";
 import { renderClientDetail } from "./components/ClientDetail.js";
+import {
+  renderGoogleCalendarSettings,
+  renderGoogleCalendarSettingsContent,
+  type GoogleCalendarAction,
+  type GoogleCalendarReturn,
+  type GoogleCalendarSettingsState,
+} from "./components/GoogleCalendarSettings.js";
 import { renderShell, type ScreenId } from "./components/Layout.js";
 import {
   emptyDeliveryCardState,
@@ -126,6 +133,21 @@ type AppState = {
   providerFieldErrors: ProviderFieldErrors;
   providerSuccess: string;
   providerSetupPrompt: string;
+  googleCalendar: GoogleCalendarSettingsState;
+};
+
+const initialGoogleCalendarSettings: GoogleCalendarSettingsState = {
+  connection: null,
+  pending: null,
+  error: "",
+  returnResult: null,
+  ownerChanged: false,
+};
+
+const googleCalendarActionErrors: Record<GoogleCalendarAction, string> = {
+  status: "We couldn’t check your Google Calendar connection. Retry status.",
+  authorize: "We couldn’t open Google Calendar authorization. Try again.",
+  disconnect: "We couldn’t confirm the disconnect. Try disconnecting again.",
 };
 
 const state: AppState = {
@@ -163,6 +185,7 @@ const state: AppState = {
   providerFieldErrors: {},
   providerSuccess: "",
   providerSetupPrompt: "",
+  googleCalendar: { ...initialGoogleCalendarSettings },
 };
 
 const instructorId = import.meta.env?.VITE_INSTRUCTOR_ID || "inst_riley_001";
@@ -173,6 +196,16 @@ const instructorApiBaseUrl = instructorRuntimeConfig.mode === "http"
 let authGeneration = 0;
 const availabilityRequestGate = new MonotonicRequestGate();
 const policyRequestGate = new MonotonicRequestGate();
+
+window.addEventListener("pageshow", (event) => {
+  if (
+    event.persisted
+    && instructorCommandApi.authMode === "live"
+    && window.history.state?.googleCalendarAuthorizationPending === true
+  ) {
+    void validateLiveSession();
+  }
+});
 
 void boot();
 
@@ -241,13 +274,15 @@ async function loadCommandCenter(generation: number): Promise<void> {
       initialCommandDate(configuredCommandDate),
     );
     if (!isCurrentSignedInGeneration(generation)) return;
-    applySnapshot(snapshot);
+    const calendarReturn = instructorCommandApi.authMode === "live" ? consumeGoogleCalendarReturn() : null;
+    applySnapshot(snapshot, { preserveUrl: calendarReturn !== null });
     if (!state.snapshot) return;
     if (!state.snapshot.clients.some((client) => client.id === state.selectedClientId)) {
       state.selectedClientId = state.snapshot.clients[0]?.id ?? "client_new";
     }
+    state.googleCalendar.returnResult = calendarReturn;
+    if (calendarReturn || !provider.setup_complete || state.activeScreen === "settings") openSettings();
     if (!provider.setup_complete) {
-      state.activeScreen = "settings";
       clearAvailability("idle");
     } else {
       await refreshSlots(generation);
@@ -416,13 +451,14 @@ function renderActiveScreen(snapshot: CommandCenterSnapshot): string {
     : `<section class="provider-settings-loading" aria-live="polite">Loading provider settings…</section>`;
   const policy = state.schedulingPolicy ?? snapshot.scheduling_policy;
   const draft = state.schedulingPolicyDraft ?? schedulingPolicyDraftFromPolicy(policy);
-  return renderSettingsRules(policy, draft, instructorCommandApi.authMode === "live", {
+  const isLive = instructorCommandApi.authMode === "live";
+  return renderSettingsRules(policy, draft, isLive, {
     pending: state.policyPending,
     error: state.policyError,
     success: state.policySuccess,
     conflict: state.policyConflict,
     availability: state.availability,
-  }, providerSettings);
+  }, providerSettings, isLive ? renderGoogleCalendarSettings(state.googleCalendar) : "");
 }
 
 function wireEvents(): void {
@@ -433,7 +469,8 @@ function wireEvents(): void {
   app.querySelectorAll<HTMLButtonElement>("[data-screen]").forEach((button) => {
     button.addEventListener("click", () => {
       const nextScreen = button.dataset.screen as ScreenId;
-      state.activeScreen = nextScreen;
+      if (nextScreen === "settings") openSettings();
+      else state.activeScreen = nextScreen;
       state.providerSetupPrompt = "";
       render();
       focusActiveScreenNavigation(nextScreen);
@@ -467,7 +504,7 @@ function wireEvents(): void {
   app.querySelectorAll<HTMLButtonElement>("[data-setup-required-action], [data-open-provider-settings]").forEach((button) => {
     button.addEventListener("click", () => {
       const action = button.dataset.setupRequiredAction;
-      state.activeScreen = "settings";
+      openSettings();
       state.providerSetupPrompt = action
         ? `Save provider settings before you ${action}.`
         : "Complete provider setup to schedule new lesson times.";
@@ -540,6 +577,7 @@ function wireEvents(): void {
   });
 
   wireEmailDeliveryEvents();
+  wireGoogleCalendarSettingsEvents();
   wireProviderSettingsEvents();
   wireSchedulingPolicyEvents();
 }
@@ -1161,6 +1199,130 @@ async function retryAvailability(): Promise<void> {
   await refreshAvailabilityContext(structuredClone(context), generation, false);
 }
 
+function openSettings(): void {
+  const calendar = state.googleCalendar;
+  const refreshStatus = state.activeScreen !== "settings" || (!calendar.connection && !calendar.error);
+  state.activeScreen = "settings";
+  if (refreshStatus) void runGoogleCalendarAction("status");
+}
+
+function consumeGoogleCalendarReturn(): GoogleCalendarReturn | null {
+  const url = new URL(window.location.href);
+  const results = url.pathname === "/"
+    ? url.searchParams.getAll("calendar").filter(
+        (value): value is "connected" | "failed" => value === "connected" || value === "failed",
+      )
+    : [];
+  const result = results.length === 1 ? results[0] : null;
+  const historyState = window.history.state;
+  const resumeSettings = historyState?.googleCalendarAuthorizationPending === true;
+  if (!result && !resumeSettings) return null;
+
+  if (result) url.searchParams.delete("calendar", result);
+  const updatedHistoryState = { ...historyState };
+  delete updatedHistoryState.googleCalendarAuthorizationPending;
+  window.history.replaceState(resumeSettings ? updatedHistoryState : historyState, "", url);
+  return result ?? "back";
+}
+
+function openGoogleCalendarAuthorization(authorizationUrl: string): void {
+  const historyState = window.history.state;
+  // Returning with Back can reload this history entry.
+  window.history.replaceState({ ...historyState, googleCalendarAuthorizationPending: true }, "");
+  try {
+    window.location.assign(authorizationUrl);
+  } catch (error) {
+    window.history.replaceState(historyState, "");
+    throw error;
+  }
+}
+
+function wireGoogleCalendarSettingsEvents(): void {
+  const card = app.querySelector<HTMLElement>("[data-google-calendar-settings]");
+  card?.addEventListener("click", (event) => {
+    const button = event.target instanceof Element
+      ? event.target.closest<HTMLButtonElement>("[data-google-calendar-action]")
+      : null;
+    const action = button?.dataset.googleCalendarAction;
+    if (action === "reload") {
+      window.location.reload();
+    } else if (action === "status" || action === "authorize" || action === "disconnect") {
+      void runGoogleCalendarAction(action);
+    }
+  });
+}
+
+function updateGoogleCalendarSettings(action: GoogleCalendarAction): void {
+  const card = app.querySelector<HTMLElement>("[data-google-calendar-settings]");
+  const content = card?.querySelector<HTMLElement>("[data-google-calendar-content]");
+  if (!card || !content) return;
+
+  const restoreFocus = card.contains(document.activeElement);
+  content.innerHTML = renderGoogleCalendarSettingsContent(state.googleCalendar);
+  if (restoreFocus) {
+    const target = card.querySelector<HTMLButtonElement>(`[data-google-calendar-action="${action}"]:enabled`)
+      ?? card.querySelector<HTMLButtonElement>("button:enabled")
+      ?? card;
+    target.focus({ preventScroll: true });
+  }
+}
+
+async function runGoogleCalendarAction(action: GoogleCalendarAction): Promise<void> {
+  const generation = authGeneration;
+  const calendar = state.googleCalendar;
+  const expectedInstructorId = state.authSession?.coach.instructor_id;
+  if (
+    instructorCommandApi.authMode !== "live"
+    || !isCurrentSignedInGeneration(generation)
+    || !expectedInstructorId
+    || calendar.pending
+    || calendar.ownerChanged
+  ) return;
+
+  calendar.pending = action;
+  calendar.error = "";
+  if (action === "status") calendar.connection = null;
+  updateGoogleCalendarSettings(action);
+
+  try {
+    if (action === "authorize") {
+      const authorizationUrl = await instructorCommandApi.authorizeGoogleCalendar(expectedInstructorId);
+      if (isCurrentSignedInGeneration(generation)) openGoogleCalendarAuthorization(authorizationUrl);
+      return;
+    }
+
+    const connection = await (action === "status"
+      ? instructorCommandApi.getGoogleCalendarConnection(expectedInstructorId)
+      : instructorCommandApi.disconnectGoogleCalendar(expectedInstructorId));
+    if (!isCurrentSignedInGeneration(generation)) return;
+
+    calendar.connection = connection.state;
+    if (action === "disconnect" || (calendar.returnResult === "connected" && connection.state === "connected")) {
+      calendar.returnResult = null;
+    }
+    if (action === "disconnect" && connection.state === "disconnected") {
+      clearAvailability();
+      if (state.activeScreen === "finder") render();
+    }
+  } catch (error) {
+    if (!isCurrentSignedInGeneration(generation) || handleAuthFailure(error, undefined, generation)) return;
+    if (
+      error instanceof InstructorCommandApiError
+      && error.status === 409
+      && error.code === "CALENDAR_CONNECTION_OWNER_CHANGED"
+    ) {
+      calendar.connection = null;
+      calendar.returnResult = null;
+      calendar.ownerChanged = true;
+    } else {
+      calendar.error = googleCalendarActionErrors[action];
+    }
+  }
+
+  calendar.pending = null;
+  updateGoogleCalendarSettings(action);
+}
+
 function wireProviderSettingsEvents(): void {
   const form = app.querySelector<HTMLFormElement>("[data-provider-form]");
   if (!form || !state.providerDraft) return;
@@ -1455,7 +1617,7 @@ function isValidEmailAddress(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
-function applySnapshot(snapshot: CommandCenterSnapshot): void {
+function applySnapshot(snapshot: CommandCenterSnapshot, { preserveUrl = false } = {}): void {
   const currentPolicy = state.schedulingPolicy;
   const draft = state.schedulingPolicyDraft;
   const incomingPolicy = snapshot.scheduling_policy;
@@ -1491,7 +1653,7 @@ function applySnapshot(snapshot: CommandCenterSnapshot): void {
       : snapshot.instructor,
     email_deliveries: mergedDeliveries,
   };
-  persistCommandDate(snapshot.date);
+  if (!preserveUrl) persistCommandDate(snapshot.date);
 }
 
 function initialCommandDate(fallback: string): string {
@@ -1510,7 +1672,7 @@ function persistCommandDate(date: string): void {
   } else {
     url.searchParams.set("date", date);
   }
-  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
 function activeScheduleDate(): string {
@@ -1824,7 +1986,7 @@ function handleProviderSetupRequired(error: unknown): boolean {
     };
   }
   clearAvailability("idle");
-  state.activeScreen = "settings";
+  openSettings();
   state.providerSetupPrompt = "Complete provider setup before scheduling new lesson times.";
   return true;
 }
@@ -1868,6 +2030,7 @@ function clearProtectedState(): void {
   state.providerFieldErrors = {};
   state.providerSuccess = "";
   state.providerSetupPrompt = "";
+  state.googleCalendar = { ...initialGoogleCalendarSettings };
   clearEmailDeliveryState();
 }
 

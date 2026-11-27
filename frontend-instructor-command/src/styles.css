@@ -1263,6 +1263,30 @@ select {
   margin-bottom: 14px;
 }
 
+.google-calendar-settings {
+  grid-column: 1 / -1;
+}
+
+.google-calendar-content {
+  display: grid;
+  gap: 12px;
+}
+
+.google-calendar-content p {
+  margin: 0;
+}
+
+.google-calendar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.google-calendar-actions button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
 .provider-form-card h3 {
   font-size: 24px;
 }
@@ -2104,6 +2128,10 @@ select {
   .availability-policy-status .secondary-action {
     width: 100%;
     min-height: 52px;
+  }
+
+  .google-calendar-actions {
+    flex-direction: column;
   }
 
   .scheduling-policy-controls,
