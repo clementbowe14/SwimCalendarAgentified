@@ -52,13 +52,22 @@ class BufferPolicy:
         self,
         value: datetime.datetime,
         timezone_name: Optional[str] = None,
+        *,
+        allow_repeated_hour: bool = False,
     ) -> datetime.datetime:
         if value.tzinfo is None or value.utcoffset() is None:
             return _ceil_naive_label(value, SLOT_INCREMENT_MINUTES)
 
         zone = timezones.get_zone(timezone_name)
         local = value.astimezone(zone)
-        label = _ceil_naive_label(local.replace(tzinfo=None), SLOT_INCREMENT_MINUTES)
+        local_label = local.replace(tzinfo=None)
+        label = _ceil_naive_label(local_label, SLOT_INCREMENT_MINUTES)
+        if allow_repeated_hour:
+            # Slot evaluation follows real instants through a repeated local hour.
+            candidate = timezones.ensure_aware_utc(value) + (label - local_label)
+            rounded_label = candidate.astimezone(zone).replace(tzinfo=None)
+            if _ceil_naive_label(rounded_label, SLOT_INCREMENT_MINUTES) == rounded_label:
+                return candidate.astimezone(value.tzinfo)
         while True:
             resolved = _resolve_local_label(label, zone, local.fold)
             if resolved is not None:
@@ -177,6 +186,8 @@ class SwimSchedulerConstraintEngine:
         *,
         initial_position: SchedulePosition | None = None,
         next_shift_start: datetime.datetime | None = None,
+        slot_filter: Callable[[datetime.datetime, datetime.datetime], bool] | None = None,
+        slot_limit: int | None = None,
     ) -> List[TimeSlotDTO]:
         valid_slots: List[TimeSlotDTO] = []
         base_coordinates = (instructor_main_location.lat, instructor_main_location.lng)
@@ -188,6 +199,8 @@ class SwimSchedulerConstraintEngine:
         )
 
         for index, event in enumerate(sorted_events):
+            if slot_limit is not None and len(valid_slots) == slot_limit:
+                return valid_slots
             next_coords, outbound_departure, outbound_deadline = _outbound_route_anchor(
                 sorted_events,
                 index,
@@ -205,6 +218,8 @@ class SwimSchedulerConstraintEngine:
                     day_start=day_start,
                     day_end=day_end,
                     lesson_delta=lesson_delta,
+                    slot_filter=slot_filter,
+                    slot_limit=None if slot_limit is None else slot_limit - len(valid_slots),
                 )
             )
             position = position.after_event(event)
@@ -222,6 +237,8 @@ class SwimSchedulerConstraintEngine:
                 day_start=day_start,
                 day_end=day_end,
                 lesson_delta=lesson_delta,
+                slot_filter=slot_filter,
+                slot_limit=None if slot_limit is None else slot_limit - len(valid_slots),
             )
         )
         return valid_slots
@@ -266,21 +283,26 @@ class SwimSchedulerConstraintEngine:
         day_start: datetime.datetime,
         day_end: datetime.datetime,
         lesson_delta: datetime.timedelta,
+        slot_filter: Callable[[datetime.datetime, datetime.datetime], bool] | None = None,
+        slot_limit: int | None = None,
     ) -> List[TimeSlotDTO]:
         slots = []
         # Skip occupied gaps before asking the routing provider for an estimate.
         latest_gap_end = min(next_start_time, day_end)
-        if max(day_start, position.free_at) + lesson_delta > latest_gap_end:
+        if slot_limit == 0 or max(day_start, position.free_at) + lesson_delta > latest_gap_end:
             return slots
         transition = self.inbound_transition(position, target_coords)
         raw_start = max(day_start, position.free_at + transition.duration)
-        current_candidate = self.buffer_policy.ceil_datetime(raw_start, self.timezone_name)
+        current_candidate = self.buffer_policy.ceil_datetime(raw_start, self.timezone_name, allow_repeated_hour=True)
         # A locationless blocker is still a temporal boundary. Location only
         # controls whether outbound travel to the next event must fit.
         increment = datetime.timedelta(minutes=SLOT_INCREMENT_MINUTES)
 
         while current_candidate + lesson_delta <= latest_gap_end:
             candidate_end = current_candidate + lesson_delta
+            if slot_filter is not None and not slot_filter(current_candidate, candidate_end):
+                current_candidate += increment
+                continue
             if next_coords is not None:
                 route_departure = outbound_departure_time or candidate_end
                 route_deadline = outbound_deadline or next_start_time
@@ -307,6 +329,8 @@ class SwimSchedulerConstraintEngine:
                     distance_miles=transition.distance_miles,
                 )
             )
+            if slot_limit is not None and len(slots) == slot_limit:
+                break
             current_candidate += increment
 
         return slots

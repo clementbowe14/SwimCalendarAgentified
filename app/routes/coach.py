@@ -440,7 +440,16 @@ def find_availability(
         del request, http_request, coach
 
 
-@router.post("/availability/search", response_model=CoachAvailabilityRangeResponse)
+@router.post(
+    "/availability/search",
+    response_model=CoachAvailabilityRangeResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "The date range or location could not be used."},
+        409: {"model": ErrorResponse, "description": "Provider setup is incomplete or the account changed."},
+        422: {"model": ErrorResponse, "description": "The search fields failed validation."},
+        503: {"model": ErrorResponse, "description": "Availability could not be fully verified."},
+    },
+)
 def find_availability_range(
     request: CoachAvailabilityRangeRequest,
     http_request: Request,

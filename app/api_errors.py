@@ -11,6 +11,8 @@ from app.google_calendar_oauth import (
     google_calendar_oauth_route_path,
 )
 
+_COACH_AVAILABILITY_RANGE_PATH = "/api/coach/availability/search"
+
 
 class ApiException(Exception):
     def __init__(
@@ -245,6 +247,15 @@ class InvalidSchedulingRequest(ApiException):
         super().__init__("INVALID_SCHEDULING_REQUEST", message, status_code=400, details=details)
 
 
+class AvailabilitySearchBudgetExceeded(ApiException):
+    def __init__(self):
+        super().__init__(
+            "AVAILABILITY_SEARCH_BUDGET_EXCEEDED",
+            "The search could not check every time. Try a shorter date range.",
+            status_code=503,
+        )
+
+
 class GeocodingFailed(ApiException):
     def __init__(self, details: Optional[dict[str, Any]] = None):
         super().__init__(
@@ -314,7 +325,8 @@ async def api_exception_handler(request: Request, exc: ApiException) -> JSONResp
 
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    redact_inputs = request.url.path.startswith("/api/auth/coach")
+    path = request.url.path.rstrip("/")
+    redact_inputs = path.startswith("/api/auth/coach") or path == _COACH_AVAILABILITY_RANGE_PATH
     details = {
         "fields": [
             _serializable_validation_error(error, redact_input=redact_inputs)
@@ -350,6 +362,7 @@ async def unexpected_exception_handler(request: Request, __: Exception) -> JSONR
         GOOGLE_CALENDAR_AUTHORIZE_PATH,
         GOOGLE_CALENDAR_CALLBACK_PATH,
         GOOGLE_CALENDAR_CONNECTION_PATH,
+        _COACH_AVAILABILITY_RANGE_PATH,
     )
     return JSONResponse(
         status_code=500,

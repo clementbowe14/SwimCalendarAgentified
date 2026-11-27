@@ -1,5 +1,6 @@
 import datetime
 import threading
+from collections.abc import Callable
 from dataclasses import replace
 from typing import List, Optional
 
@@ -218,6 +219,8 @@ def resolve_availability_location(
     provider: ProviderConfiguration,
     client_address: str,
     is_instructor_facility: bool,
+    *,
+    routing: BaseRoutingProvider | None = None,
 ) -> LocationInfo:
     if is_instructor_facility:
         service = provider.service_location
@@ -226,7 +229,7 @@ def resolve_availability_location(
         return LocationInfo(
             address=service.address, lat=service.lat, lng=service.lng, is_instructor_facility=True,
         )
-    lat, lng = routing_provider.geocode(client_address)
+    lat, lng = (routing or routing_provider).geocode(client_address)
     return LocationInfo(address=client_address, lat=lat, lng=lng)
 
 
@@ -239,6 +242,9 @@ def slots_for_working_day(
     *,
     policy: BufferPolicy,
     duration_mins: int,
+    routing: BaseRoutingProvider | None = None,
+    slot_filter: Callable[[datetime.datetime, datetime.datetime], bool] | None = None,
+    slot_limit: int | None = None,
 ) -> List[TimeSlotDTO]:
     base = provider.base_location
     if base is None:
@@ -246,7 +252,7 @@ def slots_for_working_day(
     base_location = LocationInfo(address=base.address, lat=base.lat, lng=base.lng)
     day_start, day_end = working_window
     constraint_engine = SwimSchedulerConstraintEngine(
-        routing_provider,
+        routing or routing_provider,
         policy,
         timezone_name=provider.timezone,
     )
@@ -265,6 +271,8 @@ def slots_for_working_day(
         duration_mins=duration_mins,
         initial_position=position,
         next_shift_start=next_day_shift_start(provider, target_date),
+        slot_filter=slot_filter,
+        slot_limit=slot_limit,
     )
 
     return [
@@ -304,11 +312,12 @@ def routing_events_for_date(
     *,
     include_adjacent_days: bool = True,
     session: Session | None = None,
+    limit: int | None = None,
 ) -> list[dict]:
     return db.get_utc_appointment_events_for_date(
         instructor_id, target_date.isoformat(), timezone_name=timezone_name,
         include_day_edges=True, include_adjacent_routing_anchors=include_adjacent_days,
-        session=session,
+        session=session, limit=limit,
     )
 
 def next_day_shift_start(provider: ProviderConfiguration, day: datetime.date) -> datetime.datetime | None:
