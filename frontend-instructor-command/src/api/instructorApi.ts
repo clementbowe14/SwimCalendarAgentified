@@ -12,6 +12,7 @@ import type {
   BlockerUpdate,
   BookingRequestDTO,
   CalendarLinks,
+  CoachAgenda,
   CoachEmailDelivery,
   CoachLessonRequestActionResponse,
   CoachLessonRequestConfirmResponse,
@@ -123,7 +124,7 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
     return this.getGoogleCalendarConnection(expectedInstructorId);
   }
 
-  async saveProvider(payload: ProviderConfigurationUpdate): Promise<ProviderConfiguration> {
+  async saveProvider(payload: ProviderConfigurationUpdate, _expectedInstructorId?: Id): Promise<ProviderConfiguration> {
     const base_location = mockGeocodedLocation(payload.base_address, this.currentProvider.base_location, 0);
     const service_location = mockGeocodedLocation(
       payload.service_address,
@@ -633,8 +634,8 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     return this.get("/coach/provider");
   }
 
-  saveProvider(provider: ProviderConfigurationUpdate): Promise<ProviderConfiguration> {
-    return this.put("/coach/provider", provider);
+  saveProvider(provider: ProviderConfigurationUpdate, expectedInstructorId?: Id): Promise<ProviderConfiguration> {
+    return this.put("/coach/provider", provider, expectedInstructorId);
   }
 
   async getGoogleCalendarConnection(expectedInstructorId: Id): Promise<GoogleCalendarConnection> {
@@ -674,29 +675,39 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     return this.get<CommandCenterSnapshot>(`/coach/command-center/snapshot?date=${encodeURIComponent(date)}`);
   }
 
-  getBlockers(date: string): Promise<ProviderBlocker[]> {
-    return this.get(`/coach/blockers?date=${encodeURIComponent(date)}`);
+  async getAgenda(expectedInstructorId: Id, date?: string): Promise<CoachAgenda> {
+    const query = date === undefined ? "" : `?date=${encodeURIComponent(date)}`;
+    const response = await fetch(`${this.baseUrl}/coach/agenda${query}`, {
+      ...withExpectedInstructor(credentialedGetInit(), expectedInstructorId),
+      cache: "no-store",
+    });
+    return parseResponse<CoachAgenda>(response);
+  }
+
+  getBlockers(date: string, expectedInstructorId?: Id): Promise<ProviderBlocker[]> {
+    return this.get(`/coach/blockers?date=${encodeURIComponent(date)}`, expectedInstructorId);
   }
 
   async createBlocker(
     blocker: BlockerMutation,
     idempotencyKey: string,
+    expectedInstructorId?: Id,
   ): Promise<ProviderBlocker> {
     const response = await fetch(
       `${this.baseUrl}/coach/blockers`,
-      unsafeJsonInit("POST", blocker, { "Idempotency-Key": idempotencyKey }),
+      withExpectedInstructor(unsafeJsonInit("POST", blocker, { "Idempotency-Key": idempotencyKey }), expectedInstructorId),
     );
     return parseResponse<ProviderBlocker>(response);
   }
 
-  updateBlocker(blocker_id: Id, blocker: BlockerUpdate): Promise<ProviderBlocker> {
-    return this.put(`/coach/blockers/${encodeURIComponent(blocker_id)}`, blocker);
+  updateBlocker(blocker_id: Id, blocker: BlockerUpdate, expectedInstructorId?: Id): Promise<ProviderBlocker> {
+    return this.put(`/coach/blockers/${encodeURIComponent(blocker_id)}`, blocker, expectedInstructorId);
   }
 
-  async deleteBlocker(blocker_id: Id, expected_revision: number): Promise<void> {
+  async deleteBlocker(blocker_id: Id, expected_revision: number, expectedInstructorId?: Id): Promise<void> {
     const response = await fetch(
       `${this.baseUrl}/coach/blockers/${encodeURIComponent(blocker_id)}?expected_revision=${encodeURIComponent(expected_revision)}`,
-      unsafeNoBodyInit("DELETE"),
+      withExpectedInstructor(unsafeNoBodyInit("DELETE"), expectedInstructorId),
     );
     if (!response.ok) throw await toApiError(response);
   }
@@ -776,8 +787,8 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     });
   }
 
-  private async get<T>(path: string): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, credentialedGetInit());
+  private async get<T>(path: string, expectedInstructorId?: Id): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, withExpectedInstructor(credentialedGetInit(), expectedInstructorId));
     return parseResponse<T>(response);
   }
 
@@ -791,8 +802,8 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     return parseResponse<T>(response);
   }
 
-  private async put<T>(path: string, body: unknown): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, unsafeJsonInit("PUT", body));
+  private async put<T>(path: string, body: unknown, expectedInstructorId?: Id): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, withExpectedInstructor(unsafeJsonInit("PUT", body), expectedInstructorId));
     return parseResponse<T>(response);
   }
 
@@ -800,7 +811,7 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
 
 export const createInstructorCommandApi = (
   environment: InstructorDataModeEnvironment = import.meta.env ?? {},
-): InstructorCommandApi => {
+): MockInstructorCommandApi | HttpInstructorCommandApi => {
   const config = resolveInstructorDataMode(environment);
   return config.mode === "mock"
     ? new MockInstructorCommandApi()
@@ -889,6 +900,11 @@ function googleCalendarRequestInit(method: "GET" | "POST" | "DELETE", expectedIn
   if (!expectedInstructorId) throw new Error("Google Calendar requires a signed-in provider.");
 
   const init = method === "GET" ? credentialedGetInit() : unsafeNoBodyInit(method);
+  return withExpectedInstructor(init, expectedInstructorId);
+}
+
+function withExpectedInstructor(init: RequestInit, expectedInstructorId?: Id): RequestInit {
+  if (expectedInstructorId === undefined) return init;
   const headers = new Headers(init.headers);
   headers.set("X-Expected-Instructor-Id", encodeURIComponent(expectedInstructorId));
   return { ...init, headers };

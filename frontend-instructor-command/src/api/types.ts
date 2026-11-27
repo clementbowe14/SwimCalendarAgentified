@@ -258,12 +258,37 @@ export type BlockerScheduleItem = ScheduleItemBase & {
 
 export type UtilityScheduleItem = ScheduleItemBase & {
   kind: Exclude<AppointmentKind, "lesson" | BlockerKind>;
+  start_times?: string[];
   client_id?: Id | null;
   location: LocationInfo | null;
   status?: LessonStatus | null;
 };
 
-export type ScheduleItem = LessonScheduleItem | BlockerScheduleItem | UtilityScheduleItem;
+export type CalendarBusyScheduleItem = ScheduleItemBase & {
+  kind: "calendar_busy";
+  client_id?: null;
+  location: null;
+  status?: null;
+};
+
+export type ScheduleItem = LessonScheduleItem | BlockerScheduleItem | UtilityScheduleItem | CalendarBusyScheduleItem;
+
+export type AgendaNextUp = {
+  appointment_id: Id;
+  leave_by: string | null;
+  travel_time_mins: number | null;
+  buffer_mins: number | null;
+};
+
+export type CoachAgenda = {
+  instructor_id: Id;
+  date: string;
+  today: string;
+  timezone: string;
+  status: "ready" | "setup_required" | "calendar_unavailable" | "routing_unavailable" | "schedule_changed";
+  items: ScheduleItem[];
+  next_up: AgendaNextUp | null;
+};
 
 export type ProviderBlocker = {
   id: Id;
@@ -286,6 +311,7 @@ export type BlockerMutation = {
   start_time: string;
   end_time: string;
   location_address: string | null;
+  expected_timezone?: string;
 };
 
 export type BlockerUpdate = BlockerMutation & {
@@ -379,17 +405,17 @@ export type InstructorCommandApi = {
   signIn(credentials: InstructorAuthCredentials): Promise<InstructorAuthSession>;
   signOut(): Promise<void>;
   getProvider(): Promise<ProviderConfiguration>;
-  saveProvider(provider: ProviderConfigurationUpdate): Promise<ProviderConfiguration>;
+  saveProvider(provider: ProviderConfigurationUpdate, expectedInstructorId?: Id): Promise<ProviderConfiguration>;
   getGoogleCalendarConnection(expectedInstructorId: Id): Promise<GoogleCalendarConnection>;
   authorizeGoogleCalendar(expectedInstructorId: Id): Promise<string>;
   disconnectGoogleCalendar(expectedInstructorId: Id): Promise<GoogleCalendarConnection>;
   getSchedulingPolicy(): Promise<SchedulingPolicy>;
   saveSchedulingPolicy(policy: SchedulingPolicyUpdate): Promise<SchedulingPolicy>;
   getSnapshot(instructor_id: Id, date: string): Promise<CommandCenterSnapshot>;
-  getBlockers(date: string): Promise<ProviderBlocker[]>;
-  createBlocker(blocker: BlockerMutation, idempotencyKey: string): Promise<ProviderBlocker>;
-  updateBlocker(blocker_id: Id, blocker: BlockerUpdate): Promise<ProviderBlocker>;
-  deleteBlocker(blocker_id: Id, expected_revision: number): Promise<void>;
+  getBlockers(date: string, expectedInstructorId?: Id): Promise<ProviderBlocker[]>;
+  createBlocker(blocker: BlockerMutation, idempotencyKey: string, expectedInstructorId?: Id): Promise<ProviderBlocker>;
+  updateBlocker(blocker_id: Id, blocker: BlockerUpdate, expectedInstructorId?: Id): Promise<ProviderBlocker>;
+  deleteBlocker(blocker_id: Id, expected_revision: number, expectedInstructorId?: Id): Promise<void>;
   findAvailableSlots(request: BookingRequestDTO): Promise<TimeSlotDTO[]>;
   bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse>;
   confirmRequest(requestId: Id, slotId?: Id): Promise<CoachLessonRequestConfirmResponse>;

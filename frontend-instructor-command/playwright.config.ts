@@ -13,7 +13,7 @@ export default defineConfig({
       ...process.env,
       VITE_USE_MOCK_API: process.env.VITE_USE_MOCK_API ?? "",
       VITE_INSTRUCTOR_API_URL: process.env.VITE_INSTRUCTOR_API_URL ?? "",
-      VITE_INSTRUCTOR_COMMAND_DATE: process.env.VITE_INSTRUCTOR_COMMAND_DATE || "2026-08-27",
+      VITE_INSTRUCTOR_COMMAND_DATE: process.env.VITE_INSTRUCTOR_COMMAND_DATE ?? "2026-08-27",
     },
     url: "http://127.0.0.1:5174",
     reuseExistingServer: false,

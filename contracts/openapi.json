@@ -5927,6 +5927,22 @@
         "operationId": "save_provider_settings_api_coach_provider_put",
         "parameters": [
           {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
+            }
+          },
+          {
             "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
             "example": "1",
             "in": "header",
@@ -5961,6 +5977,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The signed-in provider changed."
           },
           "422": {
             "content": {

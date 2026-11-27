@@ -3,8 +3,11 @@ import { escapeHtml } from "../lib/html.js";
 
 export type BlockerEditorModel = {
   mode: "create" | "edit";
+  instructorId: string;
+  timeZone: string;
   blockerId: string | null;
   revision: number | null;
+  crossesMidnight: boolean;
   idempotencyKey: string;
   draft: BlockerMutation;
   initialDraft: BlockerMutation;
@@ -22,6 +25,7 @@ const blockerKinds: Array<{ value: BlockerKind; label: string; hint: string }> =
 
 export function renderBlockerEditor(model: BlockerEditorModel): string {
   const heading = model.mode === "create" ? "Add schedule event" : `Edit ${model.draft.title}`;
+  const editDisabled = model.pending || model.crossesMidnight ? "disabled" : "";
   return `
     <div class="blocker-modal-backdrop" data-blocker-backdrop>
       <section
@@ -42,12 +46,14 @@ export function renderBlockerEditor(model: BlockerEditorModel): string {
             <div>
               <p class="eyebrow">Protected schedule</p>
               <h2 id="blocker-editor-title">${escapeHtml(heading)}</h2>
-              <p id="blocker-editor-description">These events are excluded from every safe-time search.</p>
+              <p id="blocker-editor-description">${model.crossesMidnight
+                ? "This event spans two dates in your current time zone. You can remove it here."
+                : "These events are excluded from every safe-time search."}</p>
             </div>
             <button class="blocker-modal-close" type="button" data-blocker-close aria-label="Close schedule event editor">×</button>
           </header>
           <form class="blocker-editor-form" data-blocker-form>
-            <fieldset class="blocker-kind-picker" ${model.pending ? "disabled" : ""}>
+            <fieldset class="blocker-kind-picker" ${editDisabled}>
               <legend>Event type</legend>
               ${blockerKinds.map((kind) => `
                 <label class="blocker-kind-option ${model.draft.kind === kind.value ? "selected" : ""}">
@@ -64,20 +70,20 @@ export function renderBlockerEditor(model: BlockerEditorModel): string {
             </fieldset>
             <label class="blocker-field">
               <span>Title</span>
-              <input name="title" value="${escapeHtml(model.draft.title)}" maxlength="160" autocomplete="off" required ${model.pending ? "disabled" : ""} />
+              <input name="title" value="${escapeHtml(model.draft.title)}" maxlength="160" autocomplete="off" required ${editDisabled} />
             </label>
             <div class="blocker-date-time-grid">
               <label class="blocker-field blocker-date-field">
                 <span>Date</span>
-                <input name="date" type="date" value="${escapeHtml(model.draft.date)}" required ${model.pending ? "disabled" : ""} />
+                <input name="date" type="date" value="${escapeHtml(model.draft.date)}" required ${editDisabled} />
               </label>
               <label class="blocker-field">
                 <span>Starts</span>
-                <input name="start_time" type="time" value="${escapeHtml(model.draft.start_time)}" required ${model.pending ? "disabled" : ""} />
+                <input name="start_time" type="time" value="${escapeHtml(model.draft.start_time)}" required ${editDisabled} />
               </label>
               <label class="blocker-field">
                 <span>Ends</span>
-                <input name="end_time" type="time" value="${escapeHtml(model.draft.end_time)}" required ${model.pending ? "disabled" : ""} />
+                <input name="end_time" type="time" value="${escapeHtml(model.draft.end_time)}" required ${editDisabled} />
               </label>
             </div>
             ${model.draft.kind === "personal" ? `
@@ -89,7 +95,7 @@ export function renderBlockerEditor(model: BlockerEditorModel): string {
                   maxlength="300"
                   autocomplete="street-address"
                   placeholder="Address for travel calculations"
-                  ${model.pending ? "disabled" : ""}
+                  ${editDisabled}
                 />
               </label>
             ` : ""}
@@ -98,7 +104,7 @@ export function renderBlockerEditor(model: BlockerEditorModel): string {
             </p>
             <div class="blocker-editor-actions">
               ${model.mode === "edit" ? `<button class="blocker-remove-action" type="button" data-blocker-remove ${model.pending ? "disabled" : ""}>Remove event</button>` : ""}
-              <button class="primary-action" type="submit" ${model.pending ? "disabled" : ""}>
+              <button class="primary-action" type="submit" ${editDisabled}>
                 ${model.pending ? "Saving…" : model.mode === "create" ? "Add to schedule" : "Save changes"}
               </button>
             </div>
@@ -111,13 +117,16 @@ export function renderBlockerEditor(model: BlockerEditorModel): string {
 
 function renderDeleteConfirmation(model: BlockerEditorModel): string {
   const persisted = model.initialDraft;
+  const interval = model.crossesMidnight
+    ? "The time blocked by this event"
+    : `${persisted.date} at ${persisted.start_time}-${persisted.end_time}`;
   return `
     <div class="blocker-delete-confirmation">
       <div class="blocker-delete-mark" aria-hidden="true">!</div>
       <p class="eyebrow">Remove schedule event</p>
       <h2 id="blocker-editor-title">Remove ${escapeHtml(persisted.title)}?</h2>
       <p id="blocker-editor-description">
-        ${escapeHtml(persisted.date)} at ${escapeHtml(persisted.start_time)}-${escapeHtml(persisted.end_time)} will become available for scheduling again.
+        ${escapeHtml(interval)} will become available for scheduling again.
       </p>
       <p class="blocker-editor-status ${model.error ? "error" : ""}" aria-live="assertive" data-blocker-status tabindex="-1">
         ${escapeHtml(model.pending ? "Removing schedule event…" : model.error)}

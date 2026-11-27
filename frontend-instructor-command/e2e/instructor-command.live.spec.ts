@@ -115,7 +115,15 @@ test.describe("instructor command real-backend integration", () => {
   });
 
   test("loads coach schedule data and searches availability through /api/coach", async ({ page }) => {
+    const agendaResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/coach/agenda");
     await signIn(page);
+    const agenda = await agendaResponse;
+    expect(agenda.ok(), await agenda.text()).toBeTruthy();
+    expect(await agenda.json()).toMatchObject({
+      instructor_id: "inst_001",
+      date: process.env.VITE_INSTRUCTOR_COMMAND_DATE?.trim() || "2026-08-27",
+      items: expect.any(Array),
+    });
 
     await page.getByRole("button", { name: "Find", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Availability finder" })).toBeVisible();
@@ -142,7 +150,7 @@ test.describe("instructor command real-backend integration", () => {
     const updatedTitle = `${originalTitle} updated`;
     let persisted: ProviderBlocker | null = null;
     const blockerCollectionRoutePattern = "**/api/coach/blockers";
-    const snapshotRoutePattern = "**/api/coach/command-center/snapshot**";
+    const agendaRoutePattern = "**/api/coach/agenda**";
 
     try {
       await page.getByRole("button", { name: "Add schedule event" }).click();
@@ -176,7 +184,7 @@ test.describe("instructor command real-backend integration", () => {
       await page.unroute(blockerCollectionRoutePattern);
 
       let failedSavedDateRefresh = false;
-      await page.route(snapshotRoutePattern, async (route) => {
+      await page.route(agendaRoutePattern, async (route) => {
         const url = new URL(route.request().url());
         if (!failedSavedDateRefresh && url.searchParams.get("date") === blockerDate) {
           failedSavedDateRefresh = true;
@@ -199,11 +207,9 @@ test.describe("instructor command real-backend integration", () => {
         local_end_time: window.end,
         revision: 1,
       });
-      await expect(page.getByRole("alert")).toContainText(
-        "saved, but the agenda could not refresh",
-      );
+      await expect(page.getByRole("alert")).toContainText("The agenda couldn’t load");
       await expect.poll(() => new URL(page.url()).searchParams.get("date")).toBe(blockerDate);
-      await page.unroute(snapshotRoutePattern);
+      await page.unroute(agendaRoutePattern);
       await page.reload();
       await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
 

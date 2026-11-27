@@ -571,11 +571,15 @@ def get_instructor_info(instructor_id: str = "inst_001") -> Optional[InstructorD
 def get_appointments_for_date(instructor_id: str, date_str: str) -> List[dict]:
     return get_local_appointments_for_date(instructor_id, date_str)
 
-def get_local_appointments_for_date(instructor_id: str, date_str: str) -> List[dict]:
-    instructor = get_instructor_info(instructor_id)
-    if not instructor:
-        return []
-    timezone_name = _read_timezone(instructor.timezone)
+def get_local_appointments_for_date(
+    instructor_id: str, date_str: str, *, timezone_name: str | None = None
+) -> List[dict]:
+    if timezone_name is None:
+        instructor = get_instructor_info(instructor_id)
+        if not instructor:
+            return []
+        timezone_name = instructor.timezone
+    timezone_name = _read_timezone(timezone_name)
     rows = _get_appointment_rows_for_local_date(instructor_id, date_str, timezone_name)
     return [_appointment_to_dict(row, timezone_name=timezone_name) for row in rows]
 

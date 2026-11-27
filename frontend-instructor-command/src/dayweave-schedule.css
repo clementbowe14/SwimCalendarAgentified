@@ -30,7 +30,7 @@
   letter-spacing: -0.045em;
 }
 
-.schedule-heading p:last-child {
+.schedule-summary {
   margin: 9px 0 0;
   color: var(--muted);
   font-size: 14px;
@@ -50,13 +50,25 @@
   font-weight: 850;
 }
 
+.schedule-date-navigation {
+  border-bottom: 1px solid var(--line);
+}
+
+.schedule-date-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.schedule-date-actions button {
+  min-height: 44px;
+}
+
 .week-strip {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 7px;
   margin: 0;
   padding: 10px 0 16px;
-  border-bottom: 1px solid var(--line);
   list-style: none;
 }
 
@@ -92,6 +104,22 @@
   color: #fffdf8;
   background: var(--forest);
   box-shadow: 0 9px 20px rgba(36, 95, 73, 0.18);
+}
+
+.agenda-notice {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.agenda-notice p {
+  margin: 0;
 }
 
 .departure-card {
@@ -304,6 +332,10 @@
   background: var(--clay);
 }
 
+.route-row.calendar_busy .route-node {
+  background: var(--muted);
+}
+
 .route-row.open .route-node {
   color: var(--forest);
   background: #c7ddc3;
@@ -364,6 +396,12 @@
 .route-content-copy small {
   color: #777467;
   font-size: 11px;
+}
+
+.route-row.open .agenda-start-times,
+.route-row.open .route-content-copy small {
+  max-width: none;
+  white-space: normal;
 }
 
 .route-content-copy .route-status {
@@ -479,6 +517,8 @@
 
 .empty-schedule-state > div {
   display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 8px;
 }
@@ -635,7 +675,7 @@
     font-size: clamp(30px, 8vw, 38px);
   }
 
-  .schedule-heading p:last-child {
+  .schedule-summary {
     font-size: 12px;
   }
 

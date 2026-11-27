@@ -457,7 +457,9 @@ def get_coach_command_center_snapshot(
     ]
     schedule = [
         coach_schedule_item(appointment, service_address=coach_instructor.main_address)
-        for appointment in db.get_appointments_for_date(instructor_id, snapshot_date.isoformat())
+        for appointment in db.get_local_appointments_for_date(
+            instructor_id, snapshot_date.isoformat(), timezone_name=configuration.timezone
+        )
     ]
     requests = [
         _coach_lesson_request_response(request)

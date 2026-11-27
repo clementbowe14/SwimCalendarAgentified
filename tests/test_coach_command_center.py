@@ -1,11 +1,13 @@
+from datetime import datetime
+
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 import pytest
 
-from app import db
+from app import api_services, db
 from app.api import create_app
 from app.dependencies import get_current_coach
-from app.models import SchedulerSettingsDB
+from app.models import InstructorDB, SchedulerSettingsDB
 from tests.conftest import login_coach
 from tests.db_test_utils import reset_postgres_database
 
@@ -39,6 +41,35 @@ def test_coach_command_center_snapshot_includes_backend_operational_data(client)
     assert payload["rules"]["payments"]["enabled_methods"] == ["card", "ach", "cash"]
     assert payload["scheduling_policy"]["revision"] == 0
     assert payload["scheduling_policy"]["distance_buffers_enabled"] is True
+
+
+def test_snapshot_uses_profile_timezone_for_appointment_selection(client, monkeypatch):
+    appointment_id = db.save_appointment(
+        instructor_id="inst_001",
+        client_id="client_alice",
+        title="Late appointment",
+        start_time=datetime.fromisoformat("2026-08-28T04:30:00+00:00"),
+        end_time=datetime.fromisoformat("2026-08-28T04:50:00+00:00"),
+        location_address="450 North Blvd, Austin, TX",
+        lat=30.3300,
+        lng=-97.7200,
+    )
+    load_configuration = api_services.load_provider_configuration
+
+    def load_then_change_timezone(instructor_id):
+        configuration = load_configuration(instructor_id)
+        with db.SessionLocal.begin() as session:
+            session.get(InstructorDB, instructor_id).timezone = "America/New_York"
+        return configuration
+
+    monkeypatch.setattr(api_services, "load_provider_configuration", load_then_change_timezone)
+    response = client.get("/api/coach/command-center/snapshot?date=2026-08-27")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["instructor"]["timezone"] == "America/Chicago"
+    appointment = next(item for item in payload["schedule"] if item["id"] == appointment_id)
+    assert appointment["start_time"] == "2026-08-27T23:30:00-05:00"
 
 
 def test_legacy_scheduler_settings_are_read_only(client):
