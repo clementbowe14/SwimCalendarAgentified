@@ -459,8 +459,8 @@ def find_availability_range(
         return search_coach_availability_range(
             coach.instructor_id,
             request,
-            calendar_busy_source=_google_calendar_availability_source(
-                http_request.app.state, coach.instructor_id
+            build_calendar_source=partial(
+                _google_calendar_availability_source, http_request.app.state, coach.instructor_id
             ),
         )
     finally:

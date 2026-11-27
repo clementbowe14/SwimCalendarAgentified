@@ -4,6 +4,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from app import api_services, availability_search, db, timezones, tools
 from app.calendar_connections import disconnect_google_calendar, replace_google_calendar_connection
@@ -11,6 +14,7 @@ from app.calendar_credentials import CalendarCredentialCipher
 from app.external_calendar import MAX_BUSY_QUERY_WINDOW, CalendarBusyInterval, CalendarBusySnapshot, ExternalCalendarTimeout
 from app.google_calendar_busy_source_factory import GoogleCalendarBusySourceFactory
 from app.models import AppointmentDB, InstructorDB, ProviderAccountDB, ProviderWorkingHoursDB
+from app.routing_providers import MapboxRoutingProvider
 
 
 PATH = "/api/coach/availability/search"
@@ -366,3 +370,63 @@ def test_range_errors_do_not_echo_client_details_or_allow_caching(provider, monk
         assert address not in response.text
         assert response.headers["cache-control"] == "private, no-store"
         assert response.headers["referrer-policy"] == "no-referrer"
+
+
+def test_mounted_search_keeps_responses_private_and_contains_unexpected_errors(provider, monkeypatch):
+    app = FastAPI()
+    app.mount("/mounted", provider.app)
+    address = "20 Private Client Street"
+    payload = {**REQUEST, "is_instructor_facility": False, "client_address": address}
+    with TestClient(app, raise_server_exceptions=True) as mounted:
+        mounted.headers.update(provider.headers)
+        success = mounted.post(f"/mounted{PATH}", json=payload)
+        invalid = mounted.post(f"/mounted{PATH}", json={**payload, "end_date": "2026-11-22"})
+        monkeypatch.setattr(availability_search, "require_provider_setup", Mock(side_effect=RuntimeError(address)))
+        unexpected = mounted.post(f"/mounted{PATH}", json=payload)
+
+    assert [response.status_code for response in (success, invalid, unexpected)] == [200, 422, 500]
+    assert address not in invalid.text
+    assert address not in unexpected.text
+    for response in (success, invalid, unexpected):
+        assert response.headers["cache-control"] == "private, no-store"
+        assert response.headers["referrer-policy"] == "no-referrer"
+
+
+def test_range_passes_the_remaining_budget_to_mapbox_without_changing_other_requests(provider, monkeypatch):
+    def fetch(url, _timeout):
+        if "/geocoding/" in url:
+            return {"features": [{"center": [BASE_COORDS[1], BASE_COORDS[0]]}]}
+        return {"routes": [{"distance": 0, "duration": 0}]}
+
+    transport = Mock(side_effect=fetch)
+    mapbox = MapboxRoutingProvider("synthetic", timeout_seconds=30, fetch_json=transport)
+    monkeypatch.setattr(tools, "routing_provider", mapbox)
+    response = provider.post(PATH, json={
+        **REQUEST, "limit": 1, "client_address": "20 Main Street", "is_instructor_facility": False,
+    })
+
+    assert response.status_code == 200, response.text
+    assert transport.call_count >= 2
+    assert all(0 < call.args[1] <= availability_search._SEARCH_SECONDS for call in transport.call_args_list)
+    mapbox.geocode("another address")
+    assert transport.call_args.args[1] == 30
+
+
+def test_google_source_receives_a_bounded_database_session_factory(provider, monkeypatch):
+    _connect_calendar(monkeypatch, Mock())
+    read = Mock(return_value=CalendarBusySnapshot("verified", ()))
+
+    def make_source(_factory, session_factory):
+        with session_factory() as session:
+            bounded = session.execute(text("""
+                SELECT current_setting('lock_timeout')::interval = INTERVAL '500 milliseconds'
+                    AND current_setting('statement_timeout')::interval <= INTERVAL '15 seconds'
+            """)).scalar_one()
+            assert bounded
+        return SimpleNamespace(query_busy_periods=read)
+
+    monkeypatch.setattr(GoogleCalendarBusySourceFactory, "create_for", make_source)
+    response = provider.post(PATH, json=REQUEST)
+
+    assert response.status_code == 200, response.text
+    read.assert_called_once()

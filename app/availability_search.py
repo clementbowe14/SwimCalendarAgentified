@@ -1,9 +1,14 @@
 """Bounded, provider-local search using the existing one-day scheduler."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from functools import partial
 from time import monotonic
+from typing import TypeVar
 
+from sqlalchemy import event, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app import db, timezones, tools
@@ -30,12 +35,39 @@ from app.google_calendar_availability_fence import (
 from app.models import LocationInfo, TimeSlotDTO
 from app.provider_settings import ProviderConfiguration, require_provider_setup
 from app.routing import BaseRoutingProvider, RouteEstimate
+from app.routing_providers import routing_request_deadline
 from app.scheduler_settings import load_buffer_policy
 
 
 _SEARCH_SECONDS = 15
 _MAX_ROUTING_CALLS = 96
 _MAX_SEARCH_EVENTS = 768
+_T = TypeVar("_T")
+
+
+def _remaining_seconds(deadline: float) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise AvailabilitySearchBudgetExceeded()
+    return remaining
+
+
+def _search_session(deadline: float) -> Session:
+    _remaining_seconds(deadline)
+    session = db.SessionLocal()
+
+    @event.listens_for(session, "after_begin", once=True)
+    def set_query_timeouts(_session, _transaction, connection):
+        remaining_ms = max(1, int(_remaining_seconds(deadline) * 1000))
+        connection.execute(
+            text(
+                "SELECT set_config('statement_timeout', :statement, true), "
+                "set_config('lock_timeout', :lock, true)"
+            ),
+            {"statement": f"{remaining_ms}ms", "lock": f"{min(remaining_ms, 500)}ms"},
+        )
+
+    return session
 
 
 class _BoundedRouting(BaseRoutingProvider):
@@ -45,20 +77,23 @@ class _BoundedRouting(BaseRoutingProvider):
         self.remaining = _MAX_ROUTING_CALLS
 
     def check_deadline(self) -> None:
-        if monotonic() >= self.deadline:
-            raise AvailabilitySearchBudgetExceeded()
+        _remaining_seconds(self.deadline)
 
-    def _start_call(self) -> None:
+    def _call(self, operation: Callable[[], _T]) -> _T:
         self.check_deadline()
         if self.remaining == 0:
             raise AvailabilitySearchBudgetExceeded()
         self.remaining -= 1
+        token = routing_request_deadline.set(self.deadline)
+        try:
+            result = operation()
+        finally:
+            routing_request_deadline.reset(token)
+        self.check_deadline()
+        return result
 
     def geocode(self, address: str) -> tuple[float, float]:
-        self._start_call()
-        coords = self.provider.geocode(address)
-        self.check_deadline()
-        return coords
+        return self._call(lambda: self.provider.geocode(address))
 
     def estimate_route(
         self,
@@ -67,12 +102,9 @@ class _BoundedRouting(BaseRoutingProvider):
         departure_time: datetime | None = None,
         traffic_mode: str = "none",
     ) -> RouteEstimate:
-        self._start_call()
-        estimate = self.provider.estimate_route(
+        return self._call(lambda: self.provider.estimate_route(
             origin_coords, dest_coords, departure_time=departure_time, traffic_mode=traffic_mode,
-        )
-        self.check_deadline()
-        return estimate
+        ))
 
 
 @dataclass(frozen=True)
@@ -98,33 +130,42 @@ def search_one_time_availability(
     *,
     client_address: str,
     is_instructor_facility: bool,
-    calendar_busy_source: CalendarBusySource | None,
+    build_calendar_source: Callable[[Callable[[], Session]], CalendarBusySource] | None,
     now: datetime | None = None,
 ) -> AvailabilityRange:
     routing = _BoundedRouting(tools.routing_provider)
+    sessions = partial(_search_session, routing.deadline)
+    calendar_busy_source = None
     try:
         fence = None
-        if calendar_busy_source is not None:
-            fence = claim_google_calendar_availability_fence(db.SessionLocal, instructor_id=instructor_id)
+        if build_calendar_source is not None:
+            fence = claim_google_calendar_availability_fence(sessions, instructor_id=instructor_id)
         routing.check_deadline()
 
-        with db.SessionLocal() as session:
+        with sessions() as session:
             session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
             provider = require_provider_setup(instructor_id, session=session)
             today = timezones.requested_local_date(now or datetime.now(timezones.UTC), provider.timezone)
             if criteria.start_date < today or (criteria.end_date - today).days >= PILOT_AVAILABILITY_DAYS:
                 raise InvalidSchedulingRequest("Choose dates within the next 14 days, including today.")
             days, empty_reason = _search_days(provider, criteria, routing, session)
+            routing.check_deadline()
             policy = load_buffer_policy(instructor_id, operation="availability", session=session) if days else None
 
         location = tools.resolve_availability_location(
             provider, client_address, is_instructor_facility, routing=routing,
         )
         busy_periods: list[CalendarBusyInterval] = []
-        if days and calendar_busy_source is not None:
+        if days and build_calendar_source is not None:
+            calendar_busy_source = build_calendar_source(sessions)
             busy_periods = _read_busy_periods(calendar_busy_source, instructor_id, days, routing)
+    except OperationalError as exc:
+        if getattr(exc.orig, "sqlstate", None) in {"55P03", "57014"}:
+            raise AvailabilitySearchBudgetExceeded() from None
+        raise
     finally:
         calendar_busy_source = None
+        build_calendar_source = None
 
     slots: list[TimeSlotDTO] = []
     if policy is not None:
@@ -132,7 +173,7 @@ def search_one_time_availability(
 
     routing.check_deadline()
     if fence is not None:
-        revalidate_google_calendar_availability_fence(db.SessionLocal, fence=fence)
+        revalidate_google_calendar_availability_fence(sessions, fence=fence)
     routing.check_deadline()
     return AvailabilityRange(provider.timezone, location, slots, None if slots else empty_reason)
 

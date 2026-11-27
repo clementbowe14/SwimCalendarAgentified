@@ -13,6 +13,7 @@ import uuid
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app import db, timezones, tools
 from app.api_errors import (
@@ -1011,14 +1012,14 @@ def search_coach_availability_range(
     instructor_id: str,
     request: CoachAvailabilityRangeRequest,
     *,
-    calendar_busy_source: CalendarBusySource,
+    build_calendar_source: Callable[[Callable[[], Session]], CalendarBusySource],
 ) -> CoachAvailabilityRangeResponse:
     try:
         result = search_one_time_availability(
             instructor_id, request,
             client_address=request.client_address or "",
             is_instructor_facility=request.is_instructor_facility,
-            calendar_busy_source=calendar_busy_source,
+            build_calendar_source=build_calendar_source,
         )
         return CoachAvailabilityRangeResponse(
             start_date=request.start_date,
@@ -1046,7 +1047,7 @@ def search_coach_availability_range(
     except ProviderNotFound:
         raise ResourceNotFound("The instructor could not be found.") from None
     finally:
-        calendar_busy_source = None
+        del build_calendar_source
     raise CalendarAvailabilityUnavailable() from None
 
 

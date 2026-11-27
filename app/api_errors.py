@@ -11,7 +11,7 @@ from app.google_calendar_oauth import (
     google_calendar_oauth_route_path,
 )
 
-_COACH_AVAILABILITY_RANGE_PATH = "/api/coach/availability/search"
+COACH_AVAILABILITY_RANGE_PATH = "/api/coach/availability/search"
 
 
 class ApiException(Exception):
@@ -314,7 +314,8 @@ async def api_exception_handler(request: Request, exc: ApiException) -> JSONResp
         status_code=exc.status_code,
         content=error_payload(exc.code, exc.message, exc.details),
     )
-    if request.url.path.startswith(("/api/auth/coach", "/api/coach")):
+    path = google_calendar_oauth_route_path(request.scope["path"], request.scope.get("root_path", ""))
+    if path.startswith(("/api/auth/coach", "/api/coach")):
         response.headers["Cache-Control"] = "private, no-store"
         response.headers["Referrer-Policy"] = "no-referrer"
     if isinstance(exc, InvalidAuthToken):
@@ -325,8 +326,8 @@ async def api_exception_handler(request: Request, exc: ApiException) -> JSONResp
 
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    path = request.url.path.rstrip("/")
-    redact_inputs = path.startswith("/api/auth/coach") or path == _COACH_AVAILABILITY_RANGE_PATH
+    path = google_calendar_oauth_route_path(request.scope["path"], request.scope.get("root_path", "")).rstrip("/")
+    redact_inputs = path.startswith("/api/auth/coach") or path == COACH_AVAILABILITY_RANGE_PATH
     details = {
         "fields": [
             _serializable_validation_error(error, redact_input=redact_inputs)
@@ -358,11 +359,11 @@ async def unexpected_exception_handler(request: Request, __: Exception) -> JSONR
     route_path = google_calendar_oauth_route_path(
         request.scope["path"], request.scope.get("root_path", "")
     )
-    private = request.url.path.startswith("/api/public/") or route_path.rstrip("/") in (
+    private = route_path.startswith("/api/public/") or route_path.rstrip("/") in (
         GOOGLE_CALENDAR_AUTHORIZE_PATH,
         GOOGLE_CALENDAR_CALLBACK_PATH,
         GOOGLE_CALENDAR_CONNECTION_PATH,
-        _COACH_AVAILABILITY_RANGE_PATH,
+        COACH_AVAILABILITY_RANGE_PATH,
     )
     return JSONResponse(
         status_code=500,
