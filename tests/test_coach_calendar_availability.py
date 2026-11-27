@@ -261,7 +261,7 @@ def test_confirmation_validates_the_persisted_duration_across_fall_dst(connected
 
 def test_availability_requires_auth_before_building_calendar_source(monkeypatch):
     build_source = Mock(side_effect=AssertionError("Unauthenticated request reached calendar"))
-    monkeypatch.setattr(coach_routes, "GoogleCalendarAvailabilitySource", build_source)
+    monkeypatch.setattr(coach_routes, "_google_calendar_availability_source", build_source)
     client = TestClient(create_app())
 
     response = client.post(AVAILABILITY_PATH, json=PAYLOAD)

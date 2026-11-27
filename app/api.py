@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from threading import BoundedSemaphore
 from copy import deepcopy
 from typing import AsyncIterator
 
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
     )
     app.state.settings = settings
     app.state.calendar_busy_source_factory = GoogleCalendarBusySourceFactory()
+    app.state.public_calendar_reads = BoundedSemaphore(4)
     app.state.routing_readiness = {
         "provider": routing_provider.provider_name,
         "mode": "external" if routing_provider.provider_name == "mapbox" else "synthetic",

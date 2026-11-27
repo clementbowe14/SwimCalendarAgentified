@@ -8,6 +8,7 @@ from app import db, timezones, tools
 from app.calendar_handoff import calendar_ics, calendar_links
 from app.notifications import public_notifications
 from app.api_errors import (
+    CalendarAvailabilityUnavailable,
     CalendarLinksUnavailable,
     GeocodingFailed as GeocodingFailedApiError,
     IdempotencyConflict,
@@ -21,6 +22,12 @@ from app.api_errors import (
     RoutingProviderUnavailable as RoutingProviderUnavailableApiError,
     RoutingTimeout as RoutingTimeoutApiError,
     SlotOfferNotFound,
+)
+from app.external_calendar import CalendarBusySource, ExternalCalendarUnavailable
+from app.google_calendar_availability_fence import (
+    GoogleCalendarAvailabilityFence,
+    claim_google_calendar_availability_fence,
+    lock_current_google_calendar_availability_fence,
 )
 from app.api_schemas import (
     ClientInviteAvailabilityRequest,
@@ -48,6 +55,7 @@ from app.public_tokens import (
     InviteContext,
     create_lesson_request,
     demo_invite_is_enabled,
+    require_active_invite,
     resolve_invite,
     resolve_lesson_request_by_idempotency_key,
 )
@@ -63,6 +71,7 @@ from app.scheduler_settings import load_buffer_policy
 
 
 SLOT_OFFER_TTL_MINUTES = 30
+WEEKLY_OCCURRENCE_COUNT = 4
 DAY_KEYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 HOME_POOL_ADDRESS_PROMPT = "Enter home pool address"
 
@@ -107,24 +116,73 @@ def submit_client_invite_intake(
 
 
 def search_client_invite_slots(
-    invite_token: str,
+    invite: InviteContext,
     request: ClientInviteAvailabilityRequest,
+    *,
+    calendar_busy_source: CalendarBusySource | None = None,
 ) -> ClientInviteAvailabilityResponse:
-    invite = resolve_invite(invite_token)
     is_facility = request.location.is_instructor_facility or request.location.address.lower() == "facility"
     location = _resolve_location(invite.instructor_id, request.location, is_facility)
-    slots = _find_slots(
-        instructor_id=invite.instructor_id,
-        requested_date=request.requested_date,
-        client_address=location.address,
-        is_instructor_facility=is_facility,
-        duration_mins=request.duration_mins,
+    timezone_name = _instructor_timezone(invite.instructor_id)
+    buffer_policy = (
+        load_buffer_policy(invite.instructor_id, operation="availability")
+        if request.recurrence == "weekly"
+        else None
     )
-    filtered_slots = [slot for slot in slots if _slot_matches_windows(slot, request.windows)]
+
+    def slots_on(day: datetime.date) -> list[TimeSlotDTO]:
+        with db.SessionLocal() as session:
+            require_active_invite(session, invite.token, instructor_id=invite.instructor_id)
+        return _find_slots(
+            instructor_id=invite.instructor_id,
+            requested_date=day,
+            client_address=location.address,
+            is_instructor_facility=is_facility,
+            duration_mins=request.duration_mins,
+            buffer_policy=buffer_policy,
+            calendar_busy_source=calendar_busy_source,
+        )
+
+    try:
+        fence = None
+        if calendar_busy_source is not None:
+            fence = claim_google_calendar_availability_fence(db.SessionLocal, instructor_id=invite.instructor_id)
+        slots = slots_on(request.requested_date)
+        filtered_slots = [slot for slot in slots if _slot_matches_windows(slot, request.windows)]
+        if request.recurrence == "weekly" and filtered_slots:
+            for week in range(WEEKLY_OCCURRENCE_COUNT):
+                offset = datetime.timedelta(weeks=week)
+                week_slots = slots if week == 0 else slots_on(request.requested_date + offset)
+                available_intervals = {
+                    (timezones.to_utc_storage(slot.start_time), timezones.to_utc_storage(slot.end_time))
+                    for slot in week_slots
+                }
+                filtered_slots = [
+                    slot for slot in filtered_slots
+                    if _weekly_interval_available(slot, offset, timezone_name, available_intervals)
+                ]
+                if not filtered_slots:
+                    break
+        return _present_slot_offers(invite, request, location, is_facility, filtered_slots, timezone_name, fence)
+    except ExternalCalendarUnavailable:
+        pass
+    raise CalendarAvailabilityUnavailable() from None
+
+
+def _present_slot_offers(
+    invite: InviteContext,
+    request: ClientInviteAvailabilityRequest,
+    location: ClientInviteLocation,
+    is_facility: bool,
+    slots: list[TimeSlotDTO],
+    timezone_name: str,
+    fence: GoogleCalendarAvailabilityFence | None,
+) -> ClientInviteAvailabilityResponse:
     response_slots = [
-        _store_and_shape_slot(invite, request, location, slot, is_facility)
-        for slot in filtered_slots
+        _shape_slot(invite, request, location, slot, timezone_name)
+        for slot in slots
     ]
+    _save_slot_offers(invite, request, location, is_facility, list(zip(slots, response_slots)), fence)
     return ClientInviteAvailabilityResponse(
         status="PRESENTING",
         dialogue_response="Here are the appointment times available to request.",
@@ -275,6 +333,8 @@ def _find_slots(
     is_instructor_facility: bool,
     duration_mins: int,
     buffer_policy: Optional[BufferPolicy] = None,
+    *,
+    calendar_busy_source: CalendarBusySource | None = None,
 ) -> list[TimeSlotDTO]:
     try:
         return tools.find_available_swim_slots(
@@ -284,7 +344,10 @@ def _find_slots(
             is_instructor_facility=is_instructor_facility,
             duration_mins=duration_mins,
             buffer_policy=buffer_policy,
+            calendar_busy_source=calendar_busy_source,
         )
+    except ExternalCalendarUnavailable:
+        pass
     except GeocodeFailed as exc:
         raise GeocodingFailedApiError({"field": "location.address"}) from exc
     except RoutingTimeout as exc:
@@ -302,6 +365,7 @@ def _find_slots(
         if "not found" in message.lower():
             raise ResourceNotFound("The instructor could not be found.") from exc
         raise InvalidSchedulingRequest("The scheduling request could not be evaluated.") from exc
+    raise CalendarAvailabilityUnavailable() from None
 
 
 def _validate_offer_occurrences(
@@ -487,48 +551,51 @@ def _intake_response(intake: InviteIntakeDB) -> ClientInviteIntake:
     )
 
 
-def _store_and_shape_slot(
+def _shape_slot(
     invite: InviteContext,
     request: ClientInviteAvailabilityRequest,
     location: ClientInviteLocation,
     slot: TimeSlotDTO,
-    is_facility: bool,
+    timezone_name: str,
 ) -> ClientInviteSchedulerSlot:
-    local_start = _instructor_local(slot.start_time, invite.instructor_id)
-    local_end = _instructor_local(slot.end_time, invite.instructor_id)
+    local_start = timezones.aware_to_local(slot.start_time, timezone_name)
+    local_end = timezones.aware_to_local(slot.end_time, timezone_name)
     slot_id = _slot_id(invite.token, request, slot.start_time)
-    shaped = ClientInviteSchedulerSlot(
+    return ClientInviteSchedulerSlot(
         id=slot_id,
         start_iso=local_start,
         end_iso=local_end,
         display=_display_slot(local_start),
         location_address=location.address,
-        recurrence_available=request.recurrence == "single" or _weekly_candidate(local_start),
+        recurrence_available=True,
         recurrence=request.recurrence,
-        recurrence_count=4 if request.recurrence == "weekly" else 1,
+        recurrence_count=WEEKLY_OCCURRENCE_COUNT if request.recurrence == "weekly" else 1,
     )
-    _save_slot_offer(invite, request, location, slot, shaped, is_facility)
-    return shaped
 
 
-def _save_slot_offer(
+def _save_slot_offers(
     invite: InviteContext,
     request: ClientInviteAvailabilityRequest,
     location: ClientInviteLocation,
-    slot: TimeSlotDTO,
-    shaped: ClientInviteSchedulerSlot,
     is_facility: bool,
+    offers: list[tuple[TimeSlotDTO, ClientInviteSchedulerSlot]],
+    fence: GoogleCalendarAvailabilityFence | None,
 ) -> None:
-    session = db.SessionLocal()
-    try:
-        _upsert_slot_offer(session, invite, request, location, slot, shaped, is_facility)
-        session.commit()
-    except IntegrityError:
-        session.rollback()
-        _upsert_slot_offer(session, invite, request, location, slot, shaped, is_facility)
-        session.commit()
-    finally:
-        session.close()
+    with db.SessionLocal() as session:
+        for attempt in range(2):
+            try:
+                with session.begin():
+                    require_active_invite(session, invite.token, instructor_id=invite.instructor_id, lock=True)
+                    for slot, shaped in offers:
+                        _upsert_slot_offer(session, invite, request, location, slot, shaped, is_facility)
+                    if fence is not None:
+                        session.flush()
+                        lock_current_google_calendar_availability_fence(session, fence=fence)
+                    require_active_invite(session, invite.token, instructor_id=invite.instructor_id)
+                return
+            except IntegrityError:
+                if attempt:
+                    raise
 
 
 def _upsert_slot_offer(
@@ -560,7 +627,7 @@ def _upsert_slot_offer(
     existing.buffer_mins = slot.buffer_mins
     existing.distance_miles = slot.distance_miles
     existing.recurrence = request.recurrence
-    existing.recurrence_count = 4 if request.recurrence == "weekly" else 1
+    existing.recurrence_count = shaped.recurrence_count
     existing.recurrence_available = shaped.recurrence_available
     existing.lesson_request_id = None
     existing.offer_kind = "search"
@@ -723,7 +790,7 @@ def _slot_id(invite_token: str, request: ClientInviteAvailabilityRequest, slot_s
             timezones.canonical_instant_text(slot_start),
             str(request.duration_mins),
             request.recurrence,
-            str(4 if request.recurrence == "weekly" else 1),
+            str(WEEKLY_OCCURRENCE_COUNT if request.recurrence == "weekly" else 1),
         ]
     )
     return f"slot_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]}"
@@ -762,8 +829,18 @@ def _display_slot(
     )
 
 
-def _weekly_candidate(start_time: datetime.datetime) -> bool:
-    return start_time.weekday() < 5 or start_time.hour < 17
+def _weekly_interval_available(
+    slot: TimeSlotDTO,
+    offset: datetime.timedelta,
+    timezone_name: str,
+    available_intervals: set[tuple[datetime.datetime, datetime.datetime]],
+) -> bool:
+    try:
+        start = timezones.validate_local_datetime(slot.start_time.replace(tzinfo=None) + offset, timezone_name)
+        end = timezones.validate_local_datetime(slot.end_time.replace(tzinfo=None) + offset, timezone_name)
+    except (timezones.AmbiguousLocalTimeError, timezones.NonexistentLocalTimeError):
+        return False
+    return (timezones.to_utc_storage(start), timezones.to_utc_storage(end)) in available_intervals
 
 
 def _instructor_timezone(instructor_id: str) -> str:
@@ -780,10 +857,6 @@ def _instructor_response_timezone(instructor_id: str) -> tuple[str, bool]:
         # Existing requests remain readable even while setup is incomplete.
         # UTC preserves their exact instants without inventing a provider zone.
         return "UTC", False
-
-
-def _instructor_local(value: datetime.datetime, instructor_id: str) -> datetime.datetime:
-    return timezones.aware_to_local(value, _instructor_timezone(instructor_id))
 
 
 def _public_request_status(status: str) -> str:

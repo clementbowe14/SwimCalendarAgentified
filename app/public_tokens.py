@@ -55,15 +55,7 @@ DEMO_INVITE_TOKEN = "demo-invite-token"
 def resolve_invite(token: str) -> InviteContext:
     session = db.SessionLocal()
     try:
-        invite = session.query(InviteTokenDB).filter_by(token=token).first()
-        if not invite:
-            raise InviteNotFound()
-        if not demo_invite_is_enabled(invite):
-            raise InviteNotFound()
-        if invite.revoked_at is not None:
-            raise InviteNotFound()
-        if invite.expires_at <= datetime.utcnow():
-            raise InviteExpired()
+        invite = require_active_invite(session, token)
         try:
             provider = load_provider_configuration(invite.instructor_id)
         except ProviderNotFound as exc:
@@ -87,6 +79,24 @@ def resolve_invite(token: str) -> InviteContext:
         )
     finally:
         session.close()
+
+
+def require_active_invite(
+    session,
+    token: str,
+    *,
+    instructor_id: str | None = None,
+    lock: bool = False,
+) -> InviteTokenDB:
+    query = session.query(InviteTokenDB).filter_by(token=token)
+    if instructor_id is not None:
+        query = query.filter_by(instructor_id=instructor_id)
+    invite = (query.with_for_update() if lock else query).first()
+    if invite is None or invite.revoked_at is not None or not demo_invite_is_enabled(invite):
+        raise InviteNotFound()
+    if invite.expires_at <= datetime.utcnow():
+        raise InviteExpired()
+    return invite
 
 
 def create_lesson_request(
