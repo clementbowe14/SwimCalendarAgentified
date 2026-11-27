@@ -1765,6 +1765,20 @@
         "title": "CoachEmailDeliveryResponse",
         "type": "object"
       },
+      "CoachGoogleCalendarAuthorizationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization_url": {
+            "title": "Authorization Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorization_url"
+        ],
+        "title": "CoachGoogleCalendarAuthorizationResponse",
+        "type": "object"
+      },
       "CoachInstructorProfileResponse": {
         "properties": {
           "base_location": {
@@ -4369,6 +4383,22 @@
         "operationId": "delete_google_calendar_connection_api_coach_calendar_connections_google_delete",
         "parameters": [
           {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
+            }
+          },
+          {
             "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
             "example": "1",
             "in": "header",
@@ -4393,6 +4423,26 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The signed-in provider changed."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "security": [
@@ -4407,6 +4457,24 @@
       },
       "get": {
         "operationId": "read_google_calendar_connection_status_api_coach_calendar_connections_google_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -4417,6 +4485,26 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The signed-in provider changed."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "security": [
@@ -4425,6 +4513,114 @@
           }
         ],
         "summary": "Read Google Calendar Connection Status",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
+    "/api/coach/calendar-connections/google/authorize": {
+      "post": {
+        "operationId": "start_google_calendar_authorization_api_coach_calendar_connections_google_authorize_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
+            }
+          },
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachGoogleCalendarAuthorizationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "An active coach session is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "CSRF protection failed."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The signed-in provider changed."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body must be empty."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Google Calendar authorization is unavailable."
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Start Google Calendar Authorization",
         "tags": [
           "coach"
         ]
@@ -5393,6 +5589,37 @@
         "summary": "Reject Legacy Scheduler Settings Write",
         "tags": [
           "coach"
+        ]
+      }
+    },
+    "/api/oauth/google-calendar/callback": {
+      "get": {
+        "operationId": "google_calendar_callback_api_oauth_google_calendar_callback_get",
+        "responses": {
+          "303": {
+            "description": "Redirects to the coach app with the calendar connection result.",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Google Calendar authorization is unavailable."
+          }
+        },
+        "summary": "Google Calendar Callback",
+        "tags": [
+          "oauth"
         ]
       }
     },

@@ -4,6 +4,13 @@ from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.google_calendar_oauth import (
+    GOOGLE_CALENDAR_AUTHORIZE_PATH,
+    GOOGLE_CALENDAR_CALLBACK_PATH,
+    GOOGLE_CALENDAR_CONNECTION_PATH,
+    google_calendar_oauth_route_path,
+)
+
 
 class ApiException(Exception):
     def __init__(
@@ -111,6 +118,15 @@ class CalendarAvailabilityUnavailable(ApiException):
         super().__init__(
             "CALENDAR_AVAILABILITY_UNAVAILABLE",
             "Calendar availability could not be verified.",
+            status_code=503,
+        )
+
+
+class CalendarOAuthUnavailable(ApiException):
+    def __init__(self):
+        super().__init__(
+            "CALENDAR_OAUTH_UNAVAILABLE",
+            "Google Calendar authorization is unavailable.",
             status_code=503,
         )
 
@@ -327,9 +343,17 @@ def _serializable_validation_error(
 
 
 async def unexpected_exception_handler(request: Request, __: Exception) -> JSONResponse:
+    route_path = google_calendar_oauth_route_path(
+        request.scope["path"], request.scope.get("root_path", "")
+    )
+    private = request.url.path.startswith("/api/public/") or route_path.rstrip("/") in (
+        GOOGLE_CALENDAR_AUTHORIZE_PATH,
+        GOOGLE_CALENDAR_CALLBACK_PATH,
+        GOOGLE_CALENDAR_CONNECTION_PATH,
+    )
     return JSONResponse(
         status_code=500,
         content=error_payload("INTERNAL_SERVER_ERROR", "An unexpected error occurred."),
         headers={"Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer"}
-        if request.url.path.startswith("/api/public/") else None,
+        if private else None,
     )

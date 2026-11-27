@@ -170,6 +170,12 @@ class CoachCalendarConnectionResponse(BaseModel):
     authorization_required_at: Optional[AwareDatetime]
 
 
+class CoachGoogleCalendarAuthorizationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    authorization_url: str = Field(repr=False)
+
+
 class CoachProviderSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
