@@ -578,6 +578,7 @@ def create_coach_blocker(
     if replay is not None:
         return replay
     configuration = _blocker_provider_configuration(instructor_id)
+    _require_blocker_timezone(request, configuration.timezone)
     start_time, end_time = _blocker_instants(request, configuration.timezone)
     address, lat, lng = _blocker_location(request)
     try:
@@ -645,6 +646,7 @@ def update_coach_blocker(
         raise ResourceNotFound("The schedule event could not be found.")
     if existing["revision"] != request.expected_revision:
         raise BlockerStale()
+    _require_blocker_timezone(request, configuration.timezone)
     start_time, end_time = _blocker_instants(request, configuration.timezone)
     address, lat, lng = _blocker_location(request)
     try:
@@ -699,6 +701,15 @@ def _blocker_provider_configuration(instructor_id: str) -> ProviderConfiguration
     except timezones.InvalidTimezoneError as exc:
         raise ProviderSetupRequired(["timezone"]) from exc
     return configuration
+
+
+def _require_blocker_timezone(request: CoachBlockerMutation, timezone_name: str) -> None:
+    if request.expected_timezone is not None and request.expected_timezone != timezone_name:
+        raise ApiException(
+            "BLOCKER_TIMEZONE_CHANGED",
+            "Your provider time zone changed. Reload Schedule before saving this event.",
+            409,
+        )
 
 
 def _blocker_instants(

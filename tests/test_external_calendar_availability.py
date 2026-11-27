@@ -218,6 +218,22 @@ def test_verified_external_busy_period_removes_overlapping_slots(
     )
 
 
+def test_locationless_off_shift_events_keep_the_working_calendar_window(monkeypatch):
+    def at(hour, minute=0):
+        return dt.datetime.combine(THURSDAY, dt.time(hour, minute), tzinfo=UTC)
+
+    source = RecordingBusySource(CalendarBusySnapshot(status="verified", periods=()))
+    internal = [
+        {"start_time": at(9, 30), "end_time": at(9, 45), "event_type": "block", "blocker_kind": "unavailable"},
+        {"start_time": at(17, 15), "end_time": at(17, 30), "event_type": "block", "blocker_kind": "unavailable"},
+    ]
+
+    slots = _find_slots(monkeypatch, source, internal_events=internal)
+
+    assert source.calls == [("inst_external", at(10), at(17))]
+    assert slots and all(at(10) <= slot.start_time < slot.end_time <= at(17) for slot in slots)
+
+
 def test_external_blocker_cannot_move_occupied_frontier_backward(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

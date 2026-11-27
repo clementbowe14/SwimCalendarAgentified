@@ -22,6 +22,7 @@ from app.external_calendar import CalendarBusySource, ExternalCalendarUnavailabl
 from app.google_calendar_availability_fence import (
     check_current_google_calendar_availability_fence,
     claim_google_calendar_availability_fence,
+    revalidate_google_calendar_availability_fence,
 )
 from app.models import LocationInfo, TimeSlotDTO
 from app.provider_settings import (
@@ -43,6 +44,7 @@ class AgendaDay:
     timezone: str
     start: datetime
     end: datetime
+    working_window: tuple[datetime, datetime] | None
     events: list[dict]
 
 
@@ -76,13 +78,19 @@ def get_coach_agenda(
     if "timezone" in provider.setup_missing_fields or day.end <= day.start:
         return _known_agenda(day, current_time(), status)
 
+    routing_window = (
+        tools.routing_calendar_window(*day.working_window, day.events)
+        if day.working_window is not None
+        else None
+    )
+    calendar_end = max(day.end, routing_window[1]) if routing_window is not None else day.end
     try:
         fence = claim_google_calendar_availability_fence(db.SessionLocal, instructor_id=instructor_id)
         snapshot = query_calendar_busy_snapshot(
             build_calendar_source(),
             instructor_id=instructor_id,
             window_start=day.start,
-            window_end=day.end,
+            window_end=calendar_end,
         )
     except (CalendarAvailabilityUnavailable, ExternalCalendarUnavailable):
         return _known_agenda(day, current_time(), "calendar_unavailable")
@@ -90,12 +98,18 @@ def get_coach_agenda(
     external = tools.external_busy_events_from_snapshot(snapshot, internal_events=day.events)
     plan = None
     try:
-        plan = _working_plan(day, external, current_time())
+        plan = _working_plan(day, external, current_time(), routing_window)
     except (InvalidSchedulerPolicy, RoutingError, SQLAlchemyError):
         status = "routing_unavailable"
 
-    # Compare the local inputs and calendar generation at one database snapshot.
-    # All network work is complete before this transaction starts.
+    # Lifecycle revalidation can wait for a writer. Take the final snapshot after it.
+    try:
+        revalidate_google_calendar_availability_fence(db.SessionLocal, fence=fence)
+    except ExternalCalendarUnavailable:
+        status = "calendar_unavailable"
+        plan = None
+
+    # Compare the local inputs and credential-free calendar generation in one short read.
     try:
         with db.SessionLocal() as session:
             session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
@@ -123,16 +137,22 @@ def get_coach_agenda(
 
     instant = current_time()
     agenda = _known_agenda(latest, instant, status)
+    if status == "calendar_unavailable":
+        return agenda
     agenda.items.extend(
         CoachCalendarBusyScheduleItemResponse(
             id=f"agenda-calendar-busy-{index}",
             start_time=event["start_time"],
             end_time=event["end_time"],
         )
-        for index, event in enumerate(external)
+        for index, event in enumerate(tools.clip_schedule_events(external, day_start=day.start, day_end=day.end))
     )
     if plan is not None:
-        agenda.items.extend(plan.transitions)
+        for item in plan.transitions:
+            start = max(item.start_time, day.start)
+            end = min(item.end_time, day.end)
+            if start < end:
+                agenda.items.append(item.model_copy(update={"start_time": start, "end_time": end}))
         agenda.items.extend(_bookable_windows(plan.slots, plan.transitions, instant, plan.service))
         if agenda.next_up is not None:
             agenda.next_up = plan.arrivals.get(agenda.next_up.appointment_id, agenda.next_up)
@@ -154,15 +174,19 @@ def _read_agenda_day(
         start, end = timezones.local_day_window_utc_storage(selected_date, timezone_name)
     except OverflowError:
         raise InvalidSchedulingRequest("Choose a supported calendar date.") from None
+    working_window = tools.working_window_utc(provider, selected_date) if provider.setup_complete else None
     return AgendaDay(
         provider=provider,
         date=selected_date,
         timezone=timezone_name,
         start=timezones.storage_to_aware_utc(start),
         end=timezones.storage_to_aware_utc(end),
+        working_window=working_window,
         events=db.get_utc_appointment_events_for_date(
             provider.id, selected_date.isoformat(), timezone_name=timezone_name,
-            include_day_edges=True, session=session,
+            include_day_edges=True,
+            include_next_day_routing_anchor=working_window is not None,
+            session=session,
         ),
     )
 
@@ -188,27 +212,33 @@ def _known_agenda(day: AgendaDay, now: datetime, status: CoachAgendaStatus) -> C
     )
 
 
-def _working_plan(day: AgendaDay, external: list[dict], now: datetime) -> WorkingPlan | None:
+def _working_plan(
+    day: AgendaDay,
+    external: list[dict],
+    now: datetime,
+    routing_window: tuple[datetime, datetime] | None,
+) -> WorkingPlan | None:
     provider = day.provider
     service = provider.service
-    if not provider.setup_complete or provider.base_location is None or service is None:
+    if day.working_window is None or routing_window is None or provider.base_location is None or service is None:
         return None
-    window = tools.working_window_utc(provider, day.date)
-    if window is None:
-        return None
-    work_start, work_end = window
+    work_start, work_end = day.working_window
+    busy_start, busy_end = routing_window
     base = _scheduler_location(provider.base_location, is_facility=False)
     target = _scheduler_location(service.location, is_facility=True)
-    bounded_busy = tools.clip_schedule_events(external, day_start=work_start, day_end=work_end)
+    bounded_busy = tools.clip_schedule_events(external, day_start=busy_start, day_end=busy_end)
     position, working_events = tools.working_schedule_context(work_start, base, [*day.events, *bounded_busy])
     policy = load_buffer_policy(provider.id, operation="coach_agenda")
     engine = SwimSchedulerConstraintEngine(tools.routing_provider, policy, timezone_name=day.timezone)
-    _, transition_events = tools.working_schedule_context(work_start, base, [*day.events, *external])
+    transition_position, transition_events = tools.working_schedule_context(work_start, base, [*day.events, *external])
+    calendar_end = max(day.end, busy_end)
     transitions, arrivals = _planned_transitions(
         engine,
         transition_events,
-        original_starts={event["id"]: event["start_time"] for event in day.events},
-        position=position,
+        original_starts={
+            event["id"]: event["start_time"] for event in day.events if event["start_time"] <= calendar_end
+        },
+        position=transition_position,
     )
     slots = []
     if work_end > now:

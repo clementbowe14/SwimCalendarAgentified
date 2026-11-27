@@ -1,9 +1,10 @@
 import datetime
 import threading
+from dataclasses import replace
 from typing import List, Optional
 
 from app import db, timezones
-from app.engine import BufferPolicy, SchedulePosition, SwimSchedulerConstraintEngine
+from app.engine import BufferPolicy, SchedulePosition, SwimSchedulerConstraintEngine, event_coordinates
 from app.external_calendar import (
     CalendarBusySnapshot,
     CalendarBusySource,
@@ -221,19 +222,17 @@ def _find_available_swim_slots(
     internal_events = db.get_utc_appointment_events_for_date(
         instructor_id,
         date_str,
+        timezone_name=provider.timezone,
         include_day_edges=True,
+        include_next_day_routing_anchor=True,
     )
-    bounded_internal_events = clip_schedule_events(
-        internal_events,
-        day_start=day_start,
-        day_end=day_end,
-    )
+    busy_start, busy_end = routing_calendar_window(day_start, day_end, internal_events)
     external_events = _external_busy_events(
         calendar_busy_source_handoff,
         instructor_id=instructor_id,
-        day_start=day_start,
-        day_end=day_end,
-        internal_events=bounded_internal_events,
+        day_start=busy_start,
+        day_end=busy_end,
+        internal_events=internal_events,
     )
     position, existing_events = working_schedule_context(
         day_start, instructor_base_loc, [*internal_events, *external_events]
@@ -284,6 +283,27 @@ def working_window_utc(
     return timezones.ensure_aware_utc(start), timezones.ensure_aware_utc(end)
 
 
+def routing_calendar_window(
+    work_start: datetime.datetime,
+    work_end: datetime.datetime,
+    internal_events: List[dict],
+) -> tuple[datetime.datetime, datetime.datetime]:
+    """Verify busy time between working hours and adjacent routing anchors."""
+    preceding = [event for event in internal_events if event["end_time"] <= work_start]
+    busy_start = work_start
+    if any(event_coordinates(event) is not None for event in preceding):
+        busy_start = max(event["end_time"] for event in preceding)
+    busy_end = min(
+        (
+            event["start_time"]
+            for event in internal_events
+            if event["start_time"] >= work_end and event_coordinates(event) is not None
+        ),
+        default=work_end,
+    )
+    return busy_start, busy_end
+
+
 def working_schedule_context(
     work_start: datetime.datetime,
     base: LocationInfo,
@@ -291,13 +311,18 @@ def working_schedule_context(
 ) -> tuple[SchedulePosition, List[dict]]:
     """Keep the known location before work and travel anchors after it."""
     position = SchedulePosition(work_start, (base.lat, base.lng))
+    has_previous_location = False
     working_events = []
     for event in sorted(events, key=lambda event: (event["start_time"], event["end_time"])):
         if event["end_time"] <= work_start:
-            if event.get("blocker_kind") != "external_calendar":
-                position = position.after_event(event)
+            if event.get("blocker_kind") == "external_calendar" and not has_previous_location:
+                continue
+            position = position.after_event(event)
+            has_previous_location = has_previous_location or event_coordinates(event) is not None
         else:
             working_events.append({**event, "start_time": max(event["start_time"], work_start)})
+    if not has_previous_location and position.free_at < work_start:
+        position = replace(position, free_at=work_start)
     return position, working_events
 
 

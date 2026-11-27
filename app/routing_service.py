@@ -44,6 +44,7 @@ def build_routing_provider(settings: Optional[RoutingSettings] = None) -> BaseRo
         provider = MapboxRoutingProvider(
             access_token=resolved.mapbox_access_token,
             timeout_seconds=timeout_seconds,
+            traffic_mode=resolved.traffic_mode,
         )
     else:
         raise RoutingProviderNotConfigured("Unsupported routing provider.")

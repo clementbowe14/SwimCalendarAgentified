@@ -2,7 +2,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from dataclasses import replace
 from functools import partial
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 from fastapi.testclient import TestClient
@@ -244,28 +244,43 @@ def test_agenda_requires_auth_and_matching_expected_provider(authenticated_api_c
     get_agenda.assert_not_called()
 
 
-def test_agenda_discards_old_calendar_and_openings_if_connection_changes(authenticated_api_client, monkeypatch):
+@pytest.mark.parametrize("change_at", ["routing", "after_calendar_revalidation"])
+def test_agenda_discards_old_calendar_and_openings_if_connection_changes(
+    authenticated_api_client, monkeypatch, change_at
+):
     with db.SessionLocal.begin() as session:
         _add_event(session, "next-appointment", _hour(17), _hour(18))
     _connect_calendar(monkeypatch, Mock(return_value=CalendarBusySnapshot(
         "verified", (CalendarBusyInterval(_hour(16), _hour(16, 15)),)
     )))
-    reconnect_checked = False
+    disconnected = False
 
-    def route(*_args, **_kwargs):
-        nonlocal reconnect_checked
-        if not reconnect_checked:
+    def disconnect():
+        nonlocal disconnected
+        if not disconnected:
             with db.SessionLocal.begin() as session:
                 account = session.query(ProviderAccountDB).filter_by(instructor_id=PROVIDER).one()
                 disconnect_google_calendar(session, account_id=account.id)
-            reconnect_checked = True
+            disconnected = True
+
+    def route(*_args, **_kwargs):
+        if change_at == "routing":
+            disconnect()
         return 0.0, 0
 
+    original_revalidate = coach_agenda.revalidate_google_calendar_availability_fence
+
+    def revalidate(*args, **kwargs):
+        original_revalidate(*args, **kwargs)
+        if change_at == "after_calendar_revalidation":
+            disconnect()
+
+    monkeypatch.setattr(coach_agenda, "revalidate_google_calendar_availability_fence", revalidate)
     monkeypatch.setattr(tools, "routing_provider", SimpleNamespace(get_distance_and_travel_time=route))
 
     agenda = _agenda(authenticated_api_client)
 
-    assert reconnect_checked
+    assert disconnected
     assert agenda["status"] == "calendar_unavailable"
     assert [item["id"] for item in agenda["items"]] == ["next-appointment"]
     assert agenda["next_up"]["leave_by"] is None
@@ -361,6 +376,123 @@ def test_openings_account_for_adjacent_appointments_outside_working_hours(authen
     assert {datetime.fromisoformat(start) for item in openings for start in item["start_times"]} == {
         slot.start_time for slot in available
     }
+
+
+def test_pre_shift_calendar_busy_delays_agenda_availability_and_booking(authenticated_api_client, monkeypatch):
+    with db.SessionLocal.begin() as session:
+        provider = session.get(InstructorDB, PROVIDER)
+        provider.base_address, provider.base_lat, provider.base_lng = SERVICE
+        provider.service_address, provider.service_lat, provider.service_lng = SERVICE
+        provider.default_duration_mins = 45
+        _add_event(session, "offsite-before-shift", _hour(12, 10), _hour(12, 40))
+    rules = default_scheduler_rules().model_copy(update={"buffers_enabled": False})
+    db.save_scheduler_settings(PROVIDER, rules.model_dump(mode="json"))
+    monkeypatch.setattr(
+        coach_routes, "get_coach_agenda", partial(coach_agenda.get_coach_agenda, now=_hour(12))
+    )
+    monkeypatch.setattr(tools, "routing_provider", SimpleNamespace(
+        get_distance_and_travel_time=lambda origin, dest, **_: (0, 0) if origin == dest else (4, 20)
+    ))
+    query = Mock(return_value=CalendarBusySnapshot("verified", ()))
+    _connect_calendar(monkeypatch, query)
+    payload = {
+        "client_name": "Pre-shift calendar client",
+        "client_address": SERVICE[0],
+        "requested_date": DAY.isoformat(),
+        "is_instructor_facility": True,
+        "duration_mins": 45,
+    }
+    path = "/api/coach/availability"
+
+    without_busy = authenticated_api_client.post(path, json=payload)
+    assert without_busy.status_code == 200, without_busy.text
+    assert datetime.fromisoformat(without_busy.json()["available_slots"][0]["start_iso"]) == _hour(13)
+
+    query.return_value = CalendarBusySnapshot(
+        "verified", (CalendarBusyInterval(_hour(12, 40), _hour(13)),)
+    )
+    agenda = _agenda(authenticated_api_client)
+    with_busy = authenticated_api_client.post(path, json=payload)
+    booking = {key: value for key, value in payload.items() if key != "requested_date"} | {
+        "start_time": _hour(13).isoformat(),
+        "idempotency_key": "pre-shift-busy-conflict",
+    }
+    rejected = authenticated_api_client.post("/api/coach/bookings", json=booking)
+
+    assert agenda["status"] == "ready"
+    assert with_busy.status_code == 200, with_busy.text
+    starts = [datetime.fromisoformat(slot["start_iso"]) for slot in with_busy.json()["available_slots"]]
+    assert starts[0] == _hour(13, 30)
+    assert starts == [
+        datetime.fromisoformat(start)
+        for item in agenda["items"] if item["kind"] == "open_gap" for start in item["start_times"]
+    ]
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json()["error"]["code"] == "SCHEDULING_CONFLICT"
+    assert db.get_appointment_by_idempotency_key(PROVIDER, booking["idempotency_key"]) is None
+    anchor_window = call(instructor_id=PROVIDER, window_start=_hour(12, 40), window_end=_hour(22))
+    assert query.call_args_list == [
+        anchor_window,
+        call(instructor_id=PROVIDER, window_start=_hour(5), window_end=_hour(5) + timedelta(days=1)),
+        anchor_window,
+        anchor_window,
+    ]
+
+
+@pytest.mark.parametrize("obstacle", [None, "calendar", "internal"])
+def test_openings_route_to_the_next_local_day_without_showing_its_rows(
+    authenticated_api_client, monkeypatch, obstacle
+):
+    midnight = _hour(5) + timedelta(days=1)
+    following_start = midnight + timedelta(minutes=15)
+    blocker_start = midnight + timedelta(minutes=2)
+    blocker_end = midnight + timedelta(minutes=10)
+    with db.SessionLocal.begin() as session:
+        provider = session.get(InstructorDB, PROVIDER)
+        provider.base_address, provider.base_lat, provider.base_lng = SERVICE
+        provider.service_address, provider.service_lat, provider.service_lng = SERVICE
+        provider.default_duration_mins = 45
+        hours = session.get(ProviderWorkingHoursDB, (PROVIDER, DAY.weekday()))
+        hours.start_time, hours.end_time = time(22), time(23, 59)
+        _add_event(session, "tomorrow-appointment", following_start, midnight + timedelta(minutes=45))
+        _add_event(session, "later-tomorrow", midnight + timedelta(hours=2), midnight + timedelta(hours=3))
+        if obstacle == "internal":
+            _add_event(session, "tomorrow-blocker", blocker_start, blocker_end, location=None, blocker_kind="unavailable")
+    policy = replace(POLICY, distance_buffers_enabled=False)
+    monkeypatch.setattr(coach_agenda, "load_buffer_policy", lambda *_args, **_kwargs: policy)
+    monkeypatch.setattr(tools, "routing_provider", SimpleNamespace(
+        get_distance_and_travel_time=lambda origin, dest, **_: (0, 0) if origin == dest else (4, 45)
+    ))
+    periods = (CalendarBusyInterval(blocker_start, blocker_end),) if obstacle == "calendar" else ()
+    query = Mock(return_value=CalendarBusySnapshot("verified", periods))
+    _connect_calendar(monkeypatch, query)
+
+    agenda = _agenda(authenticated_api_client)
+    work_start = midnight - timedelta(hours=2)
+    available = tools.find_available_swim_slots(
+        PROVIDER, DAY.isoformat(), SERVICE[0], is_instructor_facility=True, duration_mins=45,
+        buffer_policy=policy, calendar_busy_source=SimpleNamespace(query_busy_periods=query),
+    )
+
+    assert agenda["status"] == "ready"
+    assert query.call_args_list == [
+        call(instructor_id=PROVIDER, window_start=_hour(5), window_end=following_start),
+        call(instructor_id=PROVIDER, window_start=work_start, window_end=following_start),
+    ]
+    assert all(_hour(5) <= start < end <= midnight for start, end in map(_interval, agenda["items"]))
+    assert all(item["kind"] not in {"lesson", "unavailable", "calendar_busy"} for item in agenda["items"])
+    starts = [
+        datetime.fromisoformat(start)
+        for item in agenda["items"] if item["kind"] == "open_gap" for start in item["start_times"]
+    ]
+    assert starts == [slot.start_time for slot in available]
+    if obstacle is None:
+        # The 23:00 lesson would end at 23:45, leaving only 30 minutes for a 45-minute drive.
+        assert max(starts) == midnight - timedelta(minutes=75)
+        travel, = (item for item in agenda["items"] if item["kind"] == "travel")
+        assert _interval(travel) == (midnight - timedelta(minutes=30), midnight)
+    else:
+        assert agenda["items"] == []
 
 
 def test_midnight_endpoint_remains_a_routing_anchor_without_an_appointment_row(
@@ -504,3 +636,22 @@ def test_agenda_final_read_cannot_mix_schedule_and_policy_versions(authenticated
     assert routed
     assert agenda["status"] == "schedule_changed"
     assert all(item["kind"] != "open_gap" for item in agenda["items"])
+
+
+def test_agenda_final_read_observes_a_write_during_calendar_revalidation(authenticated_api_client, monkeypatch):
+    route = Mock(return_value=(0, 0))
+    monkeypatch.setattr(tools, "routing_provider", SimpleNamespace(get_distance_and_travel_time=route))
+    original_revalidate = coach_agenda.revalidate_google_calendar_availability_fence
+
+    def revalidate(*args, **kwargs):
+        route.assert_called()
+        with db.SessionLocal.begin() as session:
+            _add_event(session, "blocker-before-final-snapshot", _hour(16), _hour(17), location=None, blocker_kind="break")
+        original_revalidate(*args, **kwargs)
+
+    monkeypatch.setattr(coach_agenda, "revalidate_google_calendar_availability_fence", revalidate)
+
+    agenda = _agenda(authenticated_api_client)
+
+    assert agenda["status"] == "schedule_changed"
+    assert [item["id"] for item in agenda["items"]] == ["blocker-before-final-snapshot"]

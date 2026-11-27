@@ -177,6 +177,9 @@ def test_mapbox_malformed_json_maps_to_provider_unavailable():
         pytest.param(
             IncompleteRead(b"private provider response", 10), None, "Mapbox request failed.", id="truncated-body"
         ),
+        pytest.param(
+            ConnectionResetError("private provider response"), None, "Mapbox request failed.", id="socket-reset"
+        ),
         pytest.param(None, b"\xff", "Mapbox returned malformed JSON.", id="invalid-utf8"),
     ],
 )

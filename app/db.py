@@ -6,7 +6,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from typing import Iterator, NoReturn, Optional, List
-from sqlalchemy import create_engine, func, inspect, or_, text
+from sqlalchemy import and_, create_engine, func, inspect, or_, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 from app import timezones
@@ -585,6 +585,7 @@ def get_utc_appointment_events_for_date(
     *,
     timezone_name: str | None = None,
     include_day_edges: bool = False,
+    include_next_day_routing_anchor: bool = False,
     session: Session | None = None,
 ) -> List[dict]:
     if timezone_name is None:
@@ -597,6 +598,7 @@ def get_utc_appointment_events_for_date(
         date_str,
         timezone_name,
         include_day_edges=include_day_edges,
+        include_next_day_routing_anchor=include_next_day_routing_anchor,
         session=session,
     )
     return [_appointment_to_dict(row, aware_utc=True) for row in rows]
@@ -614,6 +616,7 @@ def _get_appointment_rows_for_local_date(
     timezone_name: str,
     *,
     include_day_edges: bool = False,
+    include_next_day_routing_anchor: bool = False,
     session: Session | None = None,
 ) -> List[AppointmentDB]:
     with read_session(session) as reading:
@@ -637,15 +640,31 @@ def _get_appointment_rows_for_local_date(
                     )
                 )
             )
-        start_condition = AppointmentDB.start_time <= end_of_day if include_day_edges else AppointmentDB.start_time < end_of_day
-        end_condition = AppointmentDB.end_time >= start_of_day if include_day_edges else AppointmentDB.end_time > start_of_day
-        return query.filter(
+        query = query.filter(
             AppointmentDB.instructor_id == instructor_id,
-            start_condition,
-            end_condition,
             AppointmentDB.status.in_(ACTIVE_APPOINTMENT_STATUSES),
             AppointmentDB.cancelled_at.is_(None),
-        ).order_by(AppointmentDB.start_time.asc(), AppointmentDB.id.asc()).all()
+        )
+        start_condition = AppointmentDB.start_time <= end_of_day if include_day_edges else AppointmentDB.start_time < end_of_day
+        end_condition = AppointmentDB.end_time >= start_of_day if include_day_edges else AppointmentDB.end_time > start_of_day
+        window = and_(start_condition, end_condition)
+        if include_next_day_routing_anchor:
+            try:
+                _, next_day_end = timezones.local_day_window_utc_storage(
+                    target_date + datetime.timedelta(days=1), timezone_name
+                )
+            except OverflowError:
+                next_day_end = end_of_day
+            if next_day_end > end_of_day:
+                following_day = AppointmentDB.start_time >= end_of_day
+                next_located_start = query.with_entities(func.min(AppointmentDB.start_time)).filter(
+                    following_day,
+                    AppointmentDB.start_time < next_day_end,
+                    AppointmentDB.lat.is_not(None),
+                    AppointmentDB.lng.is_not(None),
+                ).correlate(None).scalar_subquery()
+                window = or_(window, and_(following_day, AppointmentDB.start_time <= next_located_start))
+        return query.filter(window).order_by(AppointmentDB.start_time.asc(), AppointmentDB.id.asc()).all()
 
 def get_clients_for_instructor(instructor_id: str) -> List[dict]:
     session = SessionLocal()

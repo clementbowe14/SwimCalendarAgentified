@@ -33,11 +33,14 @@ class MapboxRoutingProvider(BaseRoutingProvider):
         access_token: Optional[str],
         timeout_seconds: float = 3.0,
         fetch_json: Optional[JsonFetcher] = None,
+        *,
+        traffic_mode: str = "none",
     ):
         if not access_token or not access_token.strip():
             raise RoutingProviderNotConfigured("SWIM_MAPBOX_ACCESS_TOKEN is required for Mapbox routing.")
         self.access_token = access_token.strip()
         self.timeout_seconds = timeout_seconds
+        self.traffic_mode = traffic_mode
         self._fetch_json = fetch_json or self._urllib_fetch_json
 
     def geocode(self, address: str) -> Tuple[float, float]:
@@ -72,7 +75,8 @@ class MapboxRoutingProvider(BaseRoutingProvider):
         departure_time: Optional[datetime] = None,
         traffic_mode: str = "none",
     ) -> RouteEstimate:
-        profile = "mapbox/driving-traffic" if traffic_mode in {"typical", "live"} else "mapbox/driving"
+        mode = traffic_mode if traffic_mode != "none" else self.traffic_mode
+        profile = "mapbox/driving-traffic" if mode in {"typical", "live"} else "mapbox/driving"
         coordinates = (
             f"{origin_coords[1]},{origin_coords[0]};"
             f"{dest_coords[1]},{dest_coords[0]}"
@@ -128,7 +132,7 @@ class MapboxRoutingProvider(BaseRoutingProvider):
             if operation == GEOCODE_OPERATION:
                 raise RoutingProviderUnavailable("Mapbox geocoding request failed.") from exc
             raise RouteEstimateFailed("Mapbox request failed.") from exc
-        except (urllib.error.URLError, HTTPException):
+        except (OSError, HTTPException):
             raise RoutingProviderUnavailable("Mapbox request failed.") from None
         if not isinstance(payload, dict):
             raise RoutingProviderUnavailable("Mapbox returned malformed JSON.")

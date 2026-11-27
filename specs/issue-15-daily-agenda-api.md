@@ -6,7 +6,7 @@ Return `instructor_id`, `date`, `today`, `timezone`, `status`, `items`, and null
 
 Return booked appointments and blockers even if calendar or routing planning is unavailable. Status is `ready`, `setup_required`, `calendar_unavailable`, `routing_unavailable`, or `schedule_changed`. Opaque Google periods use the provider's actual local day and never expose event metadata. Only verified planning produces travel, buffers, or bookable windows.
 
-Blocker reads and writes verify `X-Expected-Instructor-Id` when supplied by an agenda editor. They accept the original cookie-only request shape for existing callers.
+Blocker reads and writes verify `X-Expected-Instructor-Id` when supplied by an agenda editor. Creates and edits can include `expected_timezone` so a saved time is interpreted in the timezone the editor displayed. Existing request fields remain supported.
 
 Use the availability and booking engine with the same schedule anchors and buffer policy. Open windows list exact verified `start_times` for the provider's default duration at their configured service location. Keep adjacent appointments outside working hours in the routing context, exclude elapsed starts at publication, and avoid overlap with displayed transitions. Verify a traffic-aware route at the exact published departure. Read the schedule, configuration, policy, and calendar connection together after routing. Return the known schedule with a retry status when those planning inputs change.
 

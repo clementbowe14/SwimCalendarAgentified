@@ -278,6 +278,7 @@ class CoachBlockerMutation(BaseModel):
     start_time: str
     end_time: str
     location_address: Optional[str] = Field(default=None, max_length=300)
+    expected_timezone: str | None = Field(default=None, min_length=1, max_length=100)
 
     @field_validator("title", mode="before")
     @classmethod

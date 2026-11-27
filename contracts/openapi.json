@@ -1128,6 +1128,19 @@
             "title": "End Time",
             "type": "string"
           },
+          "expected_timezone": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Timezone"
+          },
           "kind": {
             "enum": [
               "break",
@@ -1362,6 +1375,19 @@
             "minimum": 1.0,
             "title": "Expected Revision",
             "type": "integer"
+          },
+          "expected_timezone": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Timezone"
           },
           "kind": {
             "enum": [
