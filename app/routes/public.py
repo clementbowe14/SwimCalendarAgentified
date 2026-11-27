@@ -69,9 +69,9 @@ def find_invite_availability(
         with _invite_calendar_source(http_request.app.state, invite) as source:
             result = search_public_availability(invite, request, calendar_busy_source=source)
             with db.SessionLocal() as session:
-                require_active_invite(session, invite.token, instructor_id=invite.instructor_id)
                 if source is None:
                     require_unprovisioned_invite_instructor(session, invite.instructor_id)
+                require_active_invite(session, invite.token, instructor_id=invite.instructor_id)
             return result
     finally:
         del http_request

@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -10,7 +11,8 @@ from app.calendar_connections import replace_google_calendar_connection
 from app.calendar_credentials import CalendarCredentialCipher
 from app.external_calendar import CalendarBusyInterval, CalendarBusySnapshot, ExternalCalendarTimeout
 from app.google_calendar_busy_source_factory import GoogleCalendarBusySourceFactory
-from app.models import InviteSlotOfferDB, InviteTokenDB, ProviderAccountDB
+from app.models import InstructorDB, InviteSlotOfferDB, InviteTokenDB, ProviderAccountDB
+from app.public_tokens import require_active_invite
 from tests.public_contract_safety import PUBLIC_SCHEDULING_EVIDENCE_KEYS, flatten_keys
 
 
@@ -163,6 +165,29 @@ def test_legacy_instructor_without_an_account_keeps_working(api_client, monkeypa
     assert response.status_code == 200, response.text
     assert response.json()["slots"]
     factory.assert_not_called()
+
+
+def test_legacy_invite_search_retries_without_waiting_for_instructor_lock(api_client):
+    with db.SessionLocal.begin() as session:
+        account = session.query(ProviderAccountDB).filter_by(instructor_id="inst_001").one()
+        session.delete(account)
+
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        with db.SessionLocal.begin() as session:
+            session.query(InstructorDB).filter_by(id="inst_001").with_for_update().one()
+            response = worker.submit(api_client.post, SLOTS_PATH, json=SLOT_PAYLOAD).result(timeout=5)
+
+    assert response.status_code == 503
+    assert response.json() == UNAVAILABLE
+
+
+def test_offer_invite_lock_allows_notification_foreign_key_check(migrated_postgres_db):
+    with db.SessionLocal.begin() as offers:
+        require_active_invite(offers, INVITE, instructor_id="inst_001", lock=True)
+        with db.SessionLocal.begin() as notification:
+            notification.query(InviteTokenDB).filter_by(token=INVITE).with_for_update(
+                read=True, key_share=True, nowait=True
+            ).one()
 
 
 @pytest.mark.parametrize(("path", "payload"), [(SLOTS_PATH, SLOT_PAYLOAD), (LEGACY_PATH, LEGACY_PAYLOAD)])
