@@ -3,6 +3,8 @@ import threading
 from dataclasses import replace
 from typing import List, Optional
 
+from sqlalchemy.orm import Session
+
 from app import db, timezones
 from app.engine import BufferPolicy, SchedulePosition, SwimSchedulerConstraintEngine, event_coordinates
 from app.external_calendar import (
@@ -219,13 +221,7 @@ def _find_available_swim_slots(
             is_instructor_facility=False,
         )
 
-    internal_events = db.get_utc_appointment_events_for_date(
-        instructor_id,
-        date_str,
-        timezone_name=provider.timezone,
-        include_day_edges=True,
-        include_next_day_routing_anchor=True,
-    )
+    internal_events = routing_events_for_date(instructor_id, target_date, provider.timezone)
     busy_start, busy_end = routing_calendar_window(day_start, day_end, internal_events)
     external_events = _external_busy_events(
         calendar_busy_source_handoff,
@@ -281,6 +277,21 @@ def working_window_utc(
     if end <= start:
         return None
     return timezones.ensure_aware_utc(start), timezones.ensure_aware_utc(end)
+
+
+def routing_events_for_date(
+    instructor_id: str,
+    target_date: datetime.date,
+    timezone_name: str,
+    *,
+    include_next_day: bool = True,
+    session: Session | None = None,
+) -> list[dict]:
+    return db.get_utc_appointment_events_for_date(
+        instructor_id, target_date.isoformat(), timezone_name=timezone_name,
+        include_day_edges=True, include_next_day_routing_anchor=include_next_day,
+        session=session,
+    )
 
 
 def routing_calendar_window(

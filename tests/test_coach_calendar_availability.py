@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from fastapi.testclient import TestClient
 
-from app import api_services, config, db, google_calendar_freebusy_deadline, google_calendar_token_deadline
+from app import api_services, config, db, google_calendar_freebusy_deadline, google_calendar_token_deadline, timezones
 from app.api import create_app
 from app.api_schemas import CoachLessonRequestConfirmRequest
 from app.auth import provision_provider_account
@@ -137,6 +137,60 @@ def test_confirmation_calendar_failure_and_committed_replay(connected_calendar, 
     assert replayed.json()["appointment_ids"] == confirmed.json()["appointment_ids"]
     assert _request_booking_state() == after
     query.assert_not_called()
+
+
+@pytest.mark.parametrize("anchor_change", [None, "removed", "added"])
+def test_confirmation_verifies_the_routing_calendar_window(connected_calendar, monkeypatch, anchor_change):
+    anchor_end = WINDOW_START - timedelta(minutes=20)
+
+    def write_anchor(session):
+        provider = session.get(InstructorDB, "inst_001")
+        session.add(AppointmentDB(
+            id="before-shift-route",
+            instructor_id=provider.id,
+            event_type="block",
+            blocker_kind="personal",
+            title="Before shift",
+            start_time=timezones.to_utc_storage(anchor_end - timedelta(minutes=30)),
+            end_time=timezones.to_utc_storage(anchor_end),
+            location_address=provider.base_address,
+            lat=provider.base_lat,
+            lng=provider.base_lng,
+        ))
+
+    if anchor_change != "added":
+        with db.SessionLocal.begin() as session:
+            write_anchor(session)
+    query = Mock(return_value=CalendarBusySnapshot("verified", ()))
+    monkeypatch.setattr(
+        GoogleCalendarBusySourceFactory, "create_for", lambda *_: SimpleNamespace(query_busy_periods=query)
+    )
+    acquire = api_services._acquire_confirmation_locks
+
+    def change_after_calendar_check(session, instructor_id, occurrences):
+        if anchor_change is not None:
+            with db.SessionLocal.begin() as writer:
+                if anchor_change == "added":
+                    write_anchor(writer)
+                else:
+                    writer.delete(writer.get(AppointmentDB, "before-shift-route"))
+        return acquire(session, instructor_id, occurrences)
+
+    monkeypatch.setattr(api_services, "_acquire_confirmation_locks", change_after_calendar_check)
+    response = connected_calendar.post(f"{REQUEST_PATH}/confirm")
+
+    query.assert_called_once_with(
+        instructor_id="inst_001",
+        window_start=WINDOW_START if anchor_change == "added" else anchor_end,
+        window_end=WINDOW_END,
+    )
+    if anchor_change == "added":
+        assert response.status_code == 503, response.text
+        assert response.json() == UNAVAILABLE
+        assert _request_booking_state()[:2] == ("pending", 0)
+    else:
+        assert response.status_code == 200, response.text
+        assert _request_booking_state()[:2] == ("confirmed", 1)
 
 
 def test_confirmation_checks_later_week_before_booking_series(connected_calendar, monkeypatch):

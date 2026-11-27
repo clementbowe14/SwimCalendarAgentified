@@ -182,10 +182,9 @@ def _read_agenda_day(
         start=timezones.storage_to_aware_utc(start),
         end=timezones.storage_to_aware_utc(end),
         working_window=working_window,
-        events=db.get_utc_appointment_events_for_date(
-            provider.id, selected_date.isoformat(), timezone_name=timezone_name,
-            include_day_edges=True,
-            include_next_day_routing_anchor=working_window is not None,
+        events=tools.routing_events_for_date(
+            provider.id, selected_date, timezone_name,
+            include_next_day=working_window is not None,
             session=session,
         ),
     )

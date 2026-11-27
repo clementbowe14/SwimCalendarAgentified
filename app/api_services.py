@@ -1365,10 +1365,11 @@ class _ConfirmationCalendar:
     def query_busy_periods(
         self, *, instructor_id: str, window_start: datetime, window_end: datetime
     ) -> CalendarBusySnapshot:
-        snapshot = self.snapshots.get((window_start, window_end))
-        if instructor_id != self.instructor_id or snapshot is None:
-            raise ExternalCalendarUnavailable("provider_unavailable")
-        return snapshot
+        if instructor_id == self.instructor_id:
+            for (start, end), snapshot in self.snapshots.items():
+                if start <= window_start and window_end <= end:
+                    return snapshot
+        raise ExternalCalendarUnavailable("provider_unavailable")
 
 
 def _lock_confirmation_calendar(session, calendar: _ConfirmationCalendar | None) -> None:
@@ -1402,12 +1403,14 @@ def _prepare_confirmation_calendar(
             session.expunge(lesson_request)
             _apply_offer_to_request(lesson_request, offer)
         occurrences = _request_occurrences(lesson_request, timezone_name=provider.timezone)
-    dates = {timezones.storage_to_local(start, provider.timezone).date() for start, _ in occurrences}
-    windows = [
-        window
-        for local_date in sorted(dates)
-        if (window := tools.working_window_utc(provider, local_date)) is not None
-    ]
+        dates = {timezones.storage_to_local(start, provider.timezone).date() for start, _ in occurrences}
+        windows = set()
+        for local_date in dates:
+            working = tools.working_window_utc(provider, local_date)
+            if working is None:
+                continue
+            events = tools.routing_events_for_date(instructor_id, local_date, provider.timezone, session=session)
+            windows.add(tools.routing_calendar_window(*working, events))
     if not windows:
         return _ConfirmationCalendar(instructor_id, {})
     try:
@@ -1417,7 +1420,7 @@ def _prepare_confirmation_calendar(
             (start, end): query_calendar_busy_snapshot(
                 source, instructor_id=instructor_id, window_start=start, window_end=end
             )
-            for start, end in windows
+            for start, end in sorted(windows)
         }
     except ExternalCalendarUnavailable:
         pass
