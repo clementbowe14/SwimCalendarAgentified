@@ -266,8 +266,14 @@ def test_public_search_rolls_back_offers_if_calendar_changes_during_save(api_cli
         assert session.query(InviteSlotOfferDB).count() == total_offers
 
 
-def test_public_calendar_busy_limit_rejects_without_calling_google(api_client, monkeypatch):
-    _connect()
+@pytest.mark.parametrize("provisioned", [False, True], ids=["legacy", "connected"])
+def test_public_calendar_busy_limit_rejects_without_calling_google(api_client, monkeypatch, provisioned):
+    if provisioned:
+        _connect()
+    else:
+        with db.SessionLocal.begin() as session:
+            account = session.query(ProviderAccountDB).filter_by(instructor_id="inst_001").one()
+            session.delete(account)
     factory = _mock_google(monkeypatch, Mock())
     claim = Mock(side_effect=AssertionError("Capacity limit should run before calendar lifecycle locks"))
     monkeypatch.setattr(client_invites, "claim_google_calendar_availability_fence", claim)

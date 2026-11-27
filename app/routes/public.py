@@ -116,17 +116,14 @@ def find_client_invite_slots(
 
 @contextmanager
 def _invite_calendar_source(state: State, invite: InviteContext) -> Iterator[CalendarBusySource | None]:
-    with db.SessionLocal() as session:
-        owner = session.query(ProviderAccountDB.id).filter_by(instructor_id=invite.instructor_id).scalar()
-    if owner is None:
-        # A legacy instructor without a provider account cannot have an external connection.
-        yield None
-        return
     permits = state.public_calendar_reads
     if not permits.acquire(blocking=False):
         raise CalendarAvailabilityUnavailable()
     try:
-        yield google_calendar_availability_source(state, invite.instructor_id)
+        with db.SessionLocal() as session:
+            owner = session.query(ProviderAccountDB.id).filter_by(instructor_id=invite.instructor_id).scalar()
+        # A legacy instructor without a provider account cannot have an external connection.
+        yield google_calendar_availability_source(state, invite.instructor_id) if owner else None
     finally:
         permits.release()
 
