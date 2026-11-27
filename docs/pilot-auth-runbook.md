@@ -50,6 +50,28 @@ value fails startup. Demo flags are off by default; enabling either in staging o
 startup. `SWIM_COACH_SESSION_TTL_SECONDS` can override the eight-hour lifetime from 300 through 86,400
 seconds; values outside that range fail startup.
 
+## Google Calendar OAuth
+
+Apply the calendar migrations and deploy both OAuth routes before configuring starts. The flow
+requires `SWIM_GOOGLE_CALENDAR_OAUTH_CLIENT_ID`, `SWIM_GOOGLE_CALENDAR_OAUTH_CLIENT_SECRET`,
+`SWIM_GOOGLE_CALENDAR_OAUTH_REDIRECT_URI`, `SWIM_CALENDAR_CREDENTIAL_ACTIVE_KEY_ID`, and
+`SWIM_CALENDAR_CREDENTIAL_KEYS`. Register the exact callback URI ending in
+`/api/oauth/google-calendar/callback` and use HTTPS in deployed environments. Set
+`SWIM_GOOGLE_CALENDAR_COACH_APP_ORIGIN` only when the coach app has a different origin.
+Use an exact same-site origin from `SWIM_API_CORS_ORIGINS` with the same scheme as the callback.
+With the override unset, the callback returns to the root of its configured origin.
+
+Configure ingress, reverse proxy, CDN, and tracing to log the callback path without its query
+string while forwarding the full request to the API. For example, on NGINX use `$uri` in the
+callback access-log format and omit `$request`, `$request_uri`, `$args`, and `$query_string`.
+Apply the same exclusion to error logs and request capture. Keep raw ASGI scope tracing off.
+Exclude the start response body and flow cookie from observability captures. Verify with a
+synthetic callback that only the path appears in request logs.
+
+To drain, block `POST /api/coach/calendar-connections/google/authorize` at ingress. Keep the callback
+and its keys available for at least ten minutes after the last permitted start before removing
+OAuth configuration or rolling back the routes.
+
 ## Migration and provisioning
 
 Apply the additive migration before the application cutover:

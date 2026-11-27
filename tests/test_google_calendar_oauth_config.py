@@ -56,11 +56,13 @@ def config_traceback_locals(error: Exception) -> str:
 
 def test_public_oauth_configuration_surface_is_explicit():
     assert google_calendar_oauth.__all__ == (
+        "GOOGLE_CALENDAR_AUTHORIZE_PATH",
         "GOOGLE_CALENDAR_CALLBACK_PATH",
         "GoogleCalendarOAuthConfiguration",
         "GoogleCalendarOAuthConfigurationError",
         "GoogleCalendarOAuthError",
         "GoogleCalendarTokenExchangeError",
+        "google_calendar_oauth_origin",
     )
 
 

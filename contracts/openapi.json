@@ -1765,6 +1765,20 @@
         "title": "CoachEmailDeliveryResponse",
         "type": "object"
       },
+      "CoachGoogleCalendarAuthorizationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization_url": {
+            "title": "Authorization Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorization_url"
+        ],
+        "title": "CoachGoogleCalendarAuthorizationResponse",
+        "type": "object"
+      },
       "CoachInstructorProfileResponse": {
         "properties": {
           "base_location": {
@@ -4430,6 +4444,88 @@
         ]
       }
     },
+    "/api/coach/calendar-connections/google/authorize": {
+      "post": {
+        "operationId": "start_google_calendar_authorization_api_coach_calendar_connections_google_authorize_post",
+        "parameters": [
+          {
+            "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
+            "example": "1",
+            "in": "header",
+            "name": "X-CSRF-Protection",
+            "required": true,
+            "schema": {
+              "const": "1",
+              "enum": [
+                "1"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoachGoogleCalendarAuthorizationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "An active coach session is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "CSRF protection failed."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request body must be empty."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Google Calendar authorization is unavailable."
+          }
+        },
+        "security": [
+          {
+            "CoachSessionCookie": []
+          }
+        ],
+        "summary": "Start Google Calendar Authorization",
+        "tags": [
+          "coach"
+        ]
+      }
+    },
     "/api/coach/clients": {
       "get": {
         "operationId": "read_clients_api_coach_clients_get",
@@ -5393,6 +5489,37 @@
         "summary": "Reject Legacy Scheduler Settings Write",
         "tags": [
           "coach"
+        ]
+      }
+    },
+    "/api/oauth/google-calendar/callback": {
+      "get": {
+        "operationId": "google_calendar_callback_api_oauth_google_calendar_callback_get",
+        "responses": {
+          "303": {
+            "description": "Redirects to the coach app with the calendar connection result.",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Google Calendar authorization is unavailable."
+          }
+        },
+        "summary": "Google Calendar Callback",
+        "tags": [
+          "oauth"
         ]
       }
     },

@@ -26,7 +26,7 @@ from app.dependencies import require_csrf_protection
 from app.google_calendar_busy_source_factory import (
     GoogleCalendarBusySourceFactory,
 )
-from app.routes import auth, coach, health, public
+from app.routes import auth, coach, google_calendar_oauth, health, public
 from app.routing_service import build_routing_provider
 
 
@@ -111,10 +111,12 @@ def create_app() -> FastAPI:
             "X-CSRF-Protection",
         ],
     )
+    app.add_middleware(google_calendar_oauth.GoogleCalendarCallbackPrivacyMiddleware)
 
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(coach.router)
+    app.include_router(google_calendar_oauth.router)
     app.include_router(public.router)
     _document_provider_csrf_header(app)
     return app

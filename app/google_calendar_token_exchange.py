@@ -28,7 +28,10 @@ from app.google_calendar_oauth import (
     GoogleCalendarOAuthConfiguration as _GoogleCalendarOAuthConfiguration,
     GoogleCalendarTokenExchangeError,
 )
-from app.google_calendar_protocol import GOOGLE_CALENDAR_FREEBUSY_SCOPE
+from app.google_calendar_protocol import (
+    GOOGLE_CALENDAR_AUTHORIZATION_CODE_MAX_BYTES,
+    GOOGLE_CALENDAR_FREEBUSY_SCOPE,
+)
 
 
 __all__ = (
@@ -49,7 +52,6 @@ __all__ = (
 GOOGLE_CALENDAR_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 _TOKEN_EXCHANGE_TIMEOUT_SECONDS = 5.0
 _MAX_CLIENT_SECRET_BYTES = 4 * 1024
-_MAX_AUTHORIZATION_CODE_BYTES = 8 * 1024
 _MAX_ACCESS_TOKEN_BYTES = 16 * 1024
 _MAX_SCOPE_BYTES = 4 * 1024
 _MAX_RESPONSE_BODY_BYTES = 64 * 1024
@@ -453,7 +455,7 @@ def _prepare_google_calendar_authorization_code_exchange(
     )
     code = _visible_ascii(
         authorization_code,
-        maximum_bytes=_MAX_AUTHORIZATION_CODE_BYTES,
+        maximum_bytes=GOOGLE_CALENDAR_AUTHORIZATION_CODE_MAX_BYTES,
     )
     trusted_verifier = _validated_code_verifier(code_verifier)
     pkce_code_challenge = _verified_pkce_code_challenge(

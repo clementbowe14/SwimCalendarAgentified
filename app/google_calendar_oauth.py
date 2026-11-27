@@ -1,8 +1,4 @@
-"""Redacted configuration value for Google Calendar OAuth authorization.
-
-This module is intentionally network-free. It validates only the public client
-identifier and exact callback URI needed by later authorization orchestration.
-"""
+"""Network-free Google Calendar OAuth configuration and URL validation."""
 
 from __future__ import annotations
 
@@ -13,17 +9,20 @@ from urllib.parse import urlsplit
 
 
 __all__ = (
+    "GOOGLE_CALENDAR_AUTHORIZE_PATH",
     "GOOGLE_CALENDAR_CALLBACK_PATH",
     "GoogleCalendarOAuthConfiguration",
     "GoogleCalendarOAuthConfigurationError",
     "GoogleCalendarOAuthError",
     "GoogleCalendarTokenExchangeError",
+    "google_calendar_oauth_origin",
 )
 
 
+GOOGLE_CALENDAR_AUTHORIZE_PATH = "/api/coach/calendar-connections/google/authorize"
 GOOGLE_CALENDAR_CALLBACK_PATH = "/api/oauth/google-calendar/callback"
 _MAX_CLIENT_ID_BYTES = 512
-_MAX_REDIRECT_URI_BYTES = 2 * 1024
+_MAX_OAUTH_URL_BYTES = 2 * 1024
 _GOOGLE_WEB_CLIENT_ID_PATTERN = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._-]*\.apps\.googleusercontent\.com\Z"
 )
@@ -58,9 +57,8 @@ class GoogleCalendarOAuthConfiguration:
     redirect_uri: str
 
     def __post_init__(self) -> None:
-        if not _valid_client_id(self.client_id) or not _valid_redirect_uri(
-            self.redirect_uri
-        ):
+        origin = google_calendar_oauth_origin(self.redirect_uri, path=GOOGLE_CALENDAR_CALLBACK_PATH)
+        if not _valid_client_id(self.client_id) or origin is None:
             raise GoogleCalendarOAuthConfigurationError()
 
     def __repr__(self) -> str:
@@ -75,16 +73,18 @@ def _valid_client_id(value: object) -> bool:
     return _GOOGLE_WEB_CLIENT_ID_PATTERN.fullmatch(value) is not None
 
 
-def _valid_redirect_uri(value: object) -> bool:
-    if not _bounded_visible_ascii(value, maximum_bytes=_MAX_REDIRECT_URI_BYTES):
-        return False
+def google_calendar_oauth_origin(value: object, *, path: str) -> str | None:
+    """Return the origin of a safe OAuth URL with the expected exact path."""
+
+    if not _bounded_visible_ascii(value, maximum_bytes=_MAX_OAUTH_URL_BYTES):
+        return None
     if "\\" in value or "?" in value or "#" in value:
-        return False
+        return None
     try:
         parsed = urlsplit(value)
         port = parsed.port
     except (TypeError, ValueError):
-        return False
+        return None
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.netloc
@@ -93,18 +93,22 @@ def _valid_redirect_uri(value: object) -> bool:
         or parsed.password is not None
         or parsed.query
         or parsed.fragment
-        or parsed.path != GOOGLE_CALENDAR_CALLBACK_PATH
+        or parsed.path != path
         or "%" in parsed.netloc
     ):
-        return False
+        return None
     if port is not None and not 1 <= port <= 65535:
-        return False
+        return None
 
     hostname = parsed.hostname
     if hostname is None:
-        return False
+        return None
     normalized_host = hostname.lower()
     bracketed_host = parsed.netloc.startswith("[")
+    if bracketed_host:
+        remainder = parsed.netloc.partition("]")[2]
+        if remainder and not remainder.startswith(":"):
+            return None
     is_loopback = normalized_host == "localhost"
     try:
         address = ipaddress.ip_address(normalized_host)
@@ -112,13 +116,15 @@ def _valid_redirect_uri(value: object) -> bool:
         if bracketed_host or (
             not is_loopback and not _valid_dns_hostname(normalized_host)
         ):
-            return False
+            return None
     else:
         if str(address) not in {"127.0.0.1", "::1"}:
-            return False
+            return None
         is_loopback = True
 
-    return parsed.scheme == "https" or is_loopback
+    if parsed.scheme != "https" and not is_loopback:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def _bounded_visible_ascii(value: object, *, maximum_bytes: int) -> bool:

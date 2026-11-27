@@ -61,6 +61,23 @@ def test_committed_contract_artifacts_are_current():
     assert check_contracts() == []
 
 
+def test_google_calendar_oauth_contract():
+    openapi = _load_json(CONTRACT_ROOT / "openapi.json")
+    start = openapi["paths"]["/api/coach/calendar-connections/google/authorize"]["post"]
+    assert "requestBody" not in start
+    assert start["security"] == [{"CoachSessionCookie": []}]
+    assert [(param["name"], param["required"]) for param in start["parameters"]] == [
+        ("X-CSRF-Protection", True)
+    ]
+    response_schema = start["responses"]["200"]["content"]["application/json"]["schema"]
+    assert response_schema["$ref"] == "#/components/schemas/CoachGoogleCalendarAuthorizationResponse"
+    start_schema = openapi["components"]["schemas"]["CoachGoogleCalendarAuthorizationResponse"]
+    assert list(start_schema["properties"]) == start_schema["required"] == ["authorization_url"]
+    callback = openapi["paths"]["/api/oauth/google-calendar/callback"]["get"]
+    assert "security" not in callback
+    assert callback["responses"]["303"]["headers"]["Location"]["schema"]["type"] == "string"
+
+
 def test_openapi_contract_includes_public_and_coach_routes():
     openapi = _load_json(CONTRACT_ROOT / "openapi.json")
     paths = set(openapi["paths"].keys())
