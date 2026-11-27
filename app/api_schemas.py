@@ -620,10 +620,20 @@ class CoachCalendarBusyScheduleItemResponse(CoachScheduleItemBase):
     status: None = None
 
 
+class CoachAgendaTransitionScheduleItemResponse(CoachUtilityScheduleItemResponse):
+    kind: Literal["travel", "buffer"]
+
+
+class CoachAgendaOpeningScheduleItemResponse(CoachUtilityScheduleItemResponse):
+    kind: Literal["open_gap"] = "open_gap"
+    start_times: list[AwareDatetime]
+
+
 CoachAgendaItemResponse = Annotated[
     CoachLessonScheduleItemResponse
     | CoachBlockerScheduleItemResponse
-    | CoachUtilityScheduleItemResponse
+    | CoachAgendaTransitionScheduleItemResponse
+    | CoachAgendaOpeningScheduleItemResponse
     | CoachCalendarBusyScheduleItemResponse,
     Field(discriminator="kind"),
 ]
@@ -636,12 +646,15 @@ class CoachAgendaNextUp(BaseModel):
     buffer_mins: int | None = None
 
 
+CoachAgendaStatus = Literal["ready", "setup_required", "calendar_unavailable", "routing_unavailable", "schedule_changed"]
+
+
 class CoachDailyAgendaResponse(BaseModel):
     instructor_id: str
     date: date
     today: date
     timezone: str
-    status: Literal["ready", "setup_required", "calendar_unavailable", "routing_unavailable"]
+    status: CoachAgendaStatus
     items: list[CoachAgendaItemResponse]
     next_up: CoachAgendaNextUp | None
 

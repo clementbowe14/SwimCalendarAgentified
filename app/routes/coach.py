@@ -9,7 +9,11 @@ from app.api_errors import (
     ApiException,
     SchedulingPolicyEndpointMoved,
 )
-from app.calendar_connection_access import get_google_calendar_coach
+from app.calendar_connection_access import (
+    EXPECTED_CALENDAR_INSTRUCTOR_HEADER,
+    get_google_calendar_coach,
+    require_expected_instructor,
+)
 from app.coach_agenda import get_coach_agenda
 from app.notifications import (
     correct_coach_email_delivery_contact,
@@ -279,11 +283,13 @@ def read_schedule(
 def read_agenda(
     http_request: Request,
     response: Response,
+    expected_instructor: str = Header(alias=EXPECTED_CALENDAR_INSTRUCTOR_HEADER),
     date_: date | None = Query(default=None, alias="date"),
-    coach: CoachContext = Depends(get_google_calendar_coach),
+    coach: CoachContext = Depends(get_current_coach),
 ) -> CoachDailyAgendaResponse:
     _private_response(response)
     try:
+        require_expected_instructor(coach, expected_instructor)
         return get_coach_agenda(
             coach.instructor_id,
             date_,
@@ -292,7 +298,7 @@ def read_agenda(
             ),
         )
     finally:
-        del http_request, coach
+        del http_request, coach, expected_instructor
 
 
 @router.get(

@@ -174,12 +174,16 @@ class SwimSchedulerConstraintEngine:
         existing_events: List[dict],
         target_location: LocationInfo,
         duration_mins: int = 60,
+        *,
+        initial_position: SchedulePosition | None = None,
     ) -> List[TimeSlotDTO]:
         valid_slots: List[TimeSlotDTO] = []
         target_coords = (target_location.lat, target_location.lng)
         lesson_delta = datetime.timedelta(minutes=duration_mins)
         sorted_events = sorted(existing_events, key=lambda item: item["start_time"])
-        position = SchedulePosition(day_start, (instructor_main_location.lat, instructor_main_location.lng))
+        position = initial_position or SchedulePosition(
+            day_start, (instructor_main_location.lat, instructor_main_location.lng)
+        )
 
         for index, event in enumerate(sorted_events):
             next_coords, outbound_departure, outbound_deadline = _outbound_route_anchor(
@@ -218,11 +222,13 @@ class SwimSchedulerConstraintEngine:
         self,
         position: SchedulePosition,
         target_coords: Tuple[float, float],
+        *,
+        departure_time: datetime.datetime | None = None,
     ) -> InboundTransition:
         distance, travel = self.routing.get_distance_and_travel_time(
             position.coordinates,
             target_coords,
-            departure_time=position.free_at,
+            departure_time=departure_time if departure_time is not None else position.free_at,
         )
         buffer = datetime.timedelta(minutes=self.buffer_policy.inbound_buffer_minutes(
             distance,
