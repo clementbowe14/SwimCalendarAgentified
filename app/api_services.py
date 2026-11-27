@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import hashlib
 import math
@@ -91,7 +92,17 @@ from app.calendar_connections import (
 )
 from app.calendar_handoff import calendar_ics, calendar_links
 from app.config import demo_data_access_enabled_from_env
-from app.external_calendar import CalendarBusySource, ExternalCalendarUnavailable
+from app.external_calendar import (
+    CalendarBusySnapshot,
+    CalendarBusySource,
+    ExternalCalendarUnavailable,
+    query_calendar_busy_snapshot,
+)
+from app.google_calendar_availability_fence import (
+    GoogleCalendarAvailabilityFence,
+    claim_google_calendar_availability_fence,
+    lock_current_google_calendar_availability_fence,
+)
 from app.models import (
     AppointmentDB,
     InviteSlotOfferDB,
@@ -1204,11 +1215,14 @@ def _coach_booking_replay_response(
 def approve_coach_lesson_request(
     instructor_id: str,
     request_token: str,
+    *,
+    build_calendar_source: Callable[[], CalendarBusySource] | None = None,
 ) -> CoachLessonRequestActionResponse:
     confirmation = confirm_coach_lesson_request(
         instructor_id,
         request_token,
         CoachLessonRequestConfirmRequest(),
+        build_calendar_source=build_calendar_source,
     )
     return CoachLessonRequestActionResponse(
         id=confirmation.id,
@@ -1222,14 +1236,21 @@ def confirm_coach_lesson_request(
     instructor_id: str,
     request_token: str,
     request: CoachLessonRequestConfirmRequest,
+    *,
+    build_calendar_source: Callable[[], CalendarBusySource] | None = None,
 ) -> CoachLessonRequestConfirmResponse:
+    calendar = None
+    calendar_check_failed = False
+    if build_calendar_source is not None:
+        try:
+            calendar = _prepare_confirmation_calendar(
+                instructor_id, request_token, request.slot_id, build_calendar_source
+            )
+        except CalendarAvailabilityUnavailable:
+            calendar_check_failed = True
     session = db.SessionLocal()
     try:
-        lesson_request = _query_coach_lesson_request(session, instructor_id, request_token).with_for_update().first()
-        if lesson_request is None:
-            raise LessonRequestNotFound()
-        if _is_request_expired(lesson_request):
-            raise LessonRequestExpired()
+        lesson_request = _load_request_for_confirmation(session, instructor_id, request_token, lock=True)
 
         existing_appointments = _appointments_for_request(
             session,
@@ -1252,6 +1273,8 @@ def confirm_coach_lesson_request(
             )
         if lesson_request.status not in {"pending", "alternatives_sent"}:
             raise InvalidSchedulingRequest("Only pending lesson requests can be confirmed.")
+        if calendar_check_failed:
+            _raise_calendar_availability_unavailable()
 
         _require_coach_provider_setup(lesson_request.instructor_id)
         explicit_offer = _resolve_confirm_offer(session, lesson_request, request.slot_id)
@@ -1263,8 +1286,13 @@ def confirm_coach_lesson_request(
 
         policy = load_buffer_policy(instructor_id, operation="confirm_lesson_request")
         try:
-            _validate_current_facility_request(lesson_request)
-            _validate_occurrences(lesson_request, occurrences, policy)
+            try:
+                _validate_current_facility_request(lesson_request)
+                _validate_occurrences(lesson_request, occurrences, policy, calendar_busy_source=calendar)
+            except SchedulingConflict:
+                _lock_confirmation_calendar(session, calendar)
+                raise
+            _lock_confirmation_calendar(session, calendar)
             appointments = _insert_occurrence_appointments(session, lesson_request, occurrences)
             # Force database overlap and integrity checks while they can still
             # be translated into the canonical scheduling-conflict contract.
@@ -1312,7 +1340,78 @@ def confirm_coach_lesson_request(
             email_delivery=email_delivery,
         )
     finally:
+        calendar = None
         session.close()
+
+
+@dataclass(frozen=True, repr=False)
+class _ConfirmationCalendar:
+    instructor_id: str
+    snapshots: dict[tuple[datetime, datetime], CalendarBusySnapshot]
+    fence: GoogleCalendarAvailabilityFence | None = None
+
+    def query_busy_periods(
+        self, *, instructor_id: str, window_start: datetime, window_end: datetime
+    ) -> CalendarBusySnapshot:
+        snapshot = self.snapshots.get((window_start, window_end))
+        if instructor_id != self.instructor_id or snapshot is None:
+            raise ExternalCalendarUnavailable("provider_unavailable")
+        return snapshot
+
+
+def _lock_confirmation_calendar(session, calendar: _ConfirmationCalendar | None) -> None:
+    if calendar is not None and calendar.fence is not None:
+        try:
+            lock_current_google_calendar_availability_fence(session, fence=calendar.fence)
+        except ExternalCalendarUnavailable:
+            calendar = None
+        else:
+            return
+        _raise_calendar_availability_unavailable()
+
+
+def _prepare_confirmation_calendar(
+    instructor_id: str,
+    request_token: str,
+    slot_id: str | None,
+    build_calendar_source: Callable[[], CalendarBusySource],
+) -> _ConfirmationCalendar:
+    with db.SessionLocal() as session:
+        lesson_request = _load_request_for_confirmation(session, instructor_id, request_token)
+        if lesson_request.status == "confirmed" or _appointments_for_request(
+            session, instructor_id, lesson_request.id
+        ):
+            return _ConfirmationCalendar(instructor_id, {})
+        if lesson_request.status not in {"pending", "alternatives_sent"}:
+            raise InvalidSchedulingRequest("Only pending lesson requests can be confirmed.")
+        provider = _require_coach_provider_setup(instructor_id)
+        offer = _resolve_confirm_offer(session, lesson_request, slot_id)
+        if offer is not None:
+            session.expunge(lesson_request)
+            _apply_offer_to_request(lesson_request, offer)
+        occurrences = _request_occurrences(lesson_request, timezone_name=provider.timezone)
+    dates = {timezones.storage_to_local(start, provider.timezone).date() for start, _ in occurrences}
+    windows = [
+        window
+        for local_date in sorted(dates)
+        if (window := tools.working_window_utc(provider, local_date)) is not None
+    ]
+    if not windows:
+        return _ConfirmationCalendar(instructor_id, {})
+    try:
+        fence = claim_google_calendar_availability_fence(db.SessionLocal, instructor_id=instructor_id)
+        source = build_calendar_source()
+        snapshots = {
+            (start, end): query_calendar_busy_snapshot(
+                source, instructor_id=instructor_id, window_start=start, window_end=end
+            )
+            for start, end in windows
+        }
+    except ExternalCalendarUnavailable:
+        pass
+    else:
+        return _ConfirmationCalendar(instructor_id, snapshots, fence)
+    _raise_calendar_availability_unavailable()
 
 
 def request_alternatives_for_coach_lesson_request(
@@ -1409,6 +1508,18 @@ def _query_coach_lesson_request(session, instructor_id: str, request_token: str)
         LessonRequestDB.instructor_id == instructor_id,
         LessonRequestDB.request_token == request_token,
     )
+
+
+def _load_request_for_confirmation(
+    session, instructor_id: str, request_token: str, *, lock: bool = False
+) -> LessonRequestDB:
+    query = _query_coach_lesson_request(session, instructor_id, request_token)
+    lesson_request = (query.with_for_update() if lock else query).first()
+    if lesson_request is None:
+        raise LessonRequestNotFound()
+    if _is_request_expired(lesson_request):
+        raise LessonRequestExpired()
+    return lesson_request
 
 
 def _appointments_for_request(
@@ -1513,8 +1624,10 @@ def _selected_alternative_offer(
 
 def _request_occurrences(
     lesson_request: LessonRequestDB,
+    *,
+    timezone_name: str | None = None,
 ) -> list[tuple[datetime, datetime]]:
-    timezone_name = _instructor_timezone(lesson_request.instructor_id)
+    timezone_name = timezone_name or _instructor_timezone(lesson_request.instructor_id)
     base_local_start = timezones.storage_to_local(lesson_request.slot_start, timezone_name).replace(tzinfo=None)
     base_local_end = timezones.storage_to_local(lesson_request.slot_end, timezone_name).replace(tzinfo=None)
     count = lesson_request.recurrence_count if lesson_request.recurrence == "weekly" else 1
@@ -1569,19 +1682,26 @@ def _validate_occurrences(
     lesson_request: LessonRequestDB,
     occurrences: list[tuple[datetime, datetime]],
     buffer_policy: BufferPolicy,
+    *,
+    calendar_busy_source: CalendarBusySource | None = None,
 ) -> None:
-    for start, _ in occurrences:
-        requested_start = timezones.storage_to_aware_utc(start)
-        requested_date = timezones.requested_local_date(requested_start, _instructor_timezone(lesson_request.instructor_id))
-        _require_available_start(
-            instructor_id=lesson_request.instructor_id,
-            requested_date=requested_date,
-            client_address=lesson_request.client_address,
-            is_instructor_facility=lesson_request.location_type == "facility",
-            duration_mins=lesson_request.duration_mins,
-            requested_start=requested_start,
-            buffer_policy=buffer_policy,
-        )
+    try:
+        timezone_name = _instructor_timezone(lesson_request.instructor_id)
+        for start, end in occurrences:
+            requested_start = timezones.storage_to_aware_utc(start)
+            _require_available_start(
+                instructor_id=lesson_request.instructor_id,
+                requested_date=timezones.requested_local_date(requested_start, timezone_name),
+                client_address=lesson_request.client_address,
+                is_instructor_facility=lesson_request.location_type == "facility",
+                duration_mins=lesson_request.duration_mins,
+                requested_start=requested_start,
+                requested_end=timezones.storage_to_aware_utc(end),
+                buffer_policy=buffer_policy,
+                calendar_busy_source=calendar_busy_source,
+            )
+    finally:
+        calendar_busy_source = None
 
 
 def _validate_current_facility_request(lesson_request: LessonRequestDB) -> None:
@@ -2321,19 +2441,29 @@ def _require_available_start(
     requested_start: datetime,
     buffer_policy: Optional[BufferPolicy] = None,
     public: bool = False,
+    *,
+    requested_end: datetime | None = None,
+    calendar_busy_source: CalendarBusySource | None = None,
 ) -> TimeSlotDTO:
-    slots = _find_slots(
-        instructor_id=instructor_id,
-        requested_date=requested_date,
-        client_address=client_address,
-        is_instructor_facility=is_instructor_facility,
-        duration_mins=duration_mins,
-        buffer_policy=buffer_policy,
-        public=public,
-    )
+    try:
+        slots = _find_slots(
+            instructor_id=instructor_id,
+            requested_date=requested_date,
+            client_address=client_address,
+            is_instructor_facility=is_instructor_facility,
+            duration_mins=duration_mins,
+            buffer_policy=buffer_policy,
+            public=public,
+            calendar_busy_source=calendar_busy_source,
+        )
+    finally:
+        calendar_busy_source = None
     requested_storage = timezones.to_utc_storage(requested_start)
+    end_storage = timezones.to_utc_storage(requested_end) if requested_end is not None else None
     for slot in slots:
-        if timezones.to_utc_storage(slot.start_time) == requested_storage:
+        if timezones.to_utc_storage(slot.start_time) == requested_storage and (
+            end_storage is None or timezones.to_utc_storage(slot.end_time) == end_storage
+        ):
             return slot
     raise SchedulingConflict(
         details={

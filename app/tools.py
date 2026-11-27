@@ -11,6 +11,7 @@ from app.external_calendar import (
 )
 from app.models import LocationInfo, TimeSlotDTO
 from app.provider_settings import (
+    ProviderConfiguration,
     ProviderNotFound,
     ProviderSetupIncomplete,
     load_provider_configuration,
@@ -188,9 +189,10 @@ def _find_available_swim_slots(
         raise ProviderSetupIncomplete(provider.setup_missing_fields)
 
     target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-    working_interval = working_interval_for_date(provider, target_date)
-    if working_interval is None:
+    working_window = working_window_utc(provider, target_date)
+    if working_window is None:
         return []
+    day_start, day_end = working_window
 
     instructor_base_loc = LocationInfo(
         address=provider.base_location.address,
@@ -215,28 +217,6 @@ def _find_available_swim_slots(
             lng=lng,
             is_instructor_facility=False,
         )
-
-    start_label, end_label = working_interval
-    try:
-        day_start_local = timezones.parse_local_date_time(
-            target_date,
-            start_label,
-            provider.timezone,
-        )
-        day_end_local = timezones.parse_local_date_time(
-            target_date,
-            end_label,
-            provider.timezone,
-        )
-    except (timezones.AmbiguousLocalTimeError, timezones.NonexistentLocalTimeError):
-        return []
-    if day_end_local <= day_start_local:
-        # Overnight windows are rejected at the API and database boundaries.
-        # Fail closed if invalid rows somehow reach the scheduler.
-        return []
-
-    day_start = timezones.ensure_aware_utc(day_start_local)
-    day_end = timezones.ensure_aware_utc(day_end_local)
 
     internal_events = db.get_utc_appointment_events_for_date(
         instructor_id,
@@ -280,6 +260,24 @@ def _find_available_swim_slots(
         for slot in utc_slots
         if slot.start_time >= day_start and slot.end_time <= day_end
     ]
+
+
+def working_window_utc(
+    provider: ProviderConfiguration,
+    target_date: datetime.date,
+) -> Optional[tuple[datetime.datetime, datetime.datetime]]:
+    working_interval = working_interval_for_date(provider, target_date)
+    if working_interval is None:
+        return None
+    start_label, end_label = working_interval
+    try:
+        start = timezones.parse_local_date_time(target_date, start_label, provider.timezone)
+        end = timezones.parse_local_date_time(target_date, end_label, provider.timezone)
+    except (timezones.AmbiguousLocalTimeError, timezones.NonexistentLocalTimeError):
+        return None
+    if end <= start:
+        return None
+    return timezones.ensure_aware_utc(start), timezones.ensure_aware_utc(end)
 
 
 def _external_busy_events(

@@ -6,24 +6,33 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config, db, google_calendar_freebusy_deadline, google_calendar_token_deadline
+from app import api_services, config, db, google_calendar_freebusy_deadline, google_calendar_token_deadline
 from app.api import create_app
+from app.api_schemas import CoachLessonRequestConfirmRequest
 from app.auth import provision_provider_account
 from app.calendar_connections import replace_google_calendar_connection
 from app.calendar_credentials import CalendarCredentialCipher
-from app.external_calendar import CalendarBusyInterval, CalendarBusySnapshot
+from app.external_calendar import CalendarBusyInterval, CalendarBusySnapshot, ExternalCalendarTimeout
 from app.google_calendar_authorization import GOOGLE_CALENDAR_FREEBUSY_SCOPE
 from app.google_calendar_busy_source_factory import GoogleCalendarBusySourceFactory
 from app.google_calendar_freebusy import GoogleCalendarFreeBusyTransportResponse
 from app.google_calendar_oauth import GOOGLE_CALENDAR_CALLBACK_PATH
 from app.google_calendar_token_exchange import GoogleCalendarTokenTransportResponse
-from app.models import InstructorDB, ProviderAccountDB, ProviderWorkingHoursDB
+from app.models import (
+    AppointmentDB,
+    InstructorDB,
+    LessonRequestDB,
+    NotificationEventDB,
+    ProviderAccountDB,
+    ProviderWorkingHoursDB,
+)
 from app.routes import coach as coach_routes
 from tests.conftest import login_coach
 
 
 AVAILABILITY_PATH = "/api/coach/availability"
 BOOKINGS_PATH = "/api/coach/bookings"
+REQUEST_PATH = "/api/coach/lesson-requests/req_sofia_pending_0820"
 PAYLOAD = {
     "client_name": "Calendar Client",
     "client_address": "450 North Blvd, Austin, TX",
@@ -63,6 +72,191 @@ def _connect_calendar(account_id: str) -> None:
             cipher=TEST_CIPHER,
             now=WINDOW_START,
         )
+
+
+def _request_booking_state():
+    with db.SessionLocal() as session:
+        lesson = session.query(LessonRequestDB).filter_by(request_token="req_sofia_pending_0820").one()
+        return (
+            lesson.status,
+            session.query(AppointmentDB).filter_by(request_id=lesson.id).count(),
+            session.query(NotificationEventDB).filter_by(request_id=lesson.id).count(),
+        )
+
+
+@pytest.mark.parametrize("action", ["confirm", "approve"])
+def test_confirmation_refuses_busy_calendar_without_booking(connected_calendar, monkeypatch, action):
+    def query(*, instructor_id, window_start, window_end):
+        assert instructor_id == "inst_001"
+        assert (window_start, window_end) == (WINDOW_START, WINDOW_END)
+        # The slow provider read must run before the booking transaction locks the request.
+        with db.SessionLocal() as session:
+            session.query(LessonRequestDB).filter_by(
+                request_token="req_sofia_pending_0820"
+            ).with_for_update(nowait=True).one()
+        return CalendarBusySnapshot("verified", (CalendarBusyInterval(window_start, window_end),))
+
+    monkeypatch.setattr(
+        GoogleCalendarBusySourceFactory, "create_for", lambda *_: SimpleNamespace(query_busy_periods=query)
+    )
+    before = _request_booking_state()
+
+    response = connected_calendar.post(f"{REQUEST_PATH}/{action}")
+
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["code"] == "SCHEDULING_CONFLICT"
+    assert _request_booking_state() == before
+
+
+def test_confirmation_calendar_failure_and_committed_replay(connected_calendar, monkeypatch):
+    query = Mock(side_effect=ExternalCalendarTimeout())
+    monkeypatch.setattr(
+        GoogleCalendarBusySourceFactory, "create_for", lambda *_: SimpleNamespace(query_busy_periods=query)
+    )
+    before = _request_booking_state()
+
+    unavailable = connected_calendar.post(f"{REQUEST_PATH}/confirm")
+
+    assert unavailable.status_code == 503
+    assert unavailable.json() == UNAVAILABLE
+    assert _request_booking_state() == before
+
+    query.side_effect = None
+    query.return_value = CalendarBusySnapshot("verified", ())
+    confirmed = connected_calendar.post(f"{REQUEST_PATH}/confirm")
+
+    assert confirmed.status_code == 200, confirmed.text
+    after = _request_booking_state()
+    assert after[0:2] == ("confirmed", 1)
+    assert after[2] > before[2]
+    query.reset_mock(side_effect=True)
+    query.side_effect = ExternalCalendarTimeout()
+    replayed = connected_calendar.post(f"{REQUEST_PATH}/confirm")
+
+    assert replayed.status_code == 200
+    assert replayed.json()["appointment_ids"] == confirmed.json()["appointment_ids"]
+    assert _request_booking_state() == after
+    query.assert_not_called()
+
+
+def test_confirmation_checks_later_week_before_booking_series(connected_calendar, monkeypatch):
+    with db.SessionLocal.begin() as session:
+        lesson = session.query(LessonRequestDB).filter_by(request_token="req_sofia_pending_0820").one()
+        lesson.recurrence = "weekly"
+        lesson.recurrence_count = 2
+    days = []
+
+    def query(*, instructor_id, window_start, window_end):
+        assert instructor_id == "inst_001"
+        days.append(window_start.date().isoformat())
+        busy = (CalendarBusyInterval(window_start, window_end),) if len(days) == 2 else ()
+        return CalendarBusySnapshot("verified", busy)
+
+    monkeypatch.setattr(
+        GoogleCalendarBusySourceFactory, "create_for", lambda *_: SimpleNamespace(query_busy_periods=query)
+    )
+    before = _request_booking_state()
+
+    response = connected_calendar.post(f"{REQUEST_PATH}/confirm")
+
+    assert response.status_code == 409, response.text
+    assert days == ["2026-08-20", "2026-08-27"]
+    assert _request_booking_state() == before
+
+
+@pytest.mark.parametrize("busy", [False, True], ids=["free", "busy"])
+def test_confirmation_rejects_calendar_replaced_after_verification(connected_calendar, monkeypatch, busy):
+    periods = (CalendarBusyInterval(WINDOW_START, WINDOW_END),) if busy else ()
+    query = Mock(return_value=CalendarBusySnapshot("verified", periods))
+    monkeypatch.setattr(
+        GoogleCalendarBusySourceFactory, "create_for", lambda *_: SimpleNamespace(query_busy_periods=query)
+    )
+    with db.SessionLocal() as session:
+        account_id = session.query(ProviderAccountDB.id).filter_by(instructor_id="inst_001").scalar()
+    acquire_locks = api_services._acquire_confirmation_locks
+
+    def reconnect_before_lock(*args, **kwargs):
+        _connect_calendar(account_id)
+        return acquire_locks(*args, **kwargs)
+
+    monkeypatch.setattr(api_services, "_acquire_confirmation_locks", reconnect_before_lock)
+    before = _request_booking_state()
+
+    response = connected_calendar.post(f"{REQUEST_PATH}/confirm")
+
+    assert response.status_code == 503
+    assert response.json() == UNAVAILABLE
+    assert _request_booking_state() == before
+    with db.SessionLocal() as session:
+        lesson = session.query(LessonRequestDB).filter_by(request_token="req_sofia_pending_0820").one()
+        assert lesson.validation_failure_code is None
+    query.assert_called_once()
+
+
+def test_confirmation_replays_if_another_attempt_commits_during_calendar_timeout(
+    connected_calendar, monkeypatch
+):
+    committed = []
+
+    def query_busy(**kwargs):
+        concurrent = api_services.confirm_coach_lesson_request(
+            "inst_001", "req_sofia_pending_0820", CoachLessonRequestConfirmRequest()
+        )
+        committed.extend(concurrent.appointment_ids)
+        raise ExternalCalendarTimeout()
+
+    monkeypatch.setattr(
+        GoogleCalendarBusySourceFactory, "create_for", lambda *_: SimpleNamespace(query_busy_periods=query_busy)
+    )
+
+    response = connected_calendar.post(f"{REQUEST_PATH}/confirm")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["appointment_ids"] == committed
+    assert _request_booking_state()[:2] == ("confirmed", 1)
+
+
+def test_confirmation_validates_the_persisted_duration_across_fall_dst(connected_calendar, monkeypatch):
+    with db.SessionLocal.begin() as session:
+        provider = session.get(InstructorDB, "inst_001")
+        provider.timezone = "America/New_York"
+        provider.base_address = provider.service_address
+        provider.base_lat = provider.service_lat
+        provider.base_lng = provider.service_lng
+        sunday = next(hours for hours in provider.working_hours if hours.weekday == 6)
+        sunday.enabled = True
+        sunday.start_time = "00:00"
+        sunday.end_time = "04:00"
+        lesson = session.query(LessonRequestDB).filter_by(request_token="req_sofia_pending_0820").one()
+        lesson.recurrence = "weekly"
+        lesson.recurrence_count = 2
+        lesson.duration_mins = 120
+        lesson.location_type = "facility"
+        lesson.client_address = provider.service_address
+        lesson.lat = provider.service_lat
+        lesson.lng = provider.service_lng
+        lesson.requested_date = datetime(2026, 10, 25).date()
+        lesson.slot_start = datetime(2026, 10, 25, 4, 30)
+        lesson.slot_end = datetime(2026, 10, 25, 6, 30)
+
+    def query(*, instructor_id, window_start, window_end):
+        busy = ()
+        if window_start.month == 11:
+            busy = (CalendarBusyInterval(
+                datetime(2026, 11, 1, 7, tzinfo=timezone.utc),
+                datetime(2026, 11, 1, 7, 15, tzinfo=timezone.utc),
+            ),)
+        return CalendarBusySnapshot("verified", busy)
+
+    monkeypatch.setattr(
+        GoogleCalendarBusySourceFactory, "create_for", lambda *_: SimpleNamespace(query_busy_periods=query)
+    )
+    before = _request_booking_state()
+
+    response = connected_calendar.post(f"{REQUEST_PATH}/confirm")
+
+    assert response.status_code == 409, response.text
+    assert _request_booking_state() == before
 
 
 def test_availability_requires_auth_before_building_calendar_source(monkeypatch):
