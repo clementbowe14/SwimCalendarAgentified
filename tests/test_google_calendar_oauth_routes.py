@@ -169,11 +169,20 @@ def test_mounted_authorize_response_is_private(stub_provider_session, monkeypatc
 @pytest.mark.parametrize(("method", "path"), [
     ("GET", CONNECTION_PATH), ("POST", AUTHORIZE), ("DELETE", CONNECTION_PATH),
 ])
-def test_stale_settings_cannot_access_new_providers_calendar(stub_provider_session, monkeypatch, method, path):
+@pytest.mark.parametrize("mounted", [False, True], ids=["root", "mounted"])
+def test_stale_settings_cannot_access_new_providers_calendar(
+    stub_provider_session, monkeypatch, method, path, mounted
+):
     monkeypatch.setattr(google_calendar_oauth, "prepare_google_calendar_authorization_start", _unexpected_call)
     monkeypatch.setattr("app.routes.coach.get_coach_google_calendar_connection_status", _unexpected_call)
     monkeypatch.setattr("app.routes.coach.disconnect_coach_google_calendar", _unexpected_call)
-    client = TestClient(api.create_app(), base_url=API_ORIGIN)
+    application = api.create_app()
+    if mounted:
+        parent = FastAPI()
+        parent.mount("/mounted", application)
+        application = parent
+        path = f"/mounted{path}"
+    client = TestClient(application, base_url=API_ORIGIN)
 
     response = client.request(
         method, path, headers={**AUTHENTICATED, EXPECTED_INSTRUCTOR: "other-instructor-id"}
@@ -344,6 +353,28 @@ def test_cancelled_callback_clears_sensitive_route_locals(monkeypatch):
     )
     assert {"request", "query", "binding"}.isdisjoint(callback_locals)
     assert scope["state"] == {}
+
+
+def test_cancelled_rejection_of_callback_alias_clears_raw_query():
+    middleware = google_calendar_oauth.GoogleCalendarOAuthPrivacyMiddleware(_unexpected_call)
+    scope = {
+        "type": "http",
+        "path": f"{CALLBACK}/",
+        "query_string": f"state={STATE}&code=fake-authorization".encode(),
+    }
+
+    async def cancel_send(_message):
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError) as cancelled:
+        asyncio.run(middleware(scope, _unexpected_call, cancel_send))
+
+    middleware_locals = next(
+        frame.frame.f_locals
+        for frame in cancelled.traceback if frame.frame.f_locals.get("self") is middleware
+    )
+    assert "raw_query" not in middleware_locals
+    assert scope["query_string"] == b""
 
 
 def _sign_in(client):

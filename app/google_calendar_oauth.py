@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 __all__ = (
     "GOOGLE_CALENDAR_AUTHORIZE_PATH",
     "GOOGLE_CALENDAR_CALLBACK_PATH",
+    "GOOGLE_CALENDAR_CONNECTION_PATH",
     "GoogleCalendarOAuthConfiguration",
     "GoogleCalendarOAuthConfigurationError",
     "GoogleCalendarOAuthError",
@@ -20,7 +21,8 @@ __all__ = (
 )
 
 
-GOOGLE_CALENDAR_AUTHORIZE_PATH = "/api/coach/calendar-connections/google/authorize"
+GOOGLE_CALENDAR_CONNECTION_PATH = "/api/coach/calendar-connections/google"
+GOOGLE_CALENDAR_AUTHORIZE_PATH = f"{GOOGLE_CALENDAR_CONNECTION_PATH}/authorize"
 GOOGLE_CALENDAR_CALLBACK_PATH = "/api/oauth/google-calendar/callback"
 _MAX_CLIENT_ID_BYTES = 512
 _MAX_OAUTH_URL_BYTES = 2 * 1024

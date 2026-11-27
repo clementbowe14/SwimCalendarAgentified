@@ -21,6 +21,7 @@ from app.dependencies import CoachContext, require_csrf_protection
 from app.google_calendar_oauth import (
     GOOGLE_CALENDAR_AUTHORIZE_PATH,
     GOOGLE_CALENDAR_CALLBACK_PATH,
+    GOOGLE_CALENDAR_CONNECTION_PATH,
     GoogleCalendarOAuthError,
     google_calendar_oauth_origin,
     google_calendar_oauth_route_path,
@@ -89,8 +90,11 @@ class GoogleCalendarOAuthPrivacyMiddleware:
             await self.app(scope, receive, send)
             return
         path = google_calendar_oauth_route_path(scope["path"], scope.get("root_path", ""))
-        is_callback = path.rstrip("/") == GOOGLE_CALENDAR_CALLBACK_PATH
-        if not is_callback and path.rstrip("/") != GOOGLE_CALENDAR_AUTHORIZE_PATH:
+        canonical_path = path.rstrip("/")
+        is_callback = canonical_path == GOOGLE_CALENDAR_CALLBACK_PATH
+        if not is_callback and canonical_path not in (
+            GOOGLE_CALENDAR_AUTHORIZE_PATH, GOOGLE_CALENDAR_CONNECTION_PATH
+        ):
             await self.app(scope, receive, send)
             return
 
@@ -107,6 +111,7 @@ class GoogleCalendarOAuthPrivacyMiddleware:
         raw_query = scope["query_string"]
         scope["query_string"] = b""
         if path != GOOGLE_CALENDAR_CALLBACK_PATH:
+            del raw_query
             await Response(status_code=404, headers=_PRIVATE_HEADERS)(scope, receive, send)
             return
 

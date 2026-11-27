@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from app.google_calendar_oauth import (
     GOOGLE_CALENDAR_AUTHORIZE_PATH,
     GOOGLE_CALENDAR_CALLBACK_PATH,
+    GOOGLE_CALENDAR_CONNECTION_PATH,
     google_calendar_oauth_route_path,
 )
 
@@ -348,6 +349,7 @@ async def unexpected_exception_handler(request: Request, __: Exception) -> JSONR
     private = request.url.path.startswith("/api/public/") or route_path.rstrip("/") in (
         GOOGLE_CALENDAR_AUTHORIZE_PATH,
         GOOGLE_CALENDAR_CALLBACK_PATH,
+        GOOGLE_CALENDAR_CONNECTION_PATH,
     )
     return JSONResponse(
         status_code=500,
