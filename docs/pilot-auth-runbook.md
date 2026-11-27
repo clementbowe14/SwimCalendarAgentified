@@ -60,6 +60,8 @@ requires `SWIM_GOOGLE_CALENDAR_OAUTH_CLIENT_ID`, `SWIM_GOOGLE_CALENDAR_OAUTH_CLI
 `SWIM_GOOGLE_CALENDAR_COACH_APP_ORIGIN` only when the coach app has a different origin.
 Use an exact same-site origin from `SWIM_API_CORS_ORIGINS` with the same scheme as the callback.
 With the override unset, the callback returns to the root of its configured origin.
+Send authorization starts to the callback's scheme and hostname so the browser can return the
+host-only flow cookie. Configure a trusted proxy to preserve the public Host and scheme.
 
 Configure ingress, reverse proxy, CDN, and tracing to log the callback path without its query
 string while forwarding the full request to the API. For example, on NGINX use `$uri` in the

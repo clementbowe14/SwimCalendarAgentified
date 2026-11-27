@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 
 from fastapi import APIRouter, Depends, Request, Response
 from starlette.concurrency import run_in_threadpool
@@ -14,14 +14,16 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from app import config, db
 from app.api_errors import ApiException, CalendarOAuthUnavailable
 from app.api_schemas import CoachGoogleCalendarAuthorizationResponse, ErrorResponse
+from app.calendar_connection_access import get_google_calendar_coach
 from app.calendar_credentials import CalendarCredentialConfigurationError
 from app.calendar_oauth_pkce import CalendarOAuthPKCEConfigurationError
-from app.dependencies import CoachContext, get_current_coach, require_csrf_protection
+from app.dependencies import CoachContext, require_csrf_protection
 from app.google_calendar_oauth import (
     GOOGLE_CALENDAR_AUTHORIZE_PATH,
     GOOGLE_CALENDAR_CALLBACK_PATH,
     GoogleCalendarOAuthError,
     google_calendar_oauth_origin,
+    google_calendar_oauth_route_path,
 )
 from app.google_calendar_oauth_callback_service import complete_google_calendar_oauth_callback
 from app.google_calendar_oauth_start import prepare_google_calendar_authorization_start
@@ -78,7 +80,7 @@ def _parse_callback_query(query: bytes) -> _CallbackQuery | None:
     return _CallbackQuery(state=state, code=code)
 
 
-class GoogleCalendarCallbackPrivacyMiddleware:
+class GoogleCalendarOAuthPrivacyMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
@@ -86,9 +88,19 @@ class GoogleCalendarCallbackPrivacyMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        path = scope["path"].removeprefix(scope.get("root_path", ""))
-        if path.rstrip("/") != GOOGLE_CALENDAR_CALLBACK_PATH:
+        path = google_calendar_oauth_route_path(scope["path"], scope.get("root_path", ""))
+        is_callback = path.rstrip("/") == GOOGLE_CALENDAR_CALLBACK_PATH
+        if not is_callback and path.rstrip("/") != GOOGLE_CALENDAR_AUTHORIZE_PATH:
             await self.app(scope, receive, send)
+            return
+
+        async def send_private(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message).update(_PRIVATE_HEADERS)
+            await send(message)
+
+        if not is_callback:
+            await self.app(scope, receive, send_private)
             return
 
         # Uvicorn formats its access entry from this same scope at response start.
@@ -102,11 +114,6 @@ class GoogleCalendarCallbackPrivacyMiddleware:
         if scope["method"] == "GET":
             state[_CALLBACK_QUERY_KEY] = _parse_callback_query(raw_query)
         del raw_query
-
-        async def send_private(message: Message) -> None:
-            if message["type"] == "http.response.start":
-                MutableHeaders(scope=message).update(_PRIVATE_HEADERS)
-            await send(message)
 
         try:
             await self.app(scope, receive, send_private)
@@ -122,6 +129,7 @@ class GoogleCalendarCallbackPrivacyMiddleware:
     responses={
         401: {"model": ErrorResponse, "description": "An active coach session is required."},
         403: {"model": ErrorResponse, "description": "CSRF protection failed."},
+        409: {"model": ErrorResponse, "description": "The signed-in provider changed."},
         422: {"model": ErrorResponse, "description": "The request body must be empty."},
         503: {"model": ErrorResponse, "description": "Google Calendar authorization is unavailable."},
     },
@@ -129,7 +137,7 @@ class GoogleCalendarCallbackPrivacyMiddleware:
 async def start_google_calendar_authorization(
     request: Request,
     response: Response,
-    coach: CoachContext = Depends(get_current_coach),
+    coach: CoachContext = Depends(get_google_calendar_coach),
 ) -> CoachGoogleCalendarAuthorizationResponse:
     if await request.body():
         raise ApiException("VALIDATION_ERROR", "This endpoint does not accept a request body.", 422)
@@ -138,6 +146,7 @@ async def start_google_calendar_authorization(
     try:
         configuration = config.google_calendar_oauth_configuration_from_env()
         callback_origin = _callback_origin(settings, configuration.redirect_uri)
+        _require_callback_cookie_origin(request, callback_origin)
         _coach_app_origin(settings, callback_origin)
         # A start requires the callback's exchange configuration and encryption keys.
         config.google_calendar_token_exchange_configuration_from_env()
@@ -182,38 +191,42 @@ async def start_google_calendar_authorization(
 )
 async def google_calendar_callback(request: Request) -> RedirectResponse:
     query = request.scope.get("state", {}).pop(_CALLBACK_QUERY_KEY, None)
-    settings = request.app.state.settings
-    callback_origin = _callback_origin(
-        settings, os.getenv(config.GOOGLE_CALENDAR_OAUTH_REDIRECT_URI_ENV)
-    )
+    binding = None
     try:
-        coach_origin = _coach_app_origin(settings, callback_origin)
-    except CalendarOAuthUnavailable:
-        return _callback_redirect(callback_origin, "failed")
-
-    cookie_options = _flow_cookie_options(callback_origin)
-    binding = request.cookies.get(cookie_options["key"])
-    if query is None or not binding:
-        return _callback_redirect(coach_origin, "failed")
-
-    try:
-        connection = await complete_google_calendar_oauth_callback(
-            db.SessionLocal,
-            raw_state=query.state,
-            raw_browser_binding=binding,
-            authorization_code=query.code,
-            configuration=config.google_calendar_token_exchange_configuration_from_env(),
-            pkce_cipher=config.calendar_oauth_pkce_cipher_from_env(),
-            credential_cipher=config.calendar_credential_cipher_from_env(),
+        settings = request.app.state.settings
+        callback_origin = _callback_origin(
+            settings, os.getenv(config.GOOGLE_CALENDAR_OAUTH_REDIRECT_URI_ENV)
         )
-    except _OAUTH_ERRORS:
-        return _callback_redirect(coach_origin, "failed")
-    if connection.state != "connected":
-        return _callback_redirect(coach_origin, "failed")
+        try:
+            coach_origin = _coach_app_origin(settings, callback_origin)
+        except CalendarOAuthUnavailable:
+            return _callback_redirect(callback_origin, "failed")
 
-    response = _callback_redirect(coach_origin, "connected")
-    response.delete_cookie(**cookie_options)
-    return response
+        cookie_options = _flow_cookie_options(callback_origin)
+        binding = request.cookies.get(cookie_options["key"])
+        if query is None or not binding:
+            return _callback_redirect(coach_origin, "failed")
+
+        try:
+            connection = await complete_google_calendar_oauth_callback(
+                db.SessionLocal,
+                raw_state=query.state,
+                raw_browser_binding=binding,
+                authorization_code=query.code,
+                configuration=config.google_calendar_token_exchange_configuration_from_env(),
+                pkce_cipher=config.calendar_oauth_pkce_cipher_from_env(),
+                credential_cipher=config.calendar_credential_cipher_from_env(),
+            )
+        except _OAUTH_ERRORS:
+            return _callback_redirect(coach_origin, "failed")
+        if connection.state != "connected":
+            return _callback_redirect(coach_origin, "failed")
+
+        # The state was consumed. Leave the short-lived cookie alone so an older
+        # response cannot clear the binding for a newer authorization.
+        return _callback_redirect(coach_origin, "connected")
+    finally:
+        del request, query, binding
 
 
 def _callback_origin(settings: config.ApplicationSettings, redirect_uri: str | None) -> str:
@@ -221,6 +234,17 @@ def _callback_origin(settings: config.ApplicationSettings, redirect_uri: str | N
     if origin is None or (settings.cookie_secure and not origin.startswith("https://")):
         raise CalendarOAuthUnavailable()
     return origin
+
+
+def _require_callback_cookie_origin(request: Request, callback_origin: str) -> None:
+    callback = urlsplit(callback_origin)
+    try:
+        request_url = request.url
+        if request_url.scheme == callback.scheme and request_url.hostname == callback.hostname:
+            return
+    except ValueError:
+        pass
+    raise CalendarOAuthUnavailable() from None
 
 
 def _coach_app_origin(settings: config.ApplicationSettings, callback_origin: str) -> str:

@@ -4383,6 +4383,22 @@
         "operationId": "delete_google_calendar_connection_api_coach_calendar_connections_google_delete",
         "parameters": [
           {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
+            }
+          },
+          {
             "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
             "example": "1",
             "in": "header",
@@ -4407,6 +4423,26 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The signed-in provider changed."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "security": [
@@ -4421,6 +4457,24 @@
       },
       "get": {
         "operationId": "read_google_calendar_connection_status_api_coach_calendar_connections_google_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -4431,6 +4485,26 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The signed-in provider changed."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "security": [
@@ -4448,6 +4522,22 @@
       "post": {
         "operationId": "start_google_calendar_authorization_api_coach_calendar_connections_google_authorize_post",
         "parameters": [
+          {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
+            }
+          },
           {
             "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
             "example": "1",
@@ -4493,6 +4583,16 @@
               }
             },
             "description": "CSRF protection failed."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The signed-in provider changed."
           },
           "422": {
             "content": {

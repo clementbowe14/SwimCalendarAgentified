@@ -63,6 +63,7 @@ def test_public_oauth_configuration_surface_is_explicit():
         "GoogleCalendarOAuthError",
         "GoogleCalendarTokenExchangeError",
         "google_calendar_oauth_origin",
+        "google_calendar_oauth_route_path",
     )
 
 

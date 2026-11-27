@@ -12,6 +12,7 @@ from app.api_errors import (
     CalendarAvailabilityUnavailable,
     SchedulingPolicyEndpointMoved,
 )
+from app.calendar_connection_access import get_google_calendar_coach
 from app.notifications import (
     correct_coach_email_delivery_contact,
     enqueue_invite_for_coach,
@@ -203,10 +204,11 @@ def read_provider_settings(
 @router.get(
     "/calendar-connections/google",
     response_model=CoachCalendarConnectionResponse,
+    responses={409: {"model": ErrorResponse, "description": "The signed-in provider changed."}},
 )
 def read_google_calendar_connection_status(
     response: Response,
-    coach: CoachContext = Depends(get_current_coach),
+    coach: CoachContext = Depends(get_google_calendar_coach),
 ) -> CoachCalendarConnectionResponse:
     _private_response(response)
     return get_coach_google_calendar_connection_status(coach.account_id)
@@ -215,10 +217,11 @@ def read_google_calendar_connection_status(
 @router.delete(
     "/calendar-connections/google",
     response_model=CoachCalendarConnectionResponse,
+    responses={409: {"model": ErrorResponse, "description": "The signed-in provider changed."}},
 )
 def delete_google_calendar_connection(
     response: Response,
-    coach: CoachContext = Depends(get_current_coach),
+    coach: CoachContext = Depends(get_google_calendar_coach),
 ) -> CoachCalendarConnectionResponse:
     _private_response(response)
     return disconnect_coach_google_calendar(coach.account_id)

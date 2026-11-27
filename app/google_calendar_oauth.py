@@ -16,6 +16,7 @@ __all__ = (
     "GoogleCalendarOAuthError",
     "GoogleCalendarTokenExchangeError",
     "google_calendar_oauth_origin",
+    "google_calendar_oauth_route_path",
 )
 
 
@@ -26,6 +27,12 @@ _MAX_OAUTH_URL_BYTES = 2 * 1024
 _GOOGLE_WEB_CLIENT_ID_PATTERN = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._-]*\.apps\.googleusercontent\.com\Z"
 )
+
+
+def google_calendar_oauth_route_path(path: str, root_path: str) -> str:
+    if root_path and (path == root_path or path.startswith(f"{root_path}/")):
+        return path[len(root_path):]
+    return path
 _DNS_LABEL_PATTERN = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z"
 )

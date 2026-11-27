@@ -7,15 +7,18 @@ The existing start service commits state and PKCE before issuing the URL for
 `https://www.googleapis.com/auth/calendar.freebusy`. Missing or invalid OAuth,
 encryption, or redirect settings return a generic 503.
 
+Settings sends an expected instructor ID from its loaded session. If the
+browser cookie now belongs to a different provider, the API rejects the request
+before reading or changing calendar settings.
+
 `GET /api/oauth/google-calendar/callback` accepts one well-formed code and state.
 It uses an independent host-only, HttpOnly, SameSite=Lax flow cookie. The cookie
 expires with state, within ten minutes, and uses Secure and a `__Host-` name
 over HTTPS. The existing provider cookie stays SameSite=Strict. The callback
 service claims and consumes state for the active initiating session, exchanges
 the code with a deadline, and revalidates the session before saving the
-encrypted connection. Successful callbacks clear the flow cookie. Failed
-callbacks leave it to expire or be replaced so an invalid callback cannot clear
-a newer flow.
+encrypted connection. The flow cookie expires independently so a late
+callback response cannot clear a newer authorization.
 
 The callback returns a 303 to the coach SPA root with only
 `?calendar=connected` or `?calendar=failed`. Denials, malformed queries, wrong

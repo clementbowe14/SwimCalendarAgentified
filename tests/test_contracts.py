@@ -66,9 +66,11 @@ def test_google_calendar_oauth_contract():
     start = openapi["paths"]["/api/coach/calendar-connections/google/authorize"]["post"]
     assert "requestBody" not in start
     assert start["security"] == [{"CoachSessionCookie": []}]
-    assert [(param["name"], param["required"]) for param in start["parameters"]] == [
-        ("X-CSRF-Protection", True)
-    ]
+    assert {(param["name"], param["required"]) for param in start["parameters"]} == {
+        ("X-Expected-Instructor-Id", False),
+        ("X-CSRF-Protection", True),
+    }
+    assert "409" in start["responses"]
     response_schema = start["responses"]["200"]["content"]["application/json"]["schema"]
     assert response_schema["$ref"] == "#/components/schemas/CoachGoogleCalendarAuthorizationResponse"
     start_schema = openapi["components"]["schemas"]["CoachGoogleCalendarAuthorizationResponse"]

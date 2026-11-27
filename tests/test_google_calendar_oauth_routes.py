@@ -1,14 +1,17 @@
+import asyncio
 import base64
 import json
 from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from uvicorn.protocols.utils import get_path_with_query_string
 
-from app import api, config, db, google_calendar_token_deadline
+from app import api, config, db, dependencies, google_calendar_token_deadline
 from app.auth import (
     CSRF_HEADER_NAME,
     CSRF_HEADER_VALUE,
@@ -19,6 +22,7 @@ from app.auth import (
     CoachPrincipal,
     revoke_presented_session,
 )
+from app.calendar_connection_access import EXPECTED_CALENDAR_INSTRUCTOR_HEADER
 from app.calendar_credentials import CalendarCredentialScope, EncryptedCalendarCredential
 from app.calendar_oauth_pkce import derive_s256_code_challenge
 from app.google_calendar_oauth import GOOGLE_CALENDAR_AUTHORIZE_PATH, GOOGLE_CALENDAR_CALLBACK_PATH
@@ -35,6 +39,8 @@ COACH_ORIGIN = "https://coach.dayweave.example"
 LOCAL_ORIGIN = "http://127.0.0.1:8000"
 SECURE_FLOW_COOKIE = "__Host-swim_google_calendar_flow"
 LOCAL_FLOW_COOKIE = "swim_google_calendar_flow"
+CONNECTION_PATH = "/api/coach/calendar-connections/google"
+EXPECTED_INSTRUCTOR = EXPECTED_CALENDAR_INSTRUCTOR_HEADER
 CLIENT_ID = "123-dayweave-test.apps.googleusercontent.com"
 CLIENT_SECRET = "fake-calendar-client-secret"
 KEY_ID = "fake-calendar-root-key"
@@ -75,6 +81,7 @@ def stub_provider_session(monkeypatch):
         )
 
     monkeypatch.setattr(api, "validate_coach_session", validate)
+    monkeypatch.setattr(dependencies, "validate_coach_session", validate)
 
 
 def _unexpected_call(*_args, **_kwargs):
@@ -119,6 +126,75 @@ def test_start_uses_provider_auth_csrf_and_empty_body(stub_provider_session, mon
         assert response.json()["error"]["code"] == error_code
         assert "set-cookie" not in response.headers
         _assert_private(response)
+
+
+@pytest.mark.parametrize("start_origin", ["https://api-alias.dayweave.example", "http://api.dayweave.example"])
+def test_start_requires_callback_cookie_host_and_scheme(stub_provider_session, monkeypatch, start_origin):
+    monkeypatch.setattr(
+        google_calendar_oauth, "prepare_google_calendar_authorization_start", _unexpected_call
+    )
+    client = TestClient(api.create_app(), base_url=start_origin)
+
+    response = client.post(AUTHORIZE, headers=AUTHENTICATED)
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "CALENDAR_OAUTH_UNAVAILABLE"
+    assert "set-cookie" not in response.headers
+    _assert_private(response)
+
+
+def test_mounted_authorize_response_is_private(stub_provider_session, monkeypatch):
+    url = f"https://accounts.google.com/o/oauth2/v2/auth?state={STATE}"
+    start = SimpleNamespace(
+        raw_browser_binding=BINDING,
+        authorization_request=SimpleNamespace(authorization_url=url),
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+    )
+    monkeypatch.setattr(
+        google_calendar_oauth, "prepare_google_calendar_authorization_start", lambda *_args, **_kwargs: start
+    )
+    mounted = FastAPI()
+    mounted.mount("/mounted", api.create_app())
+    client = TestClient(mounted, base_url=API_ORIGIN)
+
+    response = client.post(
+        f"/mounted{AUTHORIZE}", headers={**AUTHENTICATED, EXPECTED_INSTRUCTOR: "fake-instructor-id"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"authorization_url": url}
+    _assert_private(response)
+
+
+@pytest.mark.parametrize(("method", "path"), [
+    ("GET", CONNECTION_PATH), ("POST", AUTHORIZE), ("DELETE", CONNECTION_PATH),
+])
+def test_stale_settings_cannot_access_new_providers_calendar(stub_provider_session, monkeypatch, method, path):
+    monkeypatch.setattr(google_calendar_oauth, "prepare_google_calendar_authorization_start", _unexpected_call)
+    monkeypatch.setattr("app.routes.coach.get_coach_google_calendar_connection_status", _unexpected_call)
+    monkeypatch.setattr("app.routes.coach.disconnect_coach_google_calendar", _unexpected_call)
+    client = TestClient(api.create_app(), base_url=API_ORIGIN)
+
+    response = client.request(
+        method, path, headers={**AUTHENTICATED, EXPECTED_INSTRUCTOR: "other-instructor-id"}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CALENDAR_CONNECTION_OWNER_CHANGED"
+    assert "set-cookie" not in response.headers
+    _assert_private(response)
+
+
+def test_calendar_instructor_precondition_is_allowed_by_cors():
+    client = TestClient(api.create_app(), base_url=API_ORIGIN)
+    response = client.options(AUTHORIZE, headers={
+        "Origin": COACH_ORIGIN,
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": f"{CSRF_HEADER_NAME}, {EXPECTED_INSTRUCTOR}",
+    })
+
+    assert response.status_code == 200
+    assert EXPECTED_INSTRUCTOR.lower() in response.headers["access-control-allow-headers"].lower()
 
 
 @pytest.mark.parametrize(
@@ -210,7 +286,8 @@ def test_callback_rejects_denial_and_malformed_queries_before_completion(query, 
     assert "set-cookie" not in response.headers
 
 
-def test_callback_query_is_scrubbed_on_the_server_scope_before_response(monkeypatch):
+@pytest.mark.parametrize(("root_path", "prefix"), [("", ""), ("/a", ""), ("/a", "/a")])
+def test_callback_query_is_scrubbed_on_the_server_scope_before_response(monkeypatch, root_path, prefix):
     requests = []
     access_targets = []
     application = api.create_app()
@@ -229,18 +306,44 @@ def test_callback_query_is_scrubbed_on_the_server_scope_before_response(monkeypa
         await application(scope, receive, send_with_access_log)
 
     monkeypatch.setattr(google_calendar_oauth, "complete_google_calendar_oauth_callback", fake_complete)
-    client = TestClient(server, base_url="https://spoofed-host.example", follow_redirects=False)
+    client = TestClient(
+        server, base_url="https://spoofed-host.example", follow_redirects=False, root_path=root_path
+    )
     params = {"state": STATE, "code": CODE, "next": "https://untrusted.example"}
 
-    response = client.get(CALLBACK, params=params, headers=_flow_header())
+    response = client.get(f"{prefix}{CALLBACK}", params=params, headers=_flow_header())
     _assert_redirect(response, "failed")
-    alias = client.get(f"{CALLBACK}/", params=params)
+    alias = client.get(f"{prefix}{CALLBACK}/", params=params)
     assert alias.status_code == 404
     assert "location" not in alias.headers
     _assert_private(alias)
 
     assert requests == [(STATE, CODE)]
-    assert access_targets == [CALLBACK, f"{CALLBACK}/"]
+    assert access_targets == [f"{prefix}{CALLBACK}", f"{prefix}{CALLBACK}/"]
+
+
+def test_cancelled_callback_clears_sensitive_route_locals(monkeypatch):
+    async def cancel_callback(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(google_calendar_oauth, "complete_google_calendar_oauth_callback", cancel_callback)
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": CALLBACK,
+        "headers": [(b"cookie", f"{SECURE_FLOW_COOKIE}={BINDING}".encode())],
+        "app": api.create_app(),
+        "state": {"google_calendar_callback_query": google_calendar_oauth._CallbackQuery(STATE, CODE)},
+    }
+
+    with pytest.raises(asyncio.CancelledError) as cancelled:
+        asyncio.run(google_calendar_oauth.google_calendar_callback(Request(scope)))
+
+    callback_locals = next(
+        frame.frame.f_locals for frame in cancelled.traceback if frame.name == "google_calendar_callback"
+    )
+    assert {"request", "query", "binding"}.isdisjoint(callback_locals)
+    assert scope["state"] == {}
 
 
 def _sign_in(client):
@@ -330,10 +433,8 @@ def test_bound_callback_exchanges_once_and_persists_encrypted_connection(
         success = client.get(CALLBACK, params=params)
         _assert_redirect(success, "connected", origin=COACH_ORIGIN)
         assert success.request.headers["cookie"] == f"{SECURE_FLOW_COOKIE}={flow_cookie.value}"
-        cleared_cookie = SimpleCookie(success.headers["set-cookie"])[SECURE_FLOW_COOKIE]
-        assert cleared_cookie["max-age"] == "0"
-        assert cleared_cookie["secure"] and cleared_cookie["path"] == "/"
-        assert client.cookies.get(SECURE_FLOW_COOKIE) is None
+        assert "set-cookie" not in success.headers
+        assert client.cookies.get(SECURE_FLOW_COOKIE) == flow_cookie.value
 
         replay = client.get(CALLBACK, params=params, headers=_flow_header(flow_cookie.value))
         _assert_redirect(replay, "failed", origin=COACH_ORIGIN)
