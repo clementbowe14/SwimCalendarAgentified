@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Literal, NoReturn, final
 
 from sqlalchemy import select as _select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session as _Session
 
 from app.external_calendar import ExternalCalendarUnavailable
@@ -31,6 +32,7 @@ __all__ = (
     "GoogleCalendarAvailabilityFenceError",
     "claim_google_calendar_availability_fence",
     "revalidate_google_calendar_availability_fence",
+    "lock_current_google_calendar_availability_fence",
 )
 
 
@@ -170,6 +172,24 @@ def revalidate_google_calendar_availability_fence(
             system_exit_code=system_exit_code,
         )
     _raise_fence_error()
+
+
+def lock_current_google_calendar_availability_fence(
+    session: _Session,
+    *,
+    fence: GoogleCalendarAvailabilityFence,
+) -> None:
+    """Keep a checked calendar generation stable until the booking commits."""
+    try:
+        expected = _validated_fence(fence)
+        _, account_id, instructor_id, _, _ = expected
+        with session.no_autoflush:
+            current = _read_locked_fence(session, instructor_id=instructor_id, account_id=account_id)
+        if _validated_fence(current) == expected:
+            return
+    except (ValueError, SQLAlchemyError):
+        pass
+    raise GoogleCalendarAvailabilityFenceError() from None
 
 
 def _claim_fence(
