@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { trustedGoogleCalendarUrl, trustedInstructorCalendarUrl } from "../src/api/calendar.js";
+import {
+  trustedGoogleCalendarAuthorizationUrl,
+  trustedGoogleCalendarUrl,
+  trustedInstructorCalendarUrl,
+} from "../src/api/calendar.js";
 import type { CalendarLinks } from "../src/api/types.js";
 import {
   renderCalendarHandoffModal,
@@ -9,6 +13,31 @@ import {
 
 const apiBase = "https://api.example/api";
 const documentUrl = "https://command.example/find";
+
+test("authorization accepts only the exact Google OAuth destination and preserves its query", () => {
+  const endpoint = "https://accounts.google.com/o/oauth2/v2/auth";
+  const authorizationUrl = `${endpoint}?state=local-state&redirect_uri=https%3A%2F%2Fapi.example%2Fcallback`;
+  assert.equal(trustedGoogleCalendarAuthorizationUrl(authorizationUrl), authorizationUrl);
+
+  for (const value of [
+    null,
+    { authorization_url: authorizationUrl },
+    endpoint,
+    `${endpoint}?`,
+    `${authorizationUrl}#fragment`,
+    `${authorizationUrl} `,
+    "http://accounts.google.com/o/oauth2/v2/auth?state=x",
+    "https://accounts.google.com.example.test/o/oauth2/v2/auth?state=x",
+    "https://accounts.google.com:443/o/oauth2/v2/auth?state=x",
+    "https://other@accounts.google.com/o/oauth2/v2/auth?state=x",
+    "https://accounts.google.com/o/oauth2/v2/auth/../auth?state=x",
+    "https://accounts.google.com/o/oauth2/v2/auth/extra?state=x",
+    "//accounts.google.com/o/oauth2/v2/auth?state=x",
+    "javascript:alert(1)",
+  ]) {
+    assert.throws(() => trustedGoogleCalendarAuthorizationUrl(value), /authorization link is unavailable/);
+  }
+});
 
 test("calendar URL validation accepts only Google and the configured coach ICS origin", () => {
   assert.equal(

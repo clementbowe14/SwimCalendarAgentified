@@ -106,6 +106,14 @@ export type CalendarLinks = {
   ics: string;
 };
 
+export type GoogleCalendarConnection = {
+  provider: "google";
+  state: "disconnected" | "connected" | "authorization_required";
+  connected_at: string | null;
+  updated_at: string | null;
+  authorization_required_at: string | null;
+};
+
 export type InstructorAuthCredentials = {
   email: string;
   password: string;
@@ -372,6 +380,9 @@ export type InstructorCommandApi = {
   signOut(): Promise<void>;
   getProvider(): Promise<ProviderConfiguration>;
   saveProvider(provider: ProviderConfigurationUpdate): Promise<ProviderConfiguration>;
+  getGoogleCalendarConnection(expectedInstructorId: Id): Promise<GoogleCalendarConnection>;
+  authorizeGoogleCalendar(expectedInstructorId: Id): Promise<string>;
+  disconnectGoogleCalendar(expectedInstructorId: Id): Promise<GoogleCalendarConnection>;
   getSchedulingPolicy(): Promise<SchedulingPolicy>;
   saveSchedulingPolicy(policy: SchedulingPolicyUpdate): Promise<SchedulingPolicy>;
   getSnapshot(instructor_id: Id, date: string): Promise<CommandCenterSnapshot>;

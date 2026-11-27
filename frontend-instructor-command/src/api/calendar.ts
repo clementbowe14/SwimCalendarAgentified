@@ -1,5 +1,18 @@
 const GOOGLE_CALENDAR_HOST = "calendar.google.com";
+const GOOGLE_CALENDAR_AUTHORIZATION_PREFIX = "https://accounts.google.com/o/oauth2/v2/auth?";
 const COACH_ICS_PATH = /^\/api\/coach\/appointments\/[^/]+\/calendar\.ics$/;
+
+export function trustedGoogleCalendarAuthorizationUrl(value: unknown): string {
+  if (
+    typeof value !== "string"
+    || !value.startsWith(GOOGLE_CALENDAR_AUTHORIZATION_PREFIX)
+    || value.length === GOOGLE_CALENDAR_AUTHORIZATION_PREFIX.length
+    || /[^\x21-\x7e]|#/.test(value)
+  ) {
+    throw new Error("Google Calendar authorization link is unavailable.");
+  }
+  return value;
+}
 
 export function trustedGoogleCalendarUrl(value: string): string {
   if (!value.trim()) throw new Error("Google Calendar link is unavailable.");
