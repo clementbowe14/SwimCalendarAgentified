@@ -83,13 +83,14 @@ def get_coach_agenda(
         if day.working_window is not None
         else None
     )
+    calendar_start = min(day.start, routing_window[0]) if routing_window is not None else day.start
     calendar_end = max(day.end, routing_window[1]) if routing_window is not None else day.end
     try:
         fence = claim_google_calendar_availability_fence(db.SessionLocal, instructor_id=instructor_id)
         snapshot = query_calendar_busy_snapshot(
             build_calendar_source(),
             instructor_id=instructor_id,
-            window_start=day.start,
+            window_start=calendar_start,
             window_end=calendar_end,
         )
     except (CalendarAvailabilityUnavailable, ExternalCalendarUnavailable):
@@ -184,7 +185,7 @@ def _read_agenda_day(
         working_window=working_window,
         events=tools.routing_events_for_date(
             provider.id, selected_date, timezone_name,
-            include_next_day=working_window is not None,
+            include_adjacent_days=working_window is not None,
             session=session,
         ),
     )
@@ -226,10 +227,14 @@ def _working_plan(
     base = _scheduler_location(provider.base_location, is_facility=False)
     target = _scheduler_location(service.location, is_facility=True)
     bounded_busy = tools.clip_schedule_events(external, day_start=busy_start, day_end=busy_end)
-    position, working_events = tools.working_schedule_context(work_start, base, [*day.events, *bounded_busy])
     policy = load_buffer_policy(provider.id, operation="coach_agenda")
     engine = SwimSchedulerConstraintEngine(tools.routing_provider, policy, timezone_name=day.timezone)
-    transition_position, transition_events = tools.working_schedule_context(work_start, base, [*day.events, *external])
+    position, working_events = tools.working_schedule_context(
+        work_start, base, [*day.events, *bounded_busy], local_day_start=day.start, engine=engine,
+    )
+    transition_position, transition_events = tools.working_schedule_context(
+        work_start, base, [*day.events, *external], local_day_start=day.start, engine=engine,
+    )
     calendar_end = max(day.end, busy_end)
     transitions, arrivals = _planned_transitions(
         engine,

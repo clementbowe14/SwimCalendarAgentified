@@ -230,14 +230,17 @@ def _find_available_swim_slots(
         day_end=busy_end,
         internal_events=internal_events,
     )
-    position, existing_events = working_schedule_context(
-        day_start, instructor_base_loc, [*internal_events, *external_events]
-    )
     policy = buffer_policy or load_buffer_policy(instructor_id, operation="availability")
     constraint_engine = SwimSchedulerConstraintEngine(
         routing_provider,
         policy,
         timezone_name=provider.timezone,
+    )
+    local_day_start, _ = timezones.local_day_window_utc_storage(target_date, provider.timezone)
+    position, existing_events = working_schedule_context(
+        day_start, instructor_base_loc, [*internal_events, *external_events],
+        local_day_start=timezones.storage_to_aware_utc(local_day_start),
+        engine=constraint_engine,
     )
     utc_slots = constraint_engine.find_available_slots_for_day(
         day_start=day_start,
@@ -284,12 +287,12 @@ def routing_events_for_date(
     target_date: datetime.date,
     timezone_name: str,
     *,
-    include_next_day: bool = True,
+    include_adjacent_days: bool = True,
     session: Session | None = None,
 ) -> list[dict]:
     return db.get_utc_appointment_events_for_date(
         instructor_id, target_date.isoformat(), timezone_name=timezone_name,
-        include_day_edges=True, include_next_day_routing_anchor=include_next_day,
+        include_day_edges=True, include_adjacent_routing_anchors=include_adjacent_days,
         session=session,
     )
 
@@ -319,21 +322,31 @@ def working_schedule_context(
     work_start: datetime.datetime,
     base: LocationInfo,
     events: List[dict],
+    *,
+    local_day_start: datetime.datetime,
+    engine: SwimSchedulerConstraintEngine,
 ) -> tuple[SchedulePosition, List[dict]]:
     """Keep the known location before work and travel anchors after it."""
-    position = SchedulePosition(work_start, (base.lat, base.lng))
-    has_previous_location = False
+    base_position = SchedulePosition(work_start, (base.lat, base.lng))
+    position = base_position
+    last_located_end = None
     working_events = []
     for event in sorted(events, key=lambda event: (event["start_time"], event["end_time"])):
         if event["end_time"] <= work_start:
-            if event.get("blocker_kind") == "external_calendar" and not has_previous_location:
+            if event.get("blocker_kind") == "external_calendar" and last_located_end is None:
                 continue
             position = position.after_event(event)
-            has_previous_location = has_previous_location or event_coordinates(event) is not None
+            if event_coordinates(event) is not None:
+                last_located_end = event["end_time"]
         else:
             working_events.append({**event, "start_time": max(event["start_time"], work_start)})
-    if not has_previous_location and position.free_at < work_start:
+    if last_located_end is None and position.free_at < work_start:
         position = replace(position, free_at=work_start)
+    elif last_located_end is not None and last_located_end <= local_day_start and position.free_at < work_start:
+        # Start a new shift at base when it was possible to return there.
+        back_to_base = engine.inbound_transition(position, base_position.coordinates)
+        if position.free_at + back_to_base.duration <= work_start:
+            position = base_position
     return position, working_events
 
 

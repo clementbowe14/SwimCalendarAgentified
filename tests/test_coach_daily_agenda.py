@@ -526,10 +526,12 @@ def test_midnight_endpoint_remains_a_routing_anchor_without_an_appointment_row(
     assert datetime.fromisoformat(openings[-1]["start_times"][-1]) == available[-1].start_time
 
 
-def test_start_at_local_midnight_accounts_for_an_appointment_ending_at_midnight(
-    authenticated_api_client, monkeypatch
+@pytest.mark.parametrize(("gap", "first_minute"), [(0, 30), (15, 15)])
+def test_start_at_local_midnight_accounts_for_the_previous_appointment(
+    authenticated_api_client, monkeypatch, gap, first_minute,
 ):
     midnight = _hour(0)
+    previous_end = midnight - timedelta(minutes=gap)
     with db.SessionLocal.begin() as session:
         provider = session.get(InstructorDB, PROVIDER)
         provider.timezone = "UTC"
@@ -539,7 +541,7 @@ def test_start_at_local_midnight_accounts_for_an_appointment_ending_at_midnight(
         hours = session.get(ProviderWorkingHoursDB, (PROVIDER, DAY.weekday()))
         hours.start_time = time(0)
         hours.end_time = time(3)
-        _add_event(session, "yesterday-until-midnight", midnight - timedelta(minutes=45), midnight)
+        _add_event(session, "yesterday-late-appointment", previous_end - timedelta(minutes=45), previous_end)
 
     def route(origin, destination, **_):
         return (0, 0) if origin == destination else (4, 20)
@@ -549,9 +551,45 @@ def test_start_at_local_midnight_accounts_for_an_appointment_ending_at_midnight(
     monkeypatch.setattr(tools, "routing_provider", SimpleNamespace(get_distance_and_travel_time=route))
 
     agenda = _agenda(authenticated_api_client)
-    assert all(item["id"] != "yesterday-until-midnight" for item in agenda["items"])
+    assert all(item["id"] != "yesterday-late-appointment" for item in agenda["items"])
     opening, = (item for item in agenda["items"] if item["kind"] == "open_gap")
-    assert datetime.fromisoformat(opening["start_times"][0]) == _hour(0, 30)
+    assert datetime.fromisoformat(opening["start_times"][0]) == _hour(0, first_minute)
+    availability = tools.find_available_swim_slots(
+        PROVIDER, DAY.isoformat(), SERVICE[0], is_instructor_facility=True, duration_mins=45, buffer_policy=POLICY,
+    )
+    assert availability[0].start_time == _hour(0, first_minute)
+    rejected = authenticated_api_client.post("/api/coach/bookings", json={
+        "client_name": "Midnight client",
+        "client_address": SERVICE[0],
+        "is_instructor_facility": True,
+        "duration_mins": 45,
+        "start_time": midnight.isoformat(),
+        "idempotency_key": f"midnight-inbound-gap-{gap}",
+    })
+    assert rejected.status_code == 409, rejected.text
+
+
+def test_new_shift_starts_at_base_when_the_return_route_fits(authenticated_api_client, monkeypatch):
+    midnight = _hour(0)
+    with db.SessionLocal.begin() as session:
+        provider = session.get(InstructorDB, PROVIDER)
+        provider.timezone = "UTC"
+        provider.base_address, provider.base_lat, provider.base_lng = HOME
+        provider.service_address, provider.service_lat, provider.service_lng = SERVICE
+        provider.default_duration_mins = 45
+        hours = session.get(ProviderWorkingHoursDB, (PROVIDER, DAY.weekday()))
+        hours.start_time = time(8)
+        hours.end_time = time(11)
+        _add_event(session, "yesterday-service-location",
+                   midnight - timedelta(hours=1), midnight - timedelta(minutes=15), location=SERVICE)
+
+    def route(origin, destination, **_):
+        return (0, 0) if origin == destination else (4, 20)
+
+    monkeypatch.setattr(coach_routes, "get_coach_agenda", partial(coach_agenda.get_coach_agenda, now=midnight))
+    monkeypatch.setattr(tools, "routing_provider", SimpleNamespace(get_distance_and_travel_time=route))
+    opening, = (item for item in _agenda(authenticated_api_client)["items"] if item["kind"] == "open_gap")
+    assert datetime.fromisoformat(opening["start_times"][0]) == _hour(8, 30)
 
 
 def test_opening_bands_expose_only_verified_start_times():
