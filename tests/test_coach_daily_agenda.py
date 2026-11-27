@@ -592,10 +592,15 @@ def test_new_shift_starts_at_base_when_the_return_route_fits(authenticated_api_c
     assert datetime.fromisoformat(opening["start_times"][0]) == _hour(8, 30)
 
 
-def test_return_to_base_cannot_cross_busy_time_over_shift_start(authenticated_api_client, monkeypatch):
+@pytest.mark.parametrize("crosses_shift", [True, False], ids=["crosses-shift", "before-internal-block"])
+def test_return_to_base_requires_verified_time(authenticated_api_client, monkeypatch, crosses_shift):
     midnight = _hour(0)
     previous_end = midnight - timedelta(minutes=45)
-    busy = CalendarBusyInterval(previous_end + timedelta(minutes=5), _hour(0, 5))
+    busy = (
+        CalendarBusyInterval(previous_end + timedelta(minutes=5), _hour(0, 5))
+        if crosses_shift
+        else CalendarBusyInterval(previous_end + timedelta(minutes=1), midnight - timedelta(minutes=25))
+    )
     with db.SessionLocal.begin() as session:
         provider = session.get(InstructorDB, PROVIDER)
         provider.timezone = "UTC"
@@ -606,6 +611,9 @@ def test_return_to_base_cannot_cross_busy_time_over_shift_start(authenticated_ap
         hours.start_time = time(0)
         hours.end_time = time(3)
         _add_event(session, "previous-day-offsite", previous_end - timedelta(minutes=45), previous_end)
+        if not crosses_shift:
+            _add_event(session, "before-shift-block", midnight - timedelta(minutes=20), midnight,
+                       location=None, blocker_kind="unavailable")
 
     rules = default_scheduler_rules().model_copy(update={"buffers_enabled": False})
     db.save_scheduler_settings(PROVIDER, rules.model_dump(mode="json"))
@@ -615,7 +623,8 @@ def test_return_to_base_cannot_cross_busy_time_over_shift_start(authenticated_ap
 
     monkeypatch.setattr(coach_routes, "get_coach_agenda", partial(coach_agenda.get_coach_agenda, now=midnight))
     monkeypatch.setattr(tools, "routing_provider", SimpleNamespace(get_distance_and_travel_time=route))
-    _connect_calendar(monkeypatch, Mock(return_value=CalendarBusySnapshot("verified", (busy,))))
+    query = Mock(return_value=CalendarBusySnapshot("verified", (busy,)))
+    _connect_calendar(monkeypatch, query)
 
     agenda = _agenda(authenticated_api_client)
     opening, = (item for item in agenda["items"] if item["kind"] == "open_gap")
@@ -638,6 +647,7 @@ def test_return_to_base_cannot_cross_busy_time_over_shift_start(authenticated_ap
         "idempotency_key": "midnight-return-blocked-by-calendar",
     })
     assert booking.status_code == 409, booking.text
+    assert all(request.kwargs["window_start"] == previous_end for request in query.call_args_list)
 
 
 @pytest.mark.parametrize("prior_first", [True, False], ids=["evening-first", "midnight-first"])

@@ -310,10 +310,13 @@ def routing_calendar_window(
     internal_events: List[dict],
 ) -> tuple[datetime.datetime, datetime.datetime]:
     """Verify busy time between working hours and adjacent routing anchors."""
-    preceding = [event for event in internal_events if event["end_time"] <= work_start]
-    busy_start = work_start
-    if any(event_coordinates(event) is not None for event in preceding):
-        busy_start = max(event["end_time"] for event in preceding)
+    busy_start = max(
+        (
+            event["end_time"] for event in internal_events
+            if event["end_time"] <= work_start and event_coordinates(event) is not None
+        ),
+        default=work_start,
+    )
     busy_end = min(
         (
             event["start_time"]
