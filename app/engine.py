@@ -90,6 +90,48 @@ def _resolve_local_label(
     return None
 
 
+@dataclass(frozen=True)
+class SchedulePosition:
+    free_at: datetime.datetime
+    coordinates: Tuple[float, float]
+    previous_break_end: Optional[datetime.datetime] = None
+    is_shift_start: bool = True
+
+    def after_event(self, event: dict) -> "SchedulePosition":
+        end = event["end_time"]
+        blocker_kind = event.get("blocker_kind")
+        if blocker_kind == "external_calendar":
+            break_end = self.previous_break_end
+        else:
+            is_break = (
+                blocker_kind == "break"
+                if event.get("event_type") == "block" or blocker_kind is not None
+                else bool(event.get("is_break", False))
+            )
+            break_end = end if is_break else None
+        return SchedulePosition(
+            free_at=end,
+            coordinates=event_coordinates(event) or self.coordinates,
+            previous_break_end=break_end,
+            is_shift_start=False,
+        )
+
+
+@dataclass(frozen=True)
+class InboundTransition:
+    distance_miles: float
+    travel_mins: int
+    buffer: datetime.timedelta
+
+    @property
+    def duration(self) -> datetime.timedelta:
+        return datetime.timedelta(minutes=self.travel_mins) + self.buffer
+
+    @property
+    def buffer_mins(self) -> int:
+        return math.ceil(self.buffer.total_seconds() / 60)
+
+
 class SwimSchedulerConstraintEngine:
     """Deterministic scheduling constraint solver."""
 
@@ -137,23 +179,16 @@ class SwimSchedulerConstraintEngine:
         target_coords = (target_location.lat, target_location.lng)
         lesson_delta = datetime.timedelta(minutes=duration_mins)
         sorted_events = sorted(existing_events, key=lambda item: item["start_time"])
-        prev_location_coords = (instructor_main_location.lat, instructor_main_location.lng)
-        prev_end_time = day_start
-        previous_break_end = None
-        is_shift_start = True
+        position = SchedulePosition(day_start, (instructor_main_location.lat, instructor_main_location.lng))
 
         for index, event in enumerate(sorted_events):
-            event_coords = _event_coordinates(event)
             next_coords, outbound_departure, outbound_deadline = _outbound_route_anchor(
                 sorted_events,
                 index,
             )
             valid_slots.extend(
                 self._evaluate_gap(
-                    prev_end_time=prev_end_time,
-                    prev_coords=prev_location_coords,
-                    previous_break_end=previous_break_end,
-                    is_shift_start=is_shift_start,
+                    position=position,
                     next_start_time=event["start_time"],
                     next_coords=next_coords,
                     outbound_departure_time=outbound_departure,
@@ -163,24 +198,11 @@ class SwimSchedulerConstraintEngine:
                     lesson_delta=lesson_delta,
                 )
             )
-            prev_end_time = event["end_time"]
-            if event_coords is not None:
-                prev_location_coords = event_coords
-            if event.get("blocker_kind") != "external_calendar":
-                is_break = (
-                    event.get("blocker_kind") == "break"
-                    if event.get("event_type") == "block" or event.get("blocker_kind") is not None
-                    else bool(event.get("is_break", False))
-                )
-                previous_break_end = prev_end_time if is_break else None
-            is_shift_start = False
+            position = position.after_event(event)
 
         valid_slots.extend(
             self._evaluate_gap(
-                prev_end_time=prev_end_time,
-                prev_coords=prev_location_coords,
-                previous_break_end=previous_break_end,
-                is_shift_start=is_shift_start,
+                position=position,
                 next_start_time=day_end,
                 next_coords=None,
                 outbound_departure_time=None,
@@ -192,12 +214,32 @@ class SwimSchedulerConstraintEngine:
         )
         return valid_slots
 
+    def inbound_transition(
+        self,
+        position: SchedulePosition,
+        target_coords: Tuple[float, float],
+    ) -> InboundTransition:
+        distance, travel = self.routing.get_distance_and_travel_time(
+            position.coordinates,
+            target_coords,
+            departure_time=position.free_at,
+        )
+        buffer = datetime.timedelta(minutes=self.buffer_policy.inbound_buffer_minutes(
+            distance,
+            is_after_break=position.free_at == position.previous_break_end,
+            is_shift_start=position.is_shift_start,
+        ))
+        if position.previous_break_end is not None:
+            recovery_end = position.previous_break_end + datetime.timedelta(
+                minutes=self.buffer_policy.post_break_recovery_mins
+            )
+            # Keep any recovery time that remains after an external busy period.
+            buffer = max(buffer, recovery_end - position.free_at)
+        return InboundTransition(distance, travel, buffer)
+
     def _evaluate_gap(
         self,
-        prev_end_time: datetime.datetime,
-        prev_coords: Tuple[float, float],
-        previous_break_end: Optional[datetime.datetime],
-        is_shift_start: bool,
+        position: SchedulePosition,
         next_start_time: datetime.datetime,
         next_coords: Optional[Tuple[float, float]],
         outbound_departure_time: Optional[datetime.datetime],
@@ -207,25 +249,8 @@ class SwimSchedulerConstraintEngine:
         lesson_delta: datetime.timedelta,
     ) -> List[TimeSlotDTO]:
         slots = []
-        dist_from_prev, travel_from_prev = self.routing.get_distance_and_travel_time(
-            prev_coords,
-            target_coords,
-            departure_time=prev_end_time,
-        )
-        buffer_mins = self.buffer_policy.inbound_buffer_minutes(
-            dist_from_prev,
-            is_after_break=prev_end_time == previous_break_end,
-            is_shift_start=is_shift_start,
-        )
-        buffer_delta = datetime.timedelta(minutes=buffer_mins)
-        if previous_break_end is not None:
-            recovery_end = previous_break_end + datetime.timedelta(
-                minutes=self.buffer_policy.post_break_recovery_mins
-            )
-            # Keep any recovery time that remains after an external busy period.
-            buffer_delta = max(buffer_delta, recovery_end - prev_end_time)
-            buffer_mins = math.ceil(buffer_delta.total_seconds() / 60)
-        raw_start = prev_end_time + (datetime.timedelta(minutes=travel_from_prev) + buffer_delta)
+        transition = self.inbound_transition(position, target_coords)
+        raw_start = position.free_at + transition.duration
         current_candidate = self.buffer_policy.ceil_datetime(raw_start, self.timezone_name)
         # A locationless blocker is still a temporal boundary. Location only
         # controls whether outbound travel to the next event must fit.
@@ -253,9 +278,9 @@ class SwimSchedulerConstraintEngine:
                 TimeSlotDTO(
                     start_time=current_candidate,
                     end_time=candidate_end,
-                    travel_time_mins=travel_from_prev,
-                    buffer_mins=buffer_mins,
-                    distance_miles=dist_from_prev,
+                    travel_time_mins=transition.travel_mins,
+                    buffer_mins=transition.buffer_mins,
+                    distance_miles=transition.distance_miles,
                 )
             )
             current_candidate += increment
@@ -263,7 +288,7 @@ class SwimSchedulerConstraintEngine:
         return slots
 
 
-def _event_coordinates(event: dict) -> Optional[Tuple[float, float]]:
+def event_coordinates(event: dict) -> Optional[Tuple[float, float]]:
     lat = event.get("lat")
     lng = event.get("lng")
     if lat is None or lng is None:
@@ -280,7 +305,7 @@ def _outbound_route_anchor(
     Optional[datetime.datetime],
 ]:
     immediate = events[index]
-    immediate_coords = _event_coordinates(immediate)
+    immediate_coords = event_coordinates(immediate)
     if immediate_coords is not None:
         return immediate_coords, None, immediate["start_time"]
 
@@ -289,7 +314,7 @@ def _outbound_route_anchor(
     # intervening locationless blocker has ended.
     departure = immediate["end_time"]
     for event in events[index + 1 :]:
-        coords = _event_coordinates(event)
+        coords = event_coordinates(event)
         if coords is not None:
             return coords, departure, event["start_time"]
         departure = max(departure, event["end_time"])

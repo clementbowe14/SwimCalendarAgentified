@@ -456,7 +456,7 @@ def get_coach_command_center_snapshot(
         for client in db.get_clients_for_instructor(instructor_id)
     ]
     schedule = [
-        _schedule_item_response(appointment, coach_instructor)
+        coach_schedule_item(appointment, service_address=coach_instructor.main_address)
         for appointment in db.get_appointments_for_date(instructor_id, snapshot_date.isoformat())
     ]
     requests = [
@@ -847,9 +847,10 @@ def _client_response(client: dict, instructor: CoachInstructorProfileResponse) -
     )
 
 
-def _schedule_item_response(
+def coach_schedule_item(
     appointment: dict,
-    instructor: CoachInstructorProfileResponse,
+    *,
+    service_address: str | None,
 ) -> CoachScheduleItemResponse:
     is_blocker = appointment["event_type"] == "block"
     blocker_kind = appointment["blocker_kind"] or "break"
@@ -858,7 +859,7 @@ def _schedule_item_response(
         and appointment["lat"] is not None
         and appointment["lng"] is not None
     )
-    is_facility = has_location and appointment["location_address"] == instructor.main_address
+    is_facility = has_location and appointment["location_address"] == service_address
     title = appointment["title"]
     if not is_blocker:
         title = title.replace("Lesson with ", "", 1)

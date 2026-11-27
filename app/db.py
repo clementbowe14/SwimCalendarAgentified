@@ -569,14 +569,18 @@ def get_local_appointments_for_date(instructor_id: str, date_str: str) -> List[d
     rows = _get_appointment_rows_for_local_date(instructor_id, date_str, timezone_name)
     return [_appointment_to_dict(row, timezone_name=timezone_name) for row in rows]
 
-def get_utc_appointment_events_for_date(instructor_id: str, date_str: str) -> List[dict]:
-    instructor = get_instructor_info(instructor_id)
-    if not instructor:
-        return []
+def get_utc_appointment_events_for_date(
+    instructor_id: str, date_str: str, *, timezone_name: str | None = None
+) -> List[dict]:
+    if timezone_name is None:
+        instructor = get_instructor_info(instructor_id)
+        if not instructor:
+            return []
+        timezone_name = _read_timezone(instructor.timezone)
     rows = _get_appointment_rows_for_local_date(
         instructor_id,
         date_str,
-        _read_timezone(instructor.timezone),
+        timezone_name,
     )
     return [_appointment_to_dict(row, aware_utc=True) for row in rows]
 

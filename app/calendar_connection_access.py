@@ -16,7 +16,7 @@ def get_google_calendar_coach(
     if expected_instructor is not None and expected_instructor != quote(coach.instructor_id, safe="!~*'()"):
         raise ApiException(
             "CALENDAR_CONNECTION_OWNER_CHANGED",
-            "Your signed-in provider changed. Reload Settings and try again.",
+            "Your signed-in provider changed. Reload Dayweave and try again.",
             409,
         )
     return coach

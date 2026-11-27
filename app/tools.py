@@ -222,7 +222,7 @@ def _find_available_swim_slots(
         instructor_id,
         date_str,
     )
-    bounded_internal_events = _clip_events_to_working_interval(
+    bounded_internal_events = clip_schedule_events(
         internal_events,
         day_start=day_start,
         day_end=day_end,
@@ -302,7 +302,7 @@ def _external_busy_events(
             window_start=day_start,
             window_end=day_end,
         )
-        return _external_busy_events_from_snapshot(
+        return external_busy_events_from_snapshot(
             snapshot,
             internal_events=internal_events,
         )
@@ -314,7 +314,7 @@ def _external_busy_events(
             raise
 
 
-def _external_busy_events_from_snapshot(
+def external_busy_events_from_snapshot(
     snapshot: CalendarBusySnapshot,
     *,
     internal_events: List[dict],
@@ -374,13 +374,13 @@ def _external_busy_event(
     }
 
 
-def _clip_events_to_working_interval(
+def clip_schedule_events(
     events: List[dict],
     *,
     day_start: datetime.datetime,
     day_end: datetime.datetime,
 ) -> List[dict]:
-    """Keep scheduler inputs inside the provider's configured working interval."""
+    """Clip event copies to a half-open schedule window."""
     bounded_events: List[dict] = []
     for event in events:
         event_start = event["start_time"]

@@ -608,6 +608,44 @@ CoachScheduleItemResponse = Annotated[
 ]
 
 
+class CoachCalendarBusyScheduleItemResponse(CoachScheduleItemBase):
+    kind: Literal["calendar_busy"] = "calendar_busy"
+    title: Literal["Calendar busy"] = "Calendar busy"
+    location: None = None
+    client_id: None = None
+    travel_time_mins: None = None
+    buffer_mins: None = None
+    note: None = None
+    revision: None = None
+    status: None = None
+
+
+CoachAgendaItemResponse = Annotated[
+    CoachLessonScheduleItemResponse
+    | CoachBlockerScheduleItemResponse
+    | CoachUtilityScheduleItemResponse
+    | CoachCalendarBusyScheduleItemResponse,
+    Field(discriminator="kind"),
+]
+
+
+class CoachAgendaNextUp(BaseModel):
+    appointment_id: str
+    leave_by: AwareDatetime | None = None
+    travel_time_mins: int | None = None
+    buffer_mins: int | None = None
+
+
+class CoachDailyAgendaResponse(BaseModel):
+    instructor_id: str
+    date: date
+    today: date
+    timezone: str
+    status: Literal["ready", "setup_required", "calendar_unavailable", "routing_unavailable"]
+    items: list[CoachAgendaItemResponse]
+    next_up: CoachAgendaNextUp | None
+
+
 class CoachLessonRequestResponse(BaseModel):
     id: str
     client_id: str

@@ -10,6 +10,7 @@ from app.api_errors import (
     SchedulingPolicyEndpointMoved,
 )
 from app.calendar_connection_access import get_google_calendar_coach
+from app.coach_agenda import get_coach_agenda
 from app.notifications import (
     correct_coach_email_delivery_contact,
     enqueue_invite_for_coach,
@@ -31,6 +32,7 @@ from app.api_schemas import (
     CoachClientProfileResponse,
     CoachCommandCenterSnapshot,
     CoachContext as CoachContextResponse,
+    CoachDailyAgendaResponse,
     CoachEmailContactUpdateRequest,
     CoachEmailDeliveryResponse,
     CoachLessonRequestAlternativesRequest,
@@ -271,6 +273,26 @@ def read_schedule(
     coach: CoachContext = Depends(get_current_coach),
 ) -> CoachScheduleResponse:
     return get_coach_schedule(coach.instructor_id, date_)
+
+
+@router.get("/agenda", response_model=CoachDailyAgendaResponse)
+def read_agenda(
+    http_request: Request,
+    response: Response,
+    date_: date | None = Query(default=None, alias="date"),
+    coach: CoachContext = Depends(get_google_calendar_coach),
+) -> CoachDailyAgendaResponse:
+    _private_response(response)
+    try:
+        return get_coach_agenda(
+            coach.instructor_id,
+            date_,
+            build_calendar_source=partial(
+                _google_calendar_availability_source, http_request.app.state, coach.instructor_id
+            ),
+        )
+    finally:
+        del http_request, coach
 
 
 @router.get(
