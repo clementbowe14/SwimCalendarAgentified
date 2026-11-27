@@ -4,7 +4,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from app import client_invites, db
+from app import client_invites, db, tools
+from app.auth import seed_demo_provider_account
 from app.calendar_connections import replace_google_calendar_connection
 from app.calendar_credentials import CalendarCredentialCipher
 from app.external_calendar import CalendarBusyInterval, CalendarBusySnapshot, ExternalCalendarTimeout
@@ -162,6 +163,32 @@ def test_legacy_instructor_without_an_account_keeps_working(api_client, monkeypa
     assert response.status_code == 200, response.text
     assert response.json()["slots"]
     factory.assert_not_called()
+
+
+@pytest.mark.parametrize(("path", "payload"), [(SLOTS_PATH, SLOT_PAYLOAD), (LEGACY_PATH, LEGACY_PAYLOAD)])
+def test_invite_search_retries_if_calendar_is_enabled_during_legacy_search(
+    api_client, monkeypatch, path, payload
+):
+    with db.SessionLocal.begin() as session:
+        account = session.query(ProviderAccountDB).filter_by(instructor_id="inst_001").one()
+        session.delete(account)
+        total_offers = session.query(InviteSlotOfferDB).count()
+    find = tools.find_available_swim_slots
+
+    def provision_after_search(**kwargs):
+        slots = find(**kwargs)
+        seed_demo_provider_account()
+        _connect()
+        return slots
+
+    monkeypatch.setattr(tools, "find_available_swim_slots", provision_after_search)
+
+    response = api_client.post(path, json=payload)
+
+    assert response.status_code == 503
+    assert response.json() == UNAVAILABLE
+    with db.SessionLocal() as session:
+        assert session.query(InviteSlotOfferDB).count() == total_offers
 
 
 def test_weekly_public_search_rejects_mixed_calendar_generations(api_client, monkeypatch):

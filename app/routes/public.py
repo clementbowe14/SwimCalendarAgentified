@@ -42,7 +42,12 @@ from app.client_invites import (
 from app.dependencies import google_calendar_availability_source
 from app.external_calendar import CalendarBusySource
 from app.models import ProviderAccountDB
-from app.public_tokens import InviteContext, require_active_invite, resolve_invite
+from app.public_tokens import (
+    InviteContext,
+    require_active_invite,
+    require_unprovisioned_invite_instructor,
+    resolve_invite,
+)
 
 
 router = APIRouter(prefix="/api/public", tags=["public"])
@@ -65,6 +70,8 @@ def find_invite_availability(
             result = search_public_availability(invite, request, calendar_busy_source=source)
             with db.SessionLocal() as session:
                 require_active_invite(session, invite.token, instructor_id=invite.instructor_id)
+                if source is None:
+                    require_unprovisioned_invite_instructor(session, invite.instructor_id)
             return result
     finally:
         del http_request

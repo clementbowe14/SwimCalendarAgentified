@@ -4,9 +4,9 @@ from typing import Optional
 from uuid import uuid4
 
 from app import db, timezones
-from app.api_errors import InviteExpired, InviteNotFound, LessonRequestNotFound
+from app.api_errors import CalendarAvailabilityUnavailable, InviteExpired, InviteNotFound, LessonRequestNotFound
 from app.config import demo_data_access_enabled_from_env
-from app.models import InviteTokenDB, LessonRequestDB
+from app.models import InstructorDB, InviteTokenDB, LessonRequestDB, ProviderAccountDB
 from app.provider_settings import ProviderLocation, ProviderNotFound, load_provider_configuration
 from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -97,6 +97,14 @@ def require_active_invite(
     if invite.expires_at <= datetime.utcnow():
         raise InviteExpired()
     return invite
+
+
+def require_unprovisioned_invite_instructor(session, instructor_id: str) -> None:
+    # Provider-account inserts take a foreign-key lock on the instructor row.
+    instructor = session.query(InstructorDB.id).filter_by(id=instructor_id).with_for_update().first()
+    account = session.query(ProviderAccountDB.id).filter_by(instructor_id=instructor_id).first()
+    if instructor is None or account is not None:
+        raise CalendarAvailabilityUnavailable()
 
 
 def create_lesson_request(

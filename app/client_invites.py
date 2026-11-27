@@ -56,6 +56,7 @@ from app.public_tokens import (
     create_lesson_request,
     demo_invite_is_enabled,
     require_active_invite,
+    require_unprovisioned_invite_instructor,
     resolve_invite,
     resolve_lesson_request_by_idempotency_key,
 )
@@ -586,6 +587,8 @@ def _save_slot_offers(
             try:
                 with session.begin():
                     require_active_invite(session, invite.token, instructor_id=invite.instructor_id, lock=True)
+                    if fence is None:
+                        require_unprovisioned_invite_instructor(session, invite.instructor_id)
                     for slot, shaped in offers:
                         _upsert_slot_offer(session, invite, request, location, slot, shaped, is_facility)
                     if fence is not None:
