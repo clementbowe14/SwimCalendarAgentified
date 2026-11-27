@@ -2,14 +2,14 @@ import datetime
 import json
 import urllib.error
 import urllib.request
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from http.client import HTTPException, IncompleteRead
 from time import monotonic
 from unittest.mock import Mock
 from urllib.parse import parse_qs, urlparse
 
 import anyio
-import httpx
+import httpcore
 import pytest
 
 from app.routing import (
@@ -40,27 +40,43 @@ def test_mapbox_geocode_parses_forward_geocoding_response():
     assert calls[0][1] == 2.5
 
 
-def test_range_routing_stops_on_an_oversized_or_stalled_response(monkeypatch):
-    class StalledBody(httpx.AsyncByteStream):
-        async def __aiter__(self):
-            yield b"{"
-            await anyio.sleep_forever()
+def test_range_routing_rejects_oversized_compressed_and_stalled_responses(monkeypatch):
+    async def oversized():
+        yield b" " * (300 * 1024)
 
-    async_client = httpx.AsyncClient
-    response = httpx.Response(200, content=b" " * (300 * 1024))
-    monkeypatch.setattr(
-        httpx, "AsyncClient",
-        lambda **kwargs: async_client(transport=httpx.MockTransport(lambda _: response), **kwargs),
-    )
+    async def stalled():
+        yield b"{"
+        await anyio.sleep_forever()
+
+    class TestPool:
+        def __init__(self, **_options):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_error):
+            pass
+
+        @asynccontextmanager
+        async def stream(self, _method, _url, *, headers):
+            assert (b"accept-encoding", b"identity") in headers
+            yield response
+
+    response = httpcore.Response(200, content=oversized())
+    monkeypatch.setattr(httpcore, "AsyncConnectionPool", TestPool)
     provider = MapboxRoutingProvider("synthetic")
     deadline = routing_request_deadline.set(monotonic() + 2.0)
     try:
         with pytest.raises(RoutingProviderUnavailable, match="too large"):
             provider.geocode("Test address")
+        response = httpcore.Response(200, content=stalled(), headers=[(b"Content-Encoding", b"gzip")])
+        with pytest.raises(RoutingProviderUnavailable, match="encoding"):
+            provider.geocode("Test address")
     finally:
         routing_request_deadline.reset(deadline)
 
-    response = httpx.Response(200, stream=StalledBody())
+    response = httpcore.Response(200, content=stalled())
     deadline = routing_request_deadline.set(monotonic() + 0.1)
     try:
         with pytest.raises(RoutingTimeout):

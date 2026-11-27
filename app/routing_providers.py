@@ -11,7 +11,7 @@ from time import monotonic
 from typing import Callable, Optional, Tuple
 
 import anyio
-import httpx
+import httpcore
 
 from app import timezones
 from app.routing import (
@@ -163,19 +163,31 @@ class MapboxRoutingProvider(BaseRoutingProvider):
 async def _fetch_range_routing_json(url: str, timeout_seconds: float) -> dict:
     try:
         with anyio.fail_after(timeout_seconds):
-            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                async with client.stream("GET", url, headers={"accept": "application/json"}) as response:
-                    if not response.is_success:
-                        raise urllib.error.HTTPError(url, response.status_code, "Mapbox request failed.", None, None)
+            # Mapbox puts the credential and location in the URL. Use the
+            # transport directly so the high-level client never logs that URL.
+            async with httpcore.AsyncConnectionPool(max_connections=1, max_keepalive_connections=0) as client:
+                async with client.stream("GET", url, headers=[
+                    (b"accept", b"application/json"), (b"accept-encoding", b"identity"),
+                ]) as response:
+                    if not 200 <= response.status < 300:
+                        raise urllib.error.HTTPError(
+                            "https://api.mapbox.com/", response.status, "Mapbox request failed.", None, None,
+                        )
+                    encodings = [
+                        value.strip().lower() for key, value in response.headers
+                        if key.lower() == b"content-encoding"
+                    ]
+                    if encodings not in ([], [b"identity"]):
+                        raise RoutingProviderUnavailable("Mapbox response encoding is unsupported.")
                     body = bytearray()
-                    async for chunk in response.aiter_bytes(chunk_size=16_384):
+                    async for chunk in response.aiter_stream():
                         if len(body) + len(chunk) > _MAX_RANGE_ROUTING_BYTES:
                             raise RoutingProviderUnavailable("Mapbox response is too large.")
                         body.extend(chunk)
                     return json.loads(body)
-    except httpx.TimeoutException:
+    except httpcore.TimeoutException:
         raise RoutingTimeout("Mapbox request timed out.") from None
-    except httpx.RequestError:
+    except (httpcore.NetworkError, httpcore.ProtocolError, httpcore.ProxyError):
         raise RoutingProviderUnavailable("Mapbox request failed.") from None
 
 
