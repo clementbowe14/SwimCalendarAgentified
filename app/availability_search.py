@@ -37,7 +37,7 @@ from app.provider_settings import ProviderConfiguration, require_provider_setup
 from app.routing import BaseRoutingProvider, RouteEstimate
 from app.routing_cache import route_cache_session_factory
 from app.routing_providers import routing_request_deadline
-from app.scheduler_settings import load_buffer_policy
+from app.scheduler_settings import InvalidSchedulerPolicy, load_buffer_policy
 
 
 _SEARCH_SECONDS = 15
@@ -122,12 +122,16 @@ class AvailabilityRange:
 
 
 @dataclass(frozen=True)
-class _SearchDay:
+class _WorkingDay:
     date: date
     working_window: tuple[datetime, datetime]
+    client_windows: list[tuple[time, time]]
+
+
+@dataclass(frozen=True)
+class _SearchDay(_WorkingDay):
     calendar_window: tuple[datetime, datetime]
     events: list[dict]
-    client_windows: list[tuple[time, time]]
 
 
 def search_one_time_availability(
@@ -144,9 +148,6 @@ def search_one_time_availability(
     calendar_busy_source = None
     try:
         fence = None
-        if build_calendar_source is not None:
-            fence = claim_google_calendar_availability_fence(sessions, instructor_id=instructor_id)
-        routing.check_deadline()
 
         with sessions() as session:
             session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
@@ -154,7 +155,10 @@ def search_one_time_availability(
             today = timezones.requested_local_date(now or datetime.now(timezones.UTC), provider.timezone)
             if criteria.start_date < today or (criteria.end_date - today).days >= PILOT_AVAILABILITY_DAYS:
                 raise InvalidSchedulingRequest("Choose dates within the next 14 days, including today.")
-            days, empty_reason = _search_days(provider, criteria, routing, session)
+            working_days, empty_reason = _working_days(provider, criteria, routing)
+            if working_days and build_calendar_source is not None:
+                fence = claim_google_calendar_availability_fence(sessions, instructor_id=instructor_id)
+            days = _read_search_days(provider, working_days, routing, session)
             routing.check_deadline()
             policy = load_buffer_policy(instructor_id, operation="availability", session=session) if days else None
 
@@ -165,8 +169,9 @@ def search_one_time_availability(
         if days and build_calendar_source is not None:
             calendar_busy_source = build_calendar_source(sessions)
             busy_periods = _read_busy_periods(calendar_busy_source, instructor_id, days, routing)
-    except OperationalError as exc:
-        if getattr(exc.orig, "sqlstate", None) in {"55P03", "57014"}:
+    except (InvalidSchedulerPolicy, OperationalError) as exc:
+        database_error = exc.__cause__ if isinstance(exc, InvalidSchedulerPolicy) else exc
+        if isinstance(database_error, OperationalError) and getattr(database_error.orig, "sqlstate", None) in {"55P03", "57014"}:
             raise AvailabilitySearchBudgetExceeded() from None
         raise
     finally:
@@ -227,15 +232,13 @@ def _find_range_slots(
     return slots
 
 
-def _search_days(
+def _working_days(
     provider: ProviderConfiguration,
     criteria: OneTimeAvailabilityCriteria,
     routing: _BoundedRouting,
-    session: Session,
-) -> tuple[list[_SearchDay], AvailabilityEmptyReason]:
-    days: list[_SearchDay] = []
+) -> tuple[list[_WorkingDay], AvailabilityEmptyReason]:
+    days: list[_WorkingDay] = []
     has_working_day = False
-    remaining_events = _MAX_SEARCH_EVENTS
     zone = timezones.get_zone(provider.timezone)
     for offset in range((criteria.end_date - criteria.start_date).days + 1):
         routing.check_deadline()
@@ -252,16 +255,33 @@ def _search_days(
         ]
         if criteria.windows and not windows:
             continue
+        days.append(_WorkingDay(day, working, windows))
+    if days:
+        return days, "no_safe_slots"
+    return [], "outside_client_windows" if has_working_day else "no_working_hours"
+
+
+def _read_search_days(
+    provider: ProviderConfiguration,
+    working_days: list[_WorkingDay],
+    routing: _BoundedRouting,
+    session: Session,
+) -> list[_SearchDay]:
+    days: list[_SearchDay] = []
+    remaining_events = _MAX_SEARCH_EVENTS
+    for day in working_days:
+        routing.check_deadline()
         events = tools.routing_events_for_date(
-            provider.id, day, provider.timezone, session=session, limit=remaining_events + 1,
+            provider.id, day.date, provider.timezone, session=session, limit=remaining_events + 1,
         )
         remaining_events -= len(events)
         if remaining_events < 0:
             raise AvailabilitySearchBudgetExceeded()
-        days.append(_SearchDay(day, working, tools.routing_calendar_window(*working, events), events, windows))
-    if days:
-        return days, "no_safe_slots"
-    return [], "outside_client_windows" if has_working_day else "no_working_hours"
+        days.append(_SearchDay(
+            day.date, day.working_window, day.client_windows,
+            tools.routing_calendar_window(*day.working_window, events), events,
+        ))
+    return days
 
 
 def _read_busy_periods(

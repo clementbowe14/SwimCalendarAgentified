@@ -289,15 +289,24 @@ class SwimSchedulerConstraintEngine:
         slots = []
         # Skip occupied gaps before asking the routing provider for an estimate.
         latest_gap_end = min(next_start_time, day_end)
-        if slot_limit == 0 or max(day_start, position.free_at) + lesson_delta > latest_gap_end:
+        gap_start = max(day_start, position.free_at)
+        if slot_limit == 0 or gap_start + lesson_delta > latest_gap_end:
             return slots
+        increment = datetime.timedelta(minutes=SLOT_INCREMENT_MINUTES)
+        if slot_filter is not None:
+            earliest = self.buffer_policy.ceil_datetime(gap_start, self.timezone_name, allow_repeated_hour=True)
+            while earliest + lesson_delta <= latest_gap_end:
+                if slot_filter(earliest, earliest + lesson_delta):
+                    break
+                earliest += increment
+            else:
+                return slots
+            gap_start = earliest
         transition = self.inbound_transition(position, target_coords)
-        raw_start = max(day_start, position.free_at + transition.duration)
+        raw_start = max(gap_start, position.free_at + transition.duration)
         current_candidate = self.buffer_policy.ceil_datetime(raw_start, self.timezone_name, allow_repeated_hour=True)
         # A locationless blocker is still a temporal boundary. Location only
         # controls whether outbound travel to the next event must fit.
-        increment = datetime.timedelta(minutes=SLOT_INCREMENT_MINUTES)
-
         while current_candidate + lesson_delta <= latest_gap_end:
             candidate_end = current_candidate + lesson_delta
             if slot_filter is not None and not slot_filter(current_candidate, candidate_end):

@@ -165,7 +165,9 @@ async def _fetch_range_routing_json(url: str, timeout_seconds: float) -> dict:
         with anyio.fail_after(timeout_seconds):
             # Mapbox puts the credential and location in the URL. Use the
             # transport directly so the high-level client never logs that URL.
-            async with httpcore.AsyncConnectionPool(max_connections=1, max_keepalive_connections=0) as client:
+            async with httpcore.AsyncConnectionPool(
+                max_connections=1, max_keepalive_connections=0, proxy=_mapbox_proxy(),
+            ) as client:
                 async with client.stream("GET", url, headers=[
                     (b"accept", b"application/json"), (b"accept-encoding", b"identity"),
                 ]) as response:
@@ -189,6 +191,24 @@ async def _fetch_range_routing_json(url: str, timeout_seconds: float) -> dict:
         raise RoutingTimeout("Mapbox request timed out.") from None
     except (httpcore.NetworkError, httpcore.ProtocolError, httpcore.ProxyError):
         raise RoutingProviderUnavailable("Mapbox request failed.") from None
+
+
+def _mapbox_proxy() -> httpcore.Proxy | None:
+    address = urllib.request.getproxies().get("https")
+    if not address or urllib.request.proxy_bypass("api.mapbox.com"):
+        return None
+    if "://" not in address:
+        address = f"http://{address}"
+    endpoint = urllib.parse.urlsplit(address)
+    if endpoint.scheme not in {"http", "https"} or not endpoint.hostname:
+        raise RoutingProviderNotConfigured("The routing proxy URL is invalid.")
+    auth = None
+    if endpoint.username is not None:
+        auth = (
+            urllib.parse.unquote_to_bytes(endpoint.username),
+            urllib.parse.unquote_to_bytes(endpoint.password or ""),
+        )
+    return httpcore.Proxy(address, auth=auth)
 
 
 def _valid_coordinate(lat: float, lng: float) -> bool:

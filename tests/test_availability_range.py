@@ -6,7 +6,9 @@ from unittest.mock import Mock
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from psycopg.errors import LockNotAvailable
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from app import api_services, availability_search, db, routing_cache, timezones, tools
 from app.calendar_connections import disconnect_google_calendar, replace_google_calendar_connection
@@ -15,6 +17,8 @@ from app.external_calendar import MAX_BUSY_QUERY_WINDOW, CalendarBusyInterval, C
 from app.google_calendar_busy_source_factory import GoogleCalendarBusySourceFactory
 from app.models import AppointmentDB, InstructorDB, ProviderAccountDB, ProviderWorkingHoursDB
 from app.routing_providers import MapboxRoutingProvider
+from app.routing import RoutingTimeout
+from app.scheduler_settings import InvalidSchedulerPolicy
 
 
 PATH = "/api/coach/availability/search"
@@ -167,9 +171,18 @@ def test_rounding_after_a_blocker_can_offer_the_repeated_hour(provider, monkeypa
     })
 
     assert response.status_code == 200, response.text
-    assert [slot["start_iso"] for slot in response.json()["available_slots"]] == [
+    starts = [slot["start_iso"] for slot in response.json()["available_slots"]]
+    assert starts == [
         "2026-11-01T01:00:00-06:00", "2026-11-01T01:15:00-06:00", "2026-11-01T01:30:00-06:00",
     ]
+    booked = provider.post("/api/coach/bookings", json={
+        "client_name": "Repeated hour client", "client_address": SERVICE_ADDRESS,
+        "start_time": starts[0], "duration_mins": 30, "is_instructor_facility": True,
+    })
+    assert booked.status_code == 200, booked.text
+    with db.SessionLocal() as session:
+        record = session.get(AppointmentDB, booked.json()["appointment_id"])
+        assert record.start_time == datetime.fromisoformat("2026-11-01T07:00:00")
 
 
 def test_calendar_fails_closed_if_any_chunk_is_unverified(provider, monkeypatch):
@@ -469,3 +482,43 @@ def test_search_capacity_fails_before_planning(provider, monkeypatch):
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "AVAILABILITY_SEARCH_BUDGET_EXCEEDED"
     start.assert_not_called()
+
+
+def test_closed_client_windows_do_not_require_a_calendar_read_or_fence(provider, monkeypatch):
+    claim = Mock(side_effect=ExternalCalendarTimeout())
+    monkeypatch.setattr(availability_search, "claim_google_calendar_availability_fence", claim)
+    response = provider.post(PATH, json={
+        **REQUEST, "windows": [{"days": ["thursday"], "start_time": "19:00", "end_time": "20:00"}],
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["empty_reason"] == "outside_client_windows"
+    claim.assert_not_called()
+
+
+def test_policy_query_timeout_returns_a_retryable_failure(provider, monkeypatch):
+    def locked_policy(*_args, **_kwargs):
+        raise InvalidSchedulerPolicy("Policy read failed.") from OperationalError(None, None, LockNotAvailable())
+
+    monkeypatch.setattr(availability_search, "load_buffer_policy", locked_policy)
+    response = provider.post(PATH, json=REQUEST)
+    assert response.status_code == 503, response.text
+    assert response.json()["error"]["code"] == "AVAILABILITY_SEARCH_BUDGET_EXCEEDED"
+
+
+def test_search_does_not_quote_inbound_travel_for_an_excluded_gap(provider, monkeypatch):
+    with db.SessionLocal.begin() as session:
+        session.add(_block("midday anchor", "2026-11-24T12:00:00-06:00", "2026-11-24T12:30:00-06:00", located=True))
+    estimate = tools.routing_provider.estimate_route
+
+    def route(*args, departure_time, **kwargs):
+        if departure_time == datetime.fromisoformat("2026-11-24T14:00:00+00:00"):
+            raise RoutingTimeout("Unrelated morning route timed out.")
+        return estimate(*args, departure_time=departure_time, **kwargs)
+
+    monkeypatch.setattr(tools.routing_provider, "estimate_route", route)
+    response = provider.post(PATH, json={
+        **REQUEST, "duration_mins": 15,
+        "windows": [{"days": ["tuesday"], "start_time": "14:00", "end_time": "14:15"}],
+    })
+    assert response.status_code == 200, response.text
+    assert [slot["start_iso"] for slot in response.json()["available_slots"]] == ["2026-11-24T14:00:00-06:00"]

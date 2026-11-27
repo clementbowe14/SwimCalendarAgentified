@@ -19,7 +19,7 @@ from app.routing import (
     RoutingProviderUnavailable,
     RoutingTimeout,
 )
-from app.routing_providers import MapboxRoutingProvider, routing_request_deadline
+from app.routing_providers import MapboxRoutingProvider, _mapbox_proxy, routing_request_deadline
 
 
 def test_mapbox_geocode_parses_forward_geocoding_response():
@@ -83,6 +83,20 @@ def test_range_routing_rejects_oversized_compressed_and_stalled_responses(monkey
             provider.geocode("Test address")
     finally:
         routing_request_deadline.reset(deadline)
+
+
+def test_range_routing_respects_the_https_proxy_and_bypass(monkeypatch):
+    monkeypatch.setattr(
+        urllib.request, "getproxies",
+        lambda: {"https": "http://test-user:test-pass@proxy.invalid:8080"},
+    )
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda _host: False)
+    proxy = _mapbox_proxy()
+    assert proxy is not None
+    assert (proxy.url.host, proxy.url.port) == (b"proxy.invalid", 8080)
+    assert proxy.auth == (b"test-user", b"test-pass")
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda _host: True)
+    assert _mapbox_proxy() is None
 
 
 def test_mapbox_geocode_no_results_raises_geocode_failed():

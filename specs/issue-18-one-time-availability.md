@@ -6,6 +6,7 @@
 
 - `POST /api/coach/availability/search` accepts inclusive provider-local start and end dates, optional weekday windows, a session duration, the location mode, and a limit of 1 to 48. Today is day one of the 14-day pilot horizon.
 - The scheduler uses the provider’s saved working hours and buffer policy, appointments and blockers, and the existing inbound and outbound routing checks. Client windows constrain the full session. Touching windows on the same weekday form a continuous window. Slot ordering uses UTC instants, including during a repeated local hour.
+- Slot planning and booking revalidation can use an earlier clock label during the second occurrence of a repeated hour. The actual instant always advances past the end of travel and buffer time.
 - Resolve the location once. For connected providers, verify Google busy periods for every evaluated day and its routing anchors. Query at most 15 days at a time and discard results if any read fails or the calendar connection changes during planning.
 - Apply client windows and the result limit before extra outbound route checks. Stop starting work after 15 seconds or 96 routing calls, and cap the schedule rows and busy periods processed per search. A search that reaches a work limit returns a retryable error.
 - Mapbox reads use the remaining time and cap response size. Database statements use the remaining time and a short lock timeout after connection checkout. At most four provider searches run per application process.
