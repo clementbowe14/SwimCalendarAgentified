@@ -161,7 +161,7 @@ def _find_slots(
     monkeypatch.setattr(
         tools.db,
         "get_utc_appointment_events_for_date",
-        lambda *_args: list(internal_events or []),
+        lambda *_args, **_kwargs: list(internal_events or []),
     )
     monkeypatch.setattr(tools, "routing_provider", ZeroRoutingProvider())
     return tools.find_available_swim_slots(
@@ -588,7 +588,7 @@ def test_booking_calendar_failure_retains_no_source_and_saves_nothing(
     monkeypatch.setattr(
         tools.db,
         "get_utc_appointment_events_for_date",
-        lambda *_args: [],
+        lambda *_args, **_kwargs: [],
     )
     monkeypatch.setattr(tools, "routing_provider", ZeroRoutingProvider())
     monkeypatch.setattr(

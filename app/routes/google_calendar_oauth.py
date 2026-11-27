@@ -14,7 +14,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from app import config, db
 from app.api_errors import ApiException, CalendarOAuthUnavailable
 from app.api_schemas import CoachGoogleCalendarAuthorizationResponse, ErrorResponse
-from app.calendar_connection_access import get_google_calendar_coach
+from app.calendar_connection_access import get_expected_instructor_coach
 from app.calendar_credentials import CalendarCredentialConfigurationError
 from app.calendar_oauth_pkce import CalendarOAuthPKCEConfigurationError
 from app.dependencies import CoachContext, require_csrf_protection
@@ -142,7 +142,7 @@ class GoogleCalendarOAuthPrivacyMiddleware:
 async def start_google_calendar_authorization(
     request: Request,
     response: Response,
-    coach: CoachContext = Depends(get_google_calendar_coach),
+    coach: CoachContext = Depends(get_expected_instructor_coach),
 ) -> CoachGoogleCalendarAuthorizationResponse:
     if await request.body():
         raise ApiException("VALIDATION_ERROR", "This endpoint does not accept a request body.", 422)

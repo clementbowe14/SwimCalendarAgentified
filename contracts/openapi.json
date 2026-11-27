@@ -4507,6 +4507,22 @@
               "title": "Date",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
+            }
           }
         ],
         "responses": {
@@ -4542,7 +4558,7 @@
                 }
               }
             },
-            "description": "The schedule, revision, setup, or idempotency key conflicts."
+            "description": "The schedule, revision, setup, ownership, or idempotency key conflicts."
           },
           "422": {
             "content": {
@@ -4577,6 +4593,22 @@
               "minLength": 8,
               "title": "Idempotency-Key",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
             }
           },
           {
@@ -4633,7 +4665,7 @@
                 }
               }
             },
-            "description": "The schedule, revision, setup, or idempotency key conflicts."
+            "description": "The schedule, revision, setup, ownership, or idempotency key conflicts."
           },
           "422": {
             "content": {
@@ -4681,6 +4713,22 @@
             }
           },
           {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
+            }
+          },
+          {
             "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
             "example": "1",
             "in": "header",
@@ -4717,7 +4765,7 @@
                 }
               }
             },
-            "description": "The schedule, revision, setup, or idempotency key conflicts."
+            "description": "The schedule, revision, setup, ownership, or idempotency key conflicts."
           },
           "422": {
             "content": {
@@ -4750,6 +4798,22 @@
             "schema": {
               "title": "Blocker Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
             }
           },
           {
@@ -4806,7 +4870,7 @@
                 }
               }
             },
-            "description": "The schedule, revision, setup, or idempotency key conflicts."
+            "description": "The schedule, revision, setup, ownership, or idempotency key conflicts."
           },
           "422": {
             "content": {

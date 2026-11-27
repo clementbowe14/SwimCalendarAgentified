@@ -9,7 +9,7 @@ from app.dependencies import CoachContext, get_current_coach
 EXPECTED_CALENDAR_INSTRUCTOR_HEADER = "X-Expected-Instructor-Id"
 
 
-def get_google_calendar_coach(
+def get_expected_instructor_coach(
     coach: CoachContext = Depends(get_current_coach),
     expected_instructor: str | None = Header(None, alias=EXPECTED_CALENDAR_INSTRUCTOR_HEADER),
 ) -> CoachContext:

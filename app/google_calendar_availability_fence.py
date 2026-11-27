@@ -32,6 +32,7 @@ __all__ = (
     "GoogleCalendarAvailabilityFenceError",
     "claim_google_calendar_availability_fence",
     "revalidate_google_calendar_availability_fence",
+    "check_current_google_calendar_availability_fence",
     "lock_current_google_calendar_availability_fence",
 )
 
@@ -180,11 +181,27 @@ def lock_current_google_calendar_availability_fence(
     fence: GoogleCalendarAvailabilityFence,
 ) -> None:
     """Keep a checked calendar generation stable until the booking commits."""
+    _require_matching_fence(session, fence, lock=True)
+
+
+def check_current_google_calendar_availability_fence(
+    session: _Session,
+    *,
+    fence: GoogleCalendarAvailabilityFence,
+) -> None:
+    """Verify the calendar generation inside an existing consistent read."""
+    _require_matching_fence(session, fence, lock=False)
+
+
+def _require_matching_fence(session: _Session, fence: GoogleCalendarAvailabilityFence, *, lock: bool) -> None:
     try:
         expected = _validated_fence(fence)
         _, account_id, instructor_id, _, _ = expected
         with session.no_autoflush:
-            current = _read_locked_fence(session, instructor_id=instructor_id, account_id=account_id)
+            if lock:
+                current = _read_locked_fence(session, instructor_id=instructor_id, account_id=account_id)
+            else:
+                current = _read_calendar_fence(session, instructor_id=instructor_id, account_id=account_id, lock=False)
         if _validated_fence(current) == expected:
             return
     except (ValueError, SQLAlchemyError):
@@ -262,6 +279,16 @@ def _read_locked_fence(
     instructor_id: str,
     account_id: str | None,
 ) -> GoogleCalendarAvailabilityFence:
+    return _read_calendar_fence(session, instructor_id=instructor_id, account_id=account_id, lock=True)
+
+
+def _read_calendar_fence(
+    session: _Session,
+    *,
+    instructor_id: str,
+    account_id: str | None,
+    lock: bool,
+) -> GoogleCalendarAvailabilityFence:
     account_query = _select(
         ProviderAccountDB.id.label("account_id"),
         ProviderAccountDB.instructor_id,
@@ -274,7 +301,7 @@ def _read_locked_fence(
         )
     else:
         account_query = account_query.where(ProviderAccountDB.id == account_id)
-    account = session.execute(account_query.with_for_update()).one_or_none()
+    account = session.execute(account_query.with_for_update() if lock else account_query).one_or_none()
     if account is None:
         raise ValueError("missing calendar availability owner")
     persisted_account_id = _validated_identifier(account.account_id)
@@ -290,7 +317,7 @@ def _read_locked_fence(
     ):
         raise ValueError("inactive calendar availability owner")
 
-    connection = session.execute(
+    connection_query = (
         _select(
             ProviderCalendarConnectionDB.id.label("connection_id"),
             ProviderCalendarConnectionDB.account_id,
@@ -300,8 +327,8 @@ def _read_locked_fence(
         .where(
             ProviderCalendarConnectionDB.account_id == persisted_account_id
         )
-        .with_for_update()
-    ).one_or_none()
+    )
+    connection = session.execute(connection_query.with_for_update() if lock else connection_query).one_or_none()
     if connection is None:
         return _new_fence(
             state="disconnected",

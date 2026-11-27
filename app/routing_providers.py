@@ -5,6 +5,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
+from http.client import HTTPException
 from typing import Callable, Optional, Tuple
 
 from app import timezones
@@ -117,8 +118,8 @@ class MapboxRoutingProvider(BaseRoutingProvider):
             raise RoutingTimeout("Mapbox request timed out.") from exc
         except socket.timeout as exc:
             raise RoutingTimeout("Mapbox request timed out.") from exc
-        except json.JSONDecodeError as exc:
-            raise RoutingProviderUnavailable("Mapbox returned malformed JSON.") from exc
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise RoutingProviderUnavailable("Mapbox returned malformed JSON.") from None
         except urllib.error.HTTPError as exc:
             if exc.code in {401, 403}:
                 raise RoutingProviderNotConfigured("Mapbox credentials were rejected.") from exc
@@ -127,8 +128,8 @@ class MapboxRoutingProvider(BaseRoutingProvider):
             if operation == GEOCODE_OPERATION:
                 raise RoutingProviderUnavailable("Mapbox geocoding request failed.") from exc
             raise RouteEstimateFailed("Mapbox request failed.") from exc
-        except urllib.error.URLError as exc:
-            raise RoutingProviderUnavailable("Mapbox request failed.") from exc
+        except (urllib.error.URLError, HTTPException):
+            raise RoutingProviderUnavailable("Mapbox request failed.") from None
         if not isinstance(payload, dict):
             raise RoutingProviderUnavailable("Mapbox returned malformed JSON.")
         return payload

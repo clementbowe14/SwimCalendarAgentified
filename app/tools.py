@@ -3,7 +3,7 @@ import threading
 from typing import List, Optional
 
 from app import db, timezones
-from app.engine import BufferPolicy, SwimSchedulerConstraintEngine
+from app.engine import BufferPolicy, SchedulePosition, SwimSchedulerConstraintEngine
 from app.external_calendar import (
     CalendarBusySnapshot,
     CalendarBusySource,
@@ -221,6 +221,7 @@ def _find_available_swim_slots(
     internal_events = db.get_utc_appointment_events_for_date(
         instructor_id,
         date_str,
+        include_day_edges=True,
     )
     bounded_internal_events = clip_schedule_events(
         internal_events,
@@ -234,7 +235,9 @@ def _find_available_swim_slots(
         day_end=day_end,
         internal_events=bounded_internal_events,
     )
-    existing_events = [*bounded_internal_events, *external_events]
+    position, existing_events = working_schedule_context(
+        day_start, instructor_base_loc, [*internal_events, *external_events]
+    )
     policy = buffer_policy or load_buffer_policy(instructor_id, operation="availability")
     constraint_engine = SwimSchedulerConstraintEngine(
         routing_provider,
@@ -248,6 +251,7 @@ def _find_available_swim_slots(
         existing_events=existing_events,
         target_location=target_loc,
         duration_mins=duration_mins,
+        initial_position=position,
     )
 
     return [
@@ -278,6 +282,23 @@ def working_window_utc(
     if end <= start:
         return None
     return timezones.ensure_aware_utc(start), timezones.ensure_aware_utc(end)
+
+
+def working_schedule_context(
+    work_start: datetime.datetime,
+    base: LocationInfo,
+    events: List[dict],
+) -> tuple[SchedulePosition, List[dict]]:
+    """Keep the known location before work and travel anchors after it."""
+    position = SchedulePosition(work_start, (base.lat, base.lng))
+    working_events = []
+    for event in sorted(events, key=lambda event: (event["start_time"], event["end_time"])):
+        if event["end_time"] <= work_start:
+            if event.get("blocker_kind") != "external_calendar":
+                position = position.after_event(event)
+        else:
+            working_events.append({**event, "start_time": max(event["start_time"], work_start)})
+    return position, working_events
 
 
 def _external_busy_events(

@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from dataclasses import replace
 from functools import partial
 from types import SimpleNamespace
@@ -15,11 +15,13 @@ from app.calendar_credentials import CalendarCredentialCipher
 from app.engine import BufferPolicy, DistanceBufferTier
 from app.external_calendar import CalendarBusyInterval, CalendarBusySnapshot, ExternalCalendarTimeout
 from app.google_calendar_busy_source_factory import GoogleCalendarBusySourceFactory
-from app.models import AppointmentDB, InstructorDB, ProviderAccountDB, TimeSlotDTO
+from app.models import AppointmentDB, InstructorDB, ProviderAccountDB, ProviderWorkingHoursDB, SchedulerSettingsDB, TimeSlotDTO
 from app.provider_settings import ProviderLocation, ProviderService
 from app.routes import coach as coach_routes
-from app.routing import RoutingTimeout
-from app.scheduler_settings import InvalidSchedulerPolicy
+from app.routing import RouteEstimate, RoutingTimeout
+from app.routing_cache import CachingRoutingProvider, InMemoryRouteEstimateCache
+from app.routing_providers import MapboxRoutingProvider
+from app.scheduler_settings import InvalidSchedulerPolicy, default_scheduler_rules
 
 
 PATH = "/api/coach/agenda"
@@ -309,6 +311,32 @@ def test_leave_by_uses_the_route_at_the_published_departure(authenticated_api_cl
     assert departure + timedelta(minutes=next_up["travel_time_mins"] + next_up["buffer_mins"]) <= _hour(18)
 
 
+def test_leave_by_verifies_exact_departure_with_traffic_bucketing(authenticated_api_client, monkeypatch):
+    with db.SessionLocal.begin() as session:
+        provider = session.get(InstructorDB, PROVIDER)
+        provider.base_address, provider.base_lat, provider.base_lng = SERVICE
+        _add_event(session, "traffic-appointment", _hour(18), _hour(18, 45))
+
+    class TrafficProvider(MapboxRoutingProvider):
+        def estimate_route(self, origin, destination, departure_time=None, traffic_mode="none"):
+            assert traffic_mode == "live"
+            minutes = 0 if origin == destination else 25 if departure_time >= _hour(17, 50) else 8
+            return RouteEstimate(4, minutes, minutes * 60, "test")
+
+    routing = CachingRoutingProvider(
+        TrafficProvider("synthetic"), InMemoryRouteEstimateCache(), traffic_mode="live"
+    )
+    monkeypatch.setattr(tools, "routing_provider", routing)
+
+    next_up = _agenda(authenticated_api_client)["next_up"]
+    departure = datetime.fromisoformat(next_up["leave_by"])
+    assert departure == _hour(17, 35)
+    _, actual = routing.get_distance_and_travel_time_at_exact_departure(
+        SERVICE[1:], HOME[1:], departure_time=departure
+    )
+    assert departure + timedelta(minutes=actual + next_up["buffer_mins"]) <= _hour(18)
+
+
 def test_openings_account_for_adjacent_appointments_outside_working_hours(authenticated_api_client, monkeypatch):
     with db.SessionLocal.begin() as session:
         provider = session.get(InstructorDB, PROVIDER)
@@ -327,6 +355,71 @@ def test_openings_account_for_adjacent_appointments_outside_working_hours(authen
     agenda = _agenda(authenticated_api_client)
     openings = [item for item in agenda["items"] if item["kind"] == "open_gap"]
     assert [_interval(item) for item in openings] == [(_hour(13, 30), _hour(21, 30))]
+    available = tools.find_available_swim_slots(
+        PROVIDER, DAY.isoformat(), SERVICE[0], is_instructor_facility=True, duration_mins=45, buffer_policy=POLICY,
+    )
+    assert {datetime.fromisoformat(start) for item in openings for start in item["start_times"]} == {
+        slot.start_time for slot in available
+    }
+
+
+def test_midnight_endpoint_remains_a_routing_anchor_without_an_appointment_row(
+    authenticated_api_client, monkeypatch
+):
+    midnight = _hour(0) + timedelta(days=1)
+    with db.SessionLocal.begin() as session:
+        provider = session.get(InstructorDB, PROVIDER)
+        provider.timezone = "UTC"
+        provider.base_address, provider.base_lat, provider.base_lng = SERVICE
+        provider.service_address, provider.service_lat, provider.service_lng = SERVICE
+        provider.default_duration_mins = 45
+        hours = session.get(ProviderWorkingHoursDB, (PROVIDER, DAY.weekday()))
+        hours.end_time = time(23, 59)
+        _add_event(session, "tomorrow-at-midnight", midnight, midnight + timedelta(minutes=45))
+
+    def route(origin, destination, **_):
+        return (0, 0) if origin == destination else (4, 20)
+
+    monkeypatch.setattr(coach_agenda, "load_buffer_policy", lambda *_args, **_kwargs: POLICY)
+    monkeypatch.setattr(tools, "routing_provider", SimpleNamespace(get_distance_and_travel_time=route))
+
+    agenda = _agenda(authenticated_api_client)
+    assert all(item["id"] != "tomorrow-at-midnight" for item in agenda["items"])
+    assert next(item for item in agenda["items"] if item["kind"] == "travel")["travel_time_mins"] == 20
+    available = tools.find_available_swim_slots(
+        PROVIDER, DAY.isoformat(), SERVICE[0], is_instructor_facility=True, duration_mins=45, buffer_policy=POLICY,
+    )
+    assert available[-1].start_time == _hour(22, 45)
+    openings = [item for item in agenda["items"] if item["kind"] == "open_gap"]
+    assert datetime.fromisoformat(openings[-1]["start_times"][-1]) == available[-1].start_time
+
+
+def test_start_at_local_midnight_accounts_for_an_appointment_ending_at_midnight(
+    authenticated_api_client, monkeypatch
+):
+    midnight = _hour(0)
+    with db.SessionLocal.begin() as session:
+        provider = session.get(InstructorDB, PROVIDER)
+        provider.timezone = "UTC"
+        provider.base_address, provider.base_lat, provider.base_lng = SERVICE
+        provider.service_address, provider.service_lat, provider.service_lng = SERVICE
+        provider.default_duration_mins = 45
+        hours = session.get(ProviderWorkingHoursDB, (PROVIDER, DAY.weekday()))
+        hours.start_time = time(0)
+        hours.end_time = time(3)
+        _add_event(session, "yesterday-until-midnight", midnight - timedelta(minutes=45), midnight)
+
+    def route(origin, destination, **_):
+        return (0, 0) if origin == destination else (4, 20)
+
+    monkeypatch.setattr(coach_routes, "get_coach_agenda", partial(coach_agenda.get_coach_agenda, now=midnight))
+    monkeypatch.setattr(coach_agenda, "load_buffer_policy", lambda *_args, **_kwargs: POLICY)
+    monkeypatch.setattr(tools, "routing_provider", SimpleNamespace(get_distance_and_travel_time=route))
+
+    agenda = _agenda(authenticated_api_client)
+    assert all(item["id"] != "yesterday-until-midnight" for item in agenda["items"])
+    opening, = (item for item in agenda["items"] if item["kind"] == "open_gap")
+    assert datetime.fromisoformat(opening["start_times"][0]) == _hour(0, 30)
 
 
 def test_opening_bands_expose_only_verified_start_times():
@@ -382,3 +475,32 @@ def test_agenda_rechecks_state_and_clock_before_publishing_openings(authenticate
     else:
         assert agenda["status"] == "schedule_changed"
         assert [item["id"] for item in agenda["items"]] == (["new-blocker"] if change == "blocker" else [])
+
+
+def test_agenda_final_read_cannot_mix_schedule_and_policy_versions(authenticated_api_client, monkeypatch):
+    db.save_scheduler_settings(PROVIDER, default_scheduler_rules().model_dump(mode="json"))
+    routed = False
+    original_read_policy = db.get_scheduling_policy
+
+    def route(*_args, **_kwargs):
+        nonlocal routed
+        if not routed:
+            with db.SessionLocal.begin() as writer:
+                writer.get(SchedulerSettingsDB, PROVIDER).buffers_enabled = False
+            routed = True
+        return 0, 0
+
+    def update_during_final_policy_read(instructor_id, *, session=None):
+        if routed:
+            with db.SessionLocal.begin() as writer:
+                writer.get(SchedulerSettingsDB, PROVIDER).buffers_enabled = True
+                _add_event(writer, "blocker-while-reading-policy", _hour(16), _hour(17), location=None, blocker_kind="break")
+        return original_read_policy(instructor_id, session=session)
+
+    monkeypatch.setattr(tools, "routing_provider", SimpleNamespace(get_distance_and_travel_time=route))
+    monkeypatch.setattr(db, "get_scheduling_policy", update_during_final_policy_read)
+
+    agenda = _agenda(authenticated_api_client)
+    assert routed
+    assert agenda["status"] == "schedule_changed"
+    assert all(item["kind"] != "open_gap" for item in agenda["items"])

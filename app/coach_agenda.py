@@ -1,8 +1,9 @@
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from app import db, timezones, tools
 from app.api_errors import CalendarAvailabilityUnavailable, InvalidSchedulingRequest, ResourceNotFound
@@ -19,8 +20,8 @@ from app.api_services import coach_schedule_item
 from app.engine import BufferPolicy, InboundTransition, SchedulePosition, SwimSchedulerConstraintEngine, event_coordinates
 from app.external_calendar import CalendarBusySource, ExternalCalendarUnavailable, query_calendar_busy_snapshot
 from app.google_calendar_availability_fence import (
+    check_current_google_calendar_availability_fence,
     claim_google_calendar_availability_fence,
-    revalidate_google_calendar_availability_fence,
 )
 from app.models import LocationInfo, TimeSlotDTO
 from app.provider_settings import (
@@ -31,6 +32,7 @@ from app.provider_settings import (
     load_provider_configuration,
 )
 from app.routing import RoutingError
+from app.routing_cache import CachingRoutingProvider
 from app.scheduler_settings import InvalidSchedulerPolicy, load_buffer_policy
 
 
@@ -92,26 +94,30 @@ def get_coach_agenda(
     except (InvalidSchedulerPolicy, RoutingError, SQLAlchemyError):
         status = "routing_unavailable"
 
-    # External reads run outside a transaction. Do not publish a plan if
-    # appointments, working hours, the service location, or the policy changed.
+    # Compare the local inputs and calendar generation at one database snapshot.
+    # All network work is complete before this transaction starts.
     try:
-        latest = _read_agenda_day(load_provider_configuration(instructor_id), selected_date)
+        with db.SessionLocal() as session:
+            session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+            latest = _read_agenda_day(
+                load_provider_configuration(instructor_id, session=session),
+                selected_date,
+                session=session,
+            )
+            if latest != day:
+                return _known_agenda(latest, current_time(), "schedule_changed")
+            if plan is not None:
+                try:
+                    latest_policy = load_buffer_policy(instructor_id, operation="coach_agenda", session=session)
+                except InvalidSchedulerPolicy:
+                    status = "routing_unavailable"
+                    plan = None
+                else:
+                    if latest_policy != plan.policy:
+                        return _known_agenda(latest, current_time(), "schedule_changed")
+            check_current_google_calendar_availability_fence(session, fence=fence)
     except (ProviderNotFound, SQLAlchemyError):
         return _known_agenda(day, current_time(), "schedule_changed")
-    if latest != day:
-        return _known_agenda(latest, current_time(), "schedule_changed")
-    if plan is not None:
-        try:
-            latest_policy = load_buffer_policy(instructor_id, operation="coach_agenda")
-        except InvalidSchedulerPolicy:
-            status = "routing_unavailable"
-            plan = None
-        else:
-            if latest_policy != plan.policy:
-                return _known_agenda(latest, current_time(), "schedule_changed")
-
-    try:
-        revalidate_google_calendar_availability_fence(db.SessionLocal, fence=fence)
     except ExternalCalendarUnavailable:
         return _known_agenda(latest, current_time(), "calendar_unavailable")
 
@@ -140,7 +146,9 @@ def _agenda_timezone(provider: ProviderConfiguration) -> str:
     return provider.timezone
 
 
-def _read_agenda_day(provider: ProviderConfiguration, selected_date: date) -> AgendaDay:
+def _read_agenda_day(
+    provider: ProviderConfiguration, selected_date: date, *, session: Session | None = None
+) -> AgendaDay:
     timezone_name = _agenda_timezone(provider)
     try:
         start, end = timezones.local_day_window_utc_storage(selected_date, timezone_name)
@@ -153,7 +161,8 @@ def _read_agenda_day(provider: ProviderConfiguration, selected_date: date) -> Ag
         start=timezones.storage_to_aware_utc(start),
         end=timezones.storage_to_aware_utc(end),
         events=db.get_utc_appointment_events_for_date(
-            provider.id, selected_date.isoformat(), timezone_name=timezone_name
+            provider.id, selected_date.isoformat(), timezone_name=timezone_name,
+            include_day_edges=True, session=session,
         ),
     )
 
@@ -190,21 +199,14 @@ def _working_plan(day: AgendaDay, external: list[dict], now: datetime) -> Workin
     work_start, work_end = window
     base = _scheduler_location(provider.base_location, is_facility=False)
     target = _scheduler_location(service.location, is_facility=True)
-    position = SchedulePosition(work_start, (base.lat, base.lng))
-    working_events = []
-    for event in sorted([*day.events, *external], key=lambda event: event["start_time"]):
-        if event["end_time"] <= work_start:
-            if event.get("blocker_kind") != "external_calendar":
-                position = position.after_event(event)
-        else:
-            # Keep the actual end and the following appointments for outbound travel.
-            working_events.append({**event, "start_time": max(event["start_time"], work_start)})
-    position = replace(position, free_at=work_start)
+    bounded_busy = tools.clip_schedule_events(external, day_start=work_start, day_end=work_end)
+    position, working_events = tools.working_schedule_context(work_start, base, [*day.events, *bounded_busy])
     policy = load_buffer_policy(provider.id, operation="coach_agenda")
     engine = SwimSchedulerConstraintEngine(tools.routing_provider, policy, timezone_name=day.timezone)
+    _, transition_events = tools.working_schedule_context(work_start, base, [*day.events, *external])
     transitions, arrivals = _planned_transitions(
         engine,
-        working_events,
+        transition_events,
         original_starts={event["id"]: event["start_time"] for event in day.events},
         position=position,
     )
@@ -284,14 +286,18 @@ def _verified_departure(
     coordinates: tuple[float, float],
     appointment_start: datetime,
 ) -> tuple[datetime, InboundTransition] | None:
-    earliest = engine.inbound_transition(position, coordinates)
+    route = engine.routing
+    exact_estimate = route.get_distance_and_travel_time_at_exact_departure if isinstance(route, CachingRoutingProvider) else None
+    earliest = engine.inbound_transition(position, coordinates, route_estimator=exact_estimate)
     departure = appointment_start - earliest.duration
     # Traffic can differ between the first free instant and a later departure.
     # Try at most two later quotes, then keep the earliest verified departure.
     for _ in range(2):
         if departure <= position.free_at:
             break
-        estimate = engine.inbound_transition(position, coordinates, departure_time=departure)
+        estimate = engine.inbound_transition(
+            position, coordinates, departure_time=departure, route_estimator=exact_estimate
+        )
         if departure + estimate.duration <= appointment_start:
             return departure, estimate
         departure = appointment_start - estimate.duration

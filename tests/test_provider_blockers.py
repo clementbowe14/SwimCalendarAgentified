@@ -48,6 +48,31 @@ def test_blocker_schema_and_database_constraints_are_installed(migrated_postgres
     }.issubset(checks)
 
 
+def test_blocker_operations_verify_expected_session_owner(authenticated_api_client):
+    client = authenticated_api_client
+    collection = "/api/coach/blockers"
+    owner = {"X-Expected-Instructor-Id": "inst_001"}
+    created = client.post(
+        collection, json=_blocker_payload(), headers={**owner, "Idempotency-Key": "owner-check-first"}
+    )
+    assert created.status_code == 201, created.text
+    blocker = created.json()
+    item = f"{collection}/{blocker['id']}"
+    date_path = f"{collection}?date=2026-08-21"
+    stale = {"X-Expected-Instructor-Id": "previous-session-provider", "Idempotency-Key": "owner-check-stale"}
+
+    responses = [
+        client.get(date_path, headers=stale),
+        client.post(collection, json=_blocker_payload(start_time="13:00", end_time="13:30"), headers=stale),
+        client.put(item, json=_blocker_payload(title="Changed", expected_revision=1), headers=stale),
+        client.delete(f"{item}?expected_revision=1", headers=stale),
+    ]
+    for response in responses:
+        assert response.status_code == 409, response.text
+        assert response.json()["error"]["code"] == "CALENDAR_CONNECTION_OWNER_CHANGED"
+    assert client.get(date_path, headers=owner).json() == [blocker]
+
+
 def test_provider_can_create_edit_list_and_remove_blockers(authenticated_api_client):
     created = authenticated_api_client.post(
         "/api/coach/blockers",

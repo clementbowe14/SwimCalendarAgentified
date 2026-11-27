@@ -5,6 +5,8 @@ import math
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
+from sqlalchemy.orm import Session
+
 from app import db, timezones
 from app.models import InstructorDB, ProviderWorkingHoursDB
 
@@ -86,21 +88,20 @@ class ProviderConfiguration:
         )
 
 
-def load_provider_configuration(instructor_id: str) -> ProviderConfiguration:
-    session = db.SessionLocal()
-    try:
-        instructor = session.get(InstructorDB, instructor_id)
+def load_provider_configuration(
+    instructor_id: str, *, session: Session | None = None
+) -> ProviderConfiguration:
+    with db.read_session(session) as reading:
+        instructor = reading.get(InstructorDB, instructor_id)
         if instructor is None:
             raise ProviderNotFound()
         hour_rows = (
-            session.query(ProviderWorkingHoursDB)
+            reading.query(ProviderWorkingHoursDB)
             .filter_by(instructor_id=instructor_id)
             .order_by(ProviderWorkingHoursDB.weekday.asc())
             .all()
         )
         return _configuration_from_rows(instructor, hour_rows)
-    finally:
-        session.close()
 
 
 def require_provider_setup(instructor_id: str) -> ProviderConfiguration:

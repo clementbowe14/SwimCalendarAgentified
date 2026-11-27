@@ -1,7 +1,7 @@
 import datetime
 import math
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from app import timezones
 from app.models import LocationInfo, TimeSlotDTO
@@ -198,6 +198,7 @@ class SwimSchedulerConstraintEngine:
                     outbound_departure_time=outbound_departure,
                     outbound_deadline=outbound_deadline,
                     target_coords=target_coords,
+                    day_start=day_start,
                     day_end=day_end,
                     lesson_delta=lesson_delta,
                 )
@@ -212,6 +213,7 @@ class SwimSchedulerConstraintEngine:
                 outbound_departure_time=None,
                 outbound_deadline=None,
                 target_coords=target_coords,
+                day_start=day_start,
                 day_end=day_end,
                 lesson_delta=lesson_delta,
             )
@@ -224,8 +226,10 @@ class SwimSchedulerConstraintEngine:
         target_coords: Tuple[float, float],
         *,
         departure_time: datetime.datetime | None = None,
+        route_estimator: Callable[..., Tuple[float, int]] | None = None,
     ) -> InboundTransition:
-        distance, travel = self.routing.get_distance_and_travel_time(
+        estimate = route_estimator or self.routing.get_distance_and_travel_time
+        distance, travel = estimate(
             position.coordinates,
             target_coords,
             departure_time=departure_time if departure_time is not None else position.free_at,
@@ -251,16 +255,20 @@ class SwimSchedulerConstraintEngine:
         outbound_departure_time: Optional[datetime.datetime],
         outbound_deadline: Optional[datetime.datetime],
         target_coords: Tuple[float, float],
+        day_start: datetime.datetime,
         day_end: datetime.datetime,
         lesson_delta: datetime.timedelta,
     ) -> List[TimeSlotDTO]:
         slots = []
+        # Skip occupied gaps before asking the routing provider for an estimate.
+        latest_gap_end = min(next_start_time, day_end)
+        if max(day_start, position.free_at) + lesson_delta > latest_gap_end:
+            return slots
         transition = self.inbound_transition(position, target_coords)
-        raw_start = position.free_at + transition.duration
+        raw_start = max(day_start, position.free_at + transition.duration)
         current_candidate = self.buffer_policy.ceil_datetime(raw_start, self.timezone_name)
         # A locationless blocker is still a temporal boundary. Location only
         # controls whether outbound travel to the next event must fit.
-        latest_gap_end = min(next_start_time, day_end)
         increment = datetime.timedelta(minutes=SLOT_INCREMENT_MINUTES)
 
         while current_candidate + lesson_delta <= latest_gap_end:

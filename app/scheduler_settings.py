@@ -3,6 +3,7 @@ import logging
 
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from app import db
 from app.api_schemas import (
@@ -66,9 +67,10 @@ def load_scheduling_policy(
     instructor_id: str,
     *,
     operation: str,
+    session: Session | None = None,
 ) -> CoachSchedulingPolicyResponse:
     try:
-        saved = db.get_scheduling_policy(instructor_id)
+        saved = db.get_scheduling_policy(instructor_id, session=session)
         if saved is None:
             return default_scheduling_policy()
         return CoachSchedulingPolicyResponse.model_validate(
@@ -126,8 +128,10 @@ def to_buffer_policy(policy: CoachSchedulingPolicyResponse) -> BufferPolicy:
     )
 
 
-def load_buffer_policy(instructor_id: str, *, operation: str) -> BufferPolicy:
-    return to_buffer_policy(load_scheduling_policy(instructor_id, operation=operation))
+def load_buffer_policy(
+    instructor_id: str, *, operation: str, session: Session | None = None
+) -> BufferPolicy:
+    return to_buffer_policy(load_scheduling_policy(instructor_id, operation=operation, session=session))
 
 
 def save_scheduling_policy(

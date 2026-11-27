@@ -221,6 +221,12 @@ def test_openapi_contract_includes_public_and_coach_routes():
         blocker_delete,
     )
     for operation in blocker_operations:
+        assert any(
+            parameter["in"] == "header"
+            and parameter["name"] == "X-Expected-Instructor-Id"
+            and not parameter["required"]
+            for parameter in operation["parameters"]
+        )
         for status in ("404", "409", "422"):
             assert operation["responses"][status]["content"]["application/json"]["schema"] == {
                 "$ref": "#/components/schemas/ErrorResponse"
