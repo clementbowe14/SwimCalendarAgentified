@@ -1,13 +1,17 @@
 import datetime
 import hashlib
+import json
+from collections.abc import Callable
 from typing import Optional
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import Session
 
 from app import db, timezones, tools
 from app.calendar_handoff import calendar_ics, calendar_links
 from app.notifications import public_notifications
 from app.api_errors import (
+    AvailabilitySearchBudgetExceeded,
     CalendarAvailabilityUnavailable,
     CalendarLinksUnavailable,
     GeocodingFailed as GeocodingFailedApiError,
@@ -32,6 +36,8 @@ from app.google_calendar_availability_fence import (
 from app.api_schemas import (
     ClientInviteAvailabilityRequest,
     ClientInviteAvailabilityResponse,
+    ClientInviteAvailabilityRangeRequest,
+    ClientInviteAvailabilityRangeResponse,
     ClientInviteCalendarLinks,
     ClientInviteEnvelopeResponse,
     ClientInviteIntake,
@@ -40,10 +46,12 @@ from app.api_schemas import (
     ClientInviteLessonRequestCreate,
     ClientInviteLessonRequestResponse,
     ClientInviteLocation,
+    ClientInviteOneTimeSlot,
     ClientInviteSchedulerSlot,
     ClientInviteUnavailableWindow,
 )
-from app.models import AppointmentDB, InviteIntakeDB, InviteSlotOfferDB, LessonRequestDB, TimeSlotDTO
+from app.availability_search import search_one_time_availability
+from app.models import AppointmentDB, InviteIntakeDB, InviteSlotOfferDB, LessonRequestDB, LocationInfo, TimeSlotDTO
 from app.provider_settings import (
     ProviderConfiguration,
     ProviderNotFound,
@@ -52,10 +60,13 @@ from app.provider_settings import (
     service_location_matches,
 )
 from app.public_tokens import (
+    RANGE_SLOT_OFFER_PREFIX,
     InviteContext,
     create_lesson_request,
     demo_invite_is_enabled,
+    is_range_slot_offer,
     require_active_invite,
+    require_active_search_offer,
     require_unprovisioned_invite_instructor,
     resolve_invite,
     resolve_lesson_request_by_idempotency_key,
@@ -124,6 +135,7 @@ def search_client_invite_slots(
 ) -> ClientInviteAvailabilityResponse:
     is_facility = request.location.is_instructor_facility or request.location.address.lower() == "facility"
     location = _resolve_location(invite.instructor_id, request.location, is_facility)
+    target_location = LocationInfo(**location.model_dump())
     timezone_name = _instructor_timezone(invite.instructor_id)
     buffer_policy = (
         load_buffer_policy(invite.instructor_id, operation="availability")
@@ -142,6 +154,7 @@ def search_client_invite_slots(
             duration_mins=request.duration_mins,
             buffer_policy=buffer_policy,
             calendar_busy_source=calendar_busy_source,
+            target_location=target_location,
         )
 
     try:
@@ -183,7 +196,10 @@ def _present_slot_offers(
         _shape_slot(invite, request, location, slot, timezone_name)
         for slot in slots
     ]
-    _save_slot_offers(invite, request, location, is_facility, list(zip(slots, response_slots)), fence)
+    _save_slot_offers(
+        invite, location, is_facility,
+        [(request, slot, shaped) for slot, shaped in zip(slots, response_slots)], fence,
+    )
     return ClientInviteAvailabilityResponse(
         status="PRESENTING",
         dialogue_response="Here are the appointment times available to request.",
@@ -192,31 +208,105 @@ def _present_slot_offers(
     )
 
 
+def search_client_invite_availability_range(
+    invite: InviteContext,
+    request: ClientInviteAvailabilityRangeRequest,
+    *,
+    build_calendar_source: Callable[[Callable[[], Session]], CalendarBusySource] | None,
+) -> ClientInviteAvailabilityRangeResponse:
+    try:
+        if request.duration_mins not in invite.allowed_durations_mins:
+            raise InvalidSchedulingRequest("Choose one of the available appointment lengths.")
+        result = search_one_time_availability(
+            invite.instructor_id, request,
+            client_address=request.client_address or "",
+            is_instructor_facility=request.is_instructor_facility,
+            build_calendar_source=build_calendar_source,
+        )
+        location = ClientInviteLocation(**result.location.model_dump())
+        persisted_request = ClientInviteAvailabilityRequest(
+            client_name=request.client_name,
+            location=location,
+            requested_date=result.start_date,
+            duration_mins=request.duration_mins,
+        )
+        offers = []
+        response_slots = []
+        for slot in result.slots:
+            offer_request = persisted_request.model_copy(update={"requested_date": slot.start_time.date()})
+            offer = _shape_slot(invite, offer_request, location, slot, result.timezone, one_time_range=True)
+            offers.append((offer_request, slot, offer))
+            response_slots.append(ClientInviteOneTimeSlot(
+                id=offer.id, start_iso=offer.start_iso, end_iso=offer.end_iso,
+                display=offer.display,
+                location_address=offer.location_address,
+            ))
+        if offers:
+            _save_slot_offers(
+                invite, location, request.is_instructor_facility, offers, result.calendar_fence,
+                session_factory=result.session_factory,
+            )
+        else:
+            with result.session_factory() as session:
+                require_active_invite(session, invite.token, instructor_id=invite.instructor_id)
+        return ClientInviteAvailabilityRangeResponse(
+            start_date=result.start_date, end_date=result.end_date, duration_mins=request.duration_mins,
+            slots=response_slots,
+        )
+    except ExternalCalendarUnavailable:
+        pass
+    except GeocodeFailed:
+        raise GeocodingFailedApiError({"field": "client_address"}) from None
+    except RoutingTimeout:
+        raise RoutingTimeoutApiError() from None
+    except RoutingProviderUnavailable:
+        raise RoutingProviderUnavailableApiError() from None
+    except RoutingProviderNotConfigured:
+        raise RoutingConfigurationError() from None
+    except RouteEstimateFailed:
+        raise RoutingEstimateFailedApiError() from None
+    except (ProviderSetupIncomplete, ProviderNotFound):
+        raise ProviderSetupRequired(public=True) from None
+    except OperationalError as exc:
+        if getattr(exc.orig, "sqlstate", None) in {"55P03", "57014"}:
+            raise AvailabilitySearchBudgetExceeded() from None
+        raise
+    finally:
+        del build_calendar_source
+    raise CalendarAvailabilityUnavailable() from None
+
+
 def request_client_invite_lesson_slot(
     invite_token: str,
     request: ClientInviteLessonRequestCreate,
 ) -> ClientInviteLessonRequestResponse:
     invite = resolve_invite(invite_token)
-    offer = _load_active_offer(invite.token, request.slot_id)
+    with db.SessionLocal() as session:
+        offer = require_active_search_offer(session, invite.token, invite.instructor_id, request.slot_id)
+        session.expunge(offer)
     if offer.recurrence == "weekly" and not offer.recurrence_available:
         raise InvalidSchedulingRequest("The selected lesson time is not available for weekly booking.")
     idempotency_key = request.idempotency_key or f"public-slot:{invite.token}:{request.slot_id}"
     existing = resolve_lesson_request_by_idempotency_key(idempotency_key)
     if existing is not None:
-        if existing.invite_token != invite.token or existing.original_slot_offer_id != offer.id:
+        if (
+            existing.invite_token != invite.token
+            or existing.instructor_id != invite.instructor_id
+            or existing.original_slot_offer_id != offer.id
+        ):
             raise IdempotencyConflict()
         return _lesson_request_response(existing.request_token)
 
     provider = _require_public_provider_setup(offer.instructor_id)
     _validate_current_facility_offer(offer, provider)
     policy = load_buffer_policy(invite.instructor_id, operation="client_invite_request_creation")
-    _validate_offer_occurrences(offer, policy, provider.timezone)
+    location = _validate_offer_occurrences(offer, policy, provider.timezone)
     try:
         record = create_lesson_request(
             invite_token=invite.token,
             instructor_id=invite.instructor_id,
             client_name=offer.client_name,
-            client_address=offer.client_address,
+            client_address=location.address,
             requested_date=offer.requested_date,
             selected_slot_start=offer.slot_start,
             selected_slot_end=offer.slot_end,
@@ -225,8 +315,8 @@ def request_client_invite_lesson_slot(
             buffer_mins=offer.buffer_mins,
             distance_miles=offer.distance_miles,
             location_type=offer.location_type,
-            lat=offer.lat,
-            lng=offer.lng,
+            lat=location.lat,
+            lng=location.lng,
             idempotency_key=idempotency_key,
             recurrence=offer.recurrence,
             recurrence_count=offer.recurrence_count,
@@ -291,13 +381,15 @@ def select_client_lesson_request_alternative(
             lesson_request.instructor_id,
             operation="client_invite_alternative_selection",
         )
-        _validate_offer_occurrences(offer, policy, provider.timezone)
+        location = _validate_offer_occurrences(offer, policy, provider.timezone)
         lesson_request.slot_start = offer.slot_start
         lesson_request.slot_end = offer.slot_end
         lesson_request.requested_date = offer.requested_date
         lesson_request.travel_time_mins = offer.travel_time_mins
         lesson_request.buffer_mins = offer.buffer_mins
         lesson_request.distance_miles = offer.distance_miles
+        lesson_request.client_address = location.address
+        lesson_request.lat, lesson_request.lng = location.lat, location.lng
         lesson_request.original_slot_offer_id = offer.id
         lesson_request.confirmed_slot_offer_id = None
         lesson_request.status = "pending"
@@ -336,6 +428,8 @@ def _find_slots(
     buffer_policy: Optional[BufferPolicy] = None,
     *,
     calendar_busy_source: CalendarBusySource | None = None,
+    requested_start: datetime.datetime | None = None,
+    target_location: LocationInfo | None = None,
 ) -> list[TimeSlotDTO]:
     try:
         return tools.find_available_swim_slots(
@@ -346,6 +440,8 @@ def _find_slots(
             duration_mins=duration_mins,
             buffer_policy=buffer_policy,
             calendar_busy_source=calendar_busy_source,
+            requested_start=requested_start,
+            target_location=target_location,
         )
     except ExternalCalendarUnavailable:
         pass
@@ -373,20 +469,32 @@ def _validate_offer_occurrences(
     offer: InviteSlotOfferDB,
     buffer_policy: BufferPolicy,
     timezone_name: str,
-) -> None:
+) -> LocationInfo:
     base_local = timezones.storage_to_local(offer.slot_start, timezone_name)
     count = offer.recurrence_count if offer.recurrence == "weekly" else 1
+    if base_local.date() != offer.requested_date:
+        raise InvalidSchedulingRequest("The selected lesson time is no longer available.")
+    at_facility = offer.location_type == "facility"
+    if at_facility or is_range_slot_offer(offer.id):
+        location = LocationInfo(
+            address=offer.location_address, lat=offer.lat, lng=offer.lng, is_instructor_facility=at_facility,
+        )
+    else:
+        resolved = _resolve_location(offer.instructor_id, ClientInviteLocation(address=offer.location_address), False)
+        location = LocationInfo(**resolved.model_dump())
     for index in range(count):
-        local_label = base_local.replace(tzinfo=None) + datetime.timedelta(days=7 * index)
-        try:
-            occurrence = timezones.validate_local_datetime(local_label, timezone_name)
-        except (
-            timezones.AmbiguousLocalTimeError,
-            timezones.NonexistentLocalTimeError,
-        ) as exc:
-            raise InvalidSchedulingRequest(
-                "The selected lesson time is no longer available."
-            ) from exc
+        occurrence = base_local
+        if offer.recurrence == "weekly":
+            local_label = base_local.replace(tzinfo=None) + datetime.timedelta(days=7 * index)
+            try:
+                occurrence = timezones.validate_local_datetime(local_label, timezone_name)
+            except (
+                timezones.AmbiguousLocalTimeError,
+                timezones.NonexistentLocalTimeError,
+            ) as exc:
+                raise InvalidSchedulingRequest(
+                    "The selected lesson time is no longer available."
+                ) from exc
         slots = _find_slots(
             instructor_id=offer.instructor_id,
             requested_date=occurrence.date(),
@@ -394,10 +502,13 @@ def _validate_offer_occurrences(
             is_instructor_facility=offer.location_type == "facility",
             duration_mins=offer.duration_mins,
             buffer_policy=buffer_policy,
+            requested_start=occurrence,
+            target_location=location,
         )
         occurrence_storage = timezones.to_utc_storage(occurrence)
         if not any(timezones.to_utc_storage(slot.start_time) == occurrence_storage for slot in slots):
             raise InvalidSchedulingRequest("The selected lesson time is no longer available.")
+    return location
 
 
 def _validate_current_facility_offer(
@@ -444,8 +555,6 @@ def _resolve_location(
             lng=provider.service_location.lng,
             is_instructor_facility=True,
         )
-    if location.lat is not None and location.lng is not None:
-        return location
     try:
         lat, lng = tools.routing_provider.geocode(location.address)
     except GeocodeFailed as exc:
@@ -558,17 +667,19 @@ def _shape_slot(
     location: ClientInviteLocation,
     slot: TimeSlotDTO,
     timezone_name: str,
+    *,
+    one_time_range: bool = False,
 ) -> ClientInviteSchedulerSlot:
     local_start = timezones.aware_to_local(slot.start_time, timezone_name)
     local_end = timezones.aware_to_local(slot.end_time, timezone_name)
-    slot_id = _slot_id(invite.token, request, slot.start_time)
+    slot_id = _slot_id(invite.token, request, slot.start_time, range_location=location if one_time_range else None)
     return ClientInviteSchedulerSlot(
         id=slot_id,
         start_iso=local_start,
         end_iso=local_end,
-        display=_display_slot(local_start),
+        display=_display_slot(local_start, timezone_label=local_start.tzname() if one_time_range else None),
         location_address=location.address,
-        recurrence_available=True,
+        recurrence_available=not one_time_range,
         recurrence=request.recurrence,
         recurrence_count=WEEKLY_OCCURRENCE_COUNT if request.recurrence == "weekly" else 1,
     )
@@ -576,20 +687,21 @@ def _shape_slot(
 
 def _save_slot_offers(
     invite: InviteContext,
-    request: ClientInviteAvailabilityRequest,
     location: ClientInviteLocation,
     is_facility: bool,
-    offers: list[tuple[TimeSlotDTO, ClientInviteSchedulerSlot]],
+    offers: list[tuple[ClientInviteAvailabilityRequest, TimeSlotDTO, ClientInviteSchedulerSlot]],
     fence: GoogleCalendarAvailabilityFence | None,
+    *,
+    session_factory: Callable[[], Session] | None = None,
 ) -> None:
-    with db.SessionLocal() as session:
+    with (session_factory or db.SessionLocal)() as session:
         for attempt in range(2):
             try:
                 with session.begin():
                     require_active_invite(session, invite.token, instructor_id=invite.instructor_id, lock=True)
                     if fence is None:
                         require_unprovisioned_invite_instructor(session, invite.instructor_id)
-                    for slot, shaped in offers:
+                    for request, slot, shaped in offers:
                         _upsert_slot_offer(session, invite, request, location, slot, shaped, is_facility)
                     if fence is not None:
                         session.flush()
@@ -638,28 +750,6 @@ def _upsert_slot_offer(
     existing.notified_at = None
     existing.expires_at = datetime.datetime.utcnow() + datetime.timedelta(minutes=SLOT_OFFER_TTL_MINUTES)
     existing.updated_at = datetime.datetime.utcnow()
-
-
-def _load_active_offer(invite_token: str, slot_id: str) -> InviteSlotOfferDB:
-    session = db.SessionLocal()
-    try:
-        offer = (
-            session.query(InviteSlotOfferDB)
-            .filter(
-                InviteSlotOfferDB.id == slot_id,
-                InviteSlotOfferDB.invite_token == invite_token,
-                InviteSlotOfferDB.offer_kind == "search",
-                InviteSlotOfferDB.lesson_request_id.is_(None),
-                InviteSlotOfferDB.expires_at > datetime.datetime.utcnow(),
-            )
-            .first()
-        )
-        if offer is None:
-            raise SlotOfferNotFound()
-        session.expunge(offer)
-        return offer
-    finally:
-        session.close()
 
 
 def _lesson_request_response(request_token: str) -> ClientInviteLessonRequestResponse:
@@ -783,20 +873,31 @@ def _unavailable_windows(
     ]
 
 
-def _slot_id(invite_token: str, request: ClientInviteAvailabilityRequest, slot_start: datetime.datetime) -> str:
-    raw = "|".join(
-        [
-            invite_token,
-            request.client_name.strip().lower(),
-            request.location.address.strip().lower(),
-            request.requested_date.isoformat(),
-            timezones.canonical_instant_text(slot_start),
-            str(request.duration_mins),
-            request.recurrence,
-            str(WEEKLY_OCCURRENCE_COUNT if request.recurrence == "weekly" else 1),
-        ]
-    )
-    return f"slot_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]}"
+def _slot_id(
+    invite_token: str,
+    request: ClientInviteAvailabilityRequest,
+    slot_start: datetime.datetime,
+    *,
+    range_location: ClientInviteLocation | None = None,
+) -> str:
+    fields = [
+        invite_token,
+        request.client_name.strip().lower(),
+        request.location.address.strip().lower(),
+        request.requested_date.isoformat(),
+        timezones.canonical_instant_text(slot_start),
+        str(request.duration_mins),
+        request.recurrence,
+        str(WEEKLY_OCCURRENCE_COUNT if request.recurrence == "weekly" else 1),
+    ]
+    if range_location is None:
+        raw = "|".join(fields)
+        prefix = "slot_"
+    else:
+        mode = "facility" if range_location.is_instructor_facility else "home"
+        raw = json.dumps([*fields, mode, range_location.lat, range_location.lng], separators=(",", ":"))
+        prefix = RANGE_SLOT_OFFER_PREFIX
+    return f"{prefix}{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]}"
 
 
 def _slot_id_from_request(request: LessonRequestDB) -> str:

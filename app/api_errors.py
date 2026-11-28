@@ -14,6 +14,13 @@ from app.google_calendar_oauth import (
 COACH_AVAILABILITY_RANGE_PATH = "/api/coach/availability/search"
 
 
+def is_availability_search_path(path: str) -> bool:
+    path = path.rstrip("/")
+    return path == COACH_AVAILABILITY_RANGE_PATH or (
+        path.startswith("/api/public/client-invites/") and path.endswith("/availability/search")
+    )
+
+
 class ApiException(Exception):
     def __init__(
         self,
@@ -327,7 +334,7 @@ async def api_exception_handler(request: Request, exc: ApiException) -> JSONResp
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     path = google_calendar_oauth_route_path(request.scope["path"], request.scope.get("root_path", "")).rstrip("/")
-    redact_inputs = path.startswith("/api/auth/coach") or path == COACH_AVAILABILITY_RANGE_PATH
+    redact_inputs = path.startswith("/api/auth/coach") or is_availability_search_path(path)
     details = {
         "fields": [
             _serializable_validation_error(error, redact_input=redact_inputs)

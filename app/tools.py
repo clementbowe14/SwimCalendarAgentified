@@ -20,6 +20,7 @@ from app.provider_settings import (
     ProviderSetupIncomplete,
     load_provider_configuration,
     require_provider_setup,
+    service_location_matches,
     working_interval_for_date,
 )
 from app.routing import BaseRoutingProvider, RoutingProviderNotConfigured
@@ -156,10 +157,11 @@ def find_available_swim_slots(
     *,
     calendar_busy_source: Optional[CalendarBusySource] = None,
     requested_start: datetime.datetime | None = None,
+    target_location: LocationInfo | None = None,
 ) -> List[TimeSlotDTO]:
     """Find valid slots without retaining a secret-bearing busy source."""
 
-    try: source_handoff: list[Optional[CalendarBusySource]] = [calendar_busy_source]; calendar_busy_source = None; return _find_available_swim_slots(instructor_id, date_str, client_address, is_instructor_facility, duration_mins, buffer_policy, source_handoff, requested_start)
+    try: source_handoff: list[Optional[CalendarBusySource]] = [calendar_busy_source]; calendar_busy_source = None; return _find_available_swim_slots(instructor_id, date_str, client_address, is_instructor_facility, duration_mins, buffer_policy, source_handoff, requested_start, target_location)
     finally:
         try: calendar_busy_source = None; _clear_optional_calendar_busy_source_handoff(locals().get("source_handoff"))
         except BaseException:
@@ -179,6 +181,7 @@ def _find_available_swim_slots(
     buffer_policy: Optional[BufferPolicy],
     calendar_busy_source_handoff: list[Optional[CalendarBusySource]],
     requested_start: datetime.datetime | None,
+    target_location: LocationInfo | None,
 ) -> List[TimeSlotDTO]:
     """
     Finds all valid swim lesson slots for a given client request on a specific date.
@@ -200,7 +203,11 @@ def _find_available_swim_slots(
         return []
     day_start, day_end = working_window
 
-    target_loc = resolve_availability_location(provider, client_address, is_instructor_facility)
+    if target_location is not None and target_location.is_instructor_facility and not service_location_matches(
+        provider, address=target_location.address, lat=target_location.lat, lng=target_location.lng,
+    ):
+        return []
+    target_loc = target_location or resolve_availability_location(provider, client_address, is_instructor_facility)
     internal_events = routing_events_for_date(instructor_id, target_date, provider.timezone)
     busy_start, busy_end = routing_calendar_window(day_start, day_end, internal_events)
     external_events = _external_busy_events(

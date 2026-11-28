@@ -899,28 +899,37 @@ AvailabilityEmptyReason = Literal["no_working_hours", "outside_client_windows", 
 class OneTimeAvailabilityCriteria(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    start_date: date
-    end_date: date
+    start_date: date | None = None
+    end_date: date | None = None
     windows: list[CoachClientAvailabilityWindowMutation] = Field(default_factory=list, max_length=64)
     duration_mins: int = Field(default=60, ge=15, le=240, multiple_of=15)
     limit: int = Field(default=24, ge=1, le=48)
 
     @model_validator(mode="after")
     def validate_date_range(self) -> "OneTimeAvailabilityCriteria":
+        if self.start_date is None and self.end_date is None:
+            return self
+        if self.start_date is None or self.end_date is None:
+            raise ValueError("Provide both the start and end dates.")
         if not 0 <= (self.end_date - self.start_date).days < PILOT_AVAILABILITY_DAYS:
             raise ValueError("Choose a date range of 1 to 14 days.")
         return self
 
 
-class CoachAvailabilityRangeRequest(OneTimeAvailabilityCriteria):
+class OneTimeAvailabilityRequest(OneTimeAvailabilityCriteria):
     client_address: str | None = Field(default=None, max_length=300)
     is_instructor_facility: bool = False
 
     @model_validator(mode="after")
-    def validate_location(self) -> "CoachAvailabilityRangeRequest":
+    def validate_location(self) -> "OneTimeAvailabilityRequest":
         if not self.is_instructor_facility:
             self.client_address = CoachClientLocationMutation(address=self.client_address or "").address
         return self
+
+
+class CoachAvailabilityRangeRequest(OneTimeAvailabilityRequest):
+    start_date: date = Field()
+    end_date: date = Field()
 
 
 class CoachAvailabilityRangeResponse(BaseModel):
@@ -1113,12 +1122,26 @@ class ClientInviteUnavailableWindow(BaseModel):
     label: str
 
 
-class ClientInviteSchedulerSlot(BaseModel):
+class ClientInviteAvailabilityRangeRequest(OneTimeAvailabilityRequest):
+    client_name: str = Field(min_length=1, max_length=120)
+
+
+class ClientInviteOneTimeSlot(BaseModel):
     id: str
     start_iso: datetime
     end_iso: datetime
     display: str
     location_address: str
+
+
+class ClientInviteAvailabilityRangeResponse(BaseModel):
+    start_date: date
+    end_date: date
+    duration_mins: int
+    slots: list[ClientInviteOneTimeSlot]
+
+
+class ClientInviteSchedulerSlot(ClientInviteOneTimeSlot):
     recurrence_available: bool
     recurrence: Literal["single", "weekly"] = "single"
     recurrence_count: int = 1
