@@ -99,6 +99,14 @@ def test_range_routing_respects_the_https_proxy_and_bypass(monkeypatch):
     assert _mapbox_proxy() is None
 
 
+@pytest.mark.parametrize("address", ["http://[::1", "http://proxy.invalid:bad", "ftp://proxy.invalid:80"])
+def test_range_routing_maps_malformed_proxy_settings_to_configuration_errors(monkeypatch, address):
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": address})
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda _host: False)
+    with pytest.raises(RoutingProviderNotConfigured, match="proxy URL is invalid"):
+        _mapbox_proxy()
+
+
 def test_mapbox_geocode_no_results_raises_geocode_failed():
     provider = MapboxRoutingProvider(
         access_token="test-token",

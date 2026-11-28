@@ -523,14 +523,20 @@ def test_policy_query_timeout_returns_a_retryable_failure(provider, monkeypatch)
     assert response.json()["error"]["code"] == "AVAILABILITY_SEARCH_BUDGET_EXCEEDED"
 
 
-def test_search_does_not_quote_inbound_travel_for_an_excluded_gap(provider, monkeypatch):
+@pytest.mark.parametrize("irrelevant_origin", ["morning", "overnight"])
+def test_search_and_booking_skip_routing_for_an_excluded_gap(provider, monkeypatch, irrelevant_origin):
     with db.SessionLocal.begin() as session:
         session.add(_block("midday anchor", "2026-11-24T12:00:00-06:00", "2026-11-24T12:30:00-06:00", located=True))
+        if irrelevant_origin == "overnight":
+            session.add(_block("prior evening", "2026-11-23T19:00:00-06:00", "2026-11-23T19:30:00-06:00", located=True))
     estimate = tools.routing_provider.estimate_route
+    irrelevant_departure = datetime.fromisoformat(
+        "2026-11-24T14:00:00+00:00" if irrelevant_origin == "morning" else "2026-11-24T01:30:00+00:00",
+    )
 
     def route(*args, departure_time, **kwargs):
-        if departure_time == datetime.fromisoformat("2026-11-24T14:00:00+00:00"):
-            raise RoutingTimeout("Unrelated morning route timed out.")
+        if departure_time == irrelevant_departure:
+            raise RoutingTimeout("Unrelated route timed out.")
         return estimate(*args, departure_time=departure_time, **kwargs)
 
     monkeypatch.setattr(tools.routing_provider, "estimate_route", route)
@@ -539,4 +545,10 @@ def test_search_does_not_quote_inbound_travel_for_an_excluded_gap(provider, monk
         "windows": [{"days": ["tuesday"], "start_time": "14:00", "end_time": "14:15"}],
     })
     assert response.status_code == 200, response.text
-    assert [slot["start_iso"] for slot in response.json()["available_slots"]] == ["2026-11-24T14:00:00-06:00"]
+    expected_start = "2026-11-24T14:00:00-06:00"
+    assert [slot["start_iso"] for slot in response.json()["available_slots"]] == [expected_start]
+    booked = provider.post("/api/coach/bookings", json={
+        "client_name": "Afternoon appointment", "client_address": SERVICE_ADDRESS,
+        "start_time": expected_start, "duration_mins": 15, "is_instructor_facility": True,
+    })
+    assert booked.status_code == 200, booked.text

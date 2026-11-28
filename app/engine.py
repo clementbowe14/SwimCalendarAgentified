@@ -270,6 +270,21 @@ class SwimSchedulerConstraintEngine:
             buffer = max(buffer, recovery_end - position.free_at)
         return InboundTransition(distance, travel, buffer)
 
+    def first_matching_start(
+        self,
+        begin: datetime.datetime,
+        end: datetime.datetime,
+        duration: datetime.timedelta,
+        accepts: Callable[[datetime.datetime, datetime.datetime], bool],
+    ) -> datetime.datetime | None:
+        start = self.buffer_policy.ceil_datetime(begin, self.timezone_name, allow_repeated_hour=True)
+        increment = datetime.timedelta(minutes=SLOT_INCREMENT_MINUTES)
+        while start + duration <= end:
+            if accepts(start, start + duration):
+                return start
+            start += increment
+        return None
+
     def _evaluate_gap(
         self,
         position: SchedulePosition,
@@ -294,14 +309,10 @@ class SwimSchedulerConstraintEngine:
             return slots
         increment = datetime.timedelta(minutes=SLOT_INCREMENT_MINUTES)
         if slot_filter is not None:
-            earliest = self.buffer_policy.ceil_datetime(gap_start, self.timezone_name, allow_repeated_hour=True)
-            while earliest + lesson_delta <= latest_gap_end:
-                if slot_filter(earliest, earliest + lesson_delta):
-                    break
-                earliest += increment
-            else:
+            matching_start = self.first_matching_start(gap_start, latest_gap_end, lesson_delta, slot_filter)
+            if matching_start is None:
                 return slots
-            gap_start = earliest
+            gap_start = matching_start
         transition = self.inbound_transition(position, target_coords)
         raw_start = max(gap_start, position.free_at + transition.duration)
         current_candidate = self.buffer_policy.ceil_datetime(raw_start, self.timezone_name, allow_repeated_hour=True)

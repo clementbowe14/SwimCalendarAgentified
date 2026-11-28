@@ -199,16 +199,19 @@ def _mapbox_proxy() -> httpcore.Proxy | None:
         return None
     if "://" not in address:
         address = f"http://{address}"
-    endpoint = urllib.parse.urlsplit(address)
-    if endpoint.scheme not in {"http", "https"} or not endpoint.hostname:
-        raise RoutingProviderNotConfigured("The routing proxy URL is invalid.")
-    auth = None
-    if endpoint.username is not None:
-        auth = (
-            urllib.parse.unquote_to_bytes(endpoint.username),
-            urllib.parse.unquote_to_bytes(endpoint.password or ""),
-        )
-    return httpcore.Proxy(address, auth=auth)
+    try:
+        endpoint = urllib.parse.urlsplit(address)
+        if endpoint.scheme not in {"http", "https"} or not endpoint.hostname or endpoint.port == 0:
+            raise ValueError
+        auth = None
+        if endpoint.username is not None:
+            auth = (
+                urllib.parse.unquote_to_bytes(endpoint.username),
+                urllib.parse.unquote_to_bytes(endpoint.password or ""),
+            )
+        return httpcore.Proxy(address, auth=auth)
+    except ValueError:
+        raise RoutingProviderNotConfigured("The routing proxy URL is invalid.") from None
 
 
 def _valid_coordinate(lat: float, lng: float) -> bool:
