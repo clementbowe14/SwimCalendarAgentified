@@ -1,5 +1,6 @@
 import datetime
 import threading
+from collections.abc import Callable
 from dataclasses import replace
 from typing import List, Optional
 
@@ -154,10 +155,11 @@ def find_available_swim_slots(
     buffer_policy: Optional[BufferPolicy] = None,
     *,
     calendar_busy_source: Optional[CalendarBusySource] = None,
+    requested_start: datetime.datetime | None = None,
 ) -> List[TimeSlotDTO]:
     """Find valid slots without retaining a secret-bearing busy source."""
 
-    try: source_handoff: list[Optional[CalendarBusySource]] = [calendar_busy_source]; calendar_busy_source = None; return _find_available_swim_slots(instructor_id, date_str, client_address, is_instructor_facility, duration_mins, buffer_policy, source_handoff)
+    try: source_handoff: list[Optional[CalendarBusySource]] = [calendar_busy_source]; calendar_busy_source = None; return _find_available_swim_slots(instructor_id, date_str, client_address, is_instructor_facility, duration_mins, buffer_policy, source_handoff, requested_start)
     finally:
         try: calendar_busy_source = None; _clear_optional_calendar_busy_source_handoff(locals().get("source_handoff"))
         except BaseException:
@@ -176,6 +178,7 @@ def _find_available_swim_slots(
     duration_mins: int,
     buffer_policy: Optional[BufferPolicy],
     calendar_busy_source_handoff: list[Optional[CalendarBusySource]],
+    requested_start: datetime.datetime | None,
 ) -> List[TimeSlotDTO]:
     """
     Finds all valid swim lesson slots for a given client request on a specific date.
@@ -197,30 +200,7 @@ def _find_available_swim_slots(
         return []
     day_start, day_end = working_window
 
-    instructor_base_loc = LocationInfo(
-        address=provider.base_location.address,
-        lat=provider.base_location.lat,
-        lng=provider.base_location.lng,
-        is_instructor_facility=False,
-    )
-    instructor_service_loc = LocationInfo(
-        address=provider.service_location.address,
-        lat=provider.service_location.lat,
-        lng=provider.service_location.lng,
-        is_instructor_facility=True,
-    )
-
-    if is_instructor_facility:
-        target_loc = instructor_service_loc
-    else:
-        lat, lng = routing_provider.geocode(client_address)
-        target_loc = LocationInfo(
-            address=client_address,
-            lat=lat,
-            lng=lng,
-            is_instructor_facility=False,
-        )
-
+    target_loc = resolve_availability_location(provider, client_address, is_instructor_facility)
     internal_events = routing_events_for_date(instructor_id, target_date, provider.timezone)
     busy_start, busy_end = routing_calendar_window(day_start, day_end, internal_events)
     external_events = _external_busy_events(
@@ -231,26 +211,82 @@ def _find_available_swim_slots(
         internal_events=internal_events,
     )
     policy = buffer_policy or load_buffer_policy(instructor_id, operation="availability")
+    start_utc = timezones.ensure_aware_utc(requested_start) if requested_start is not None else None
+    return slots_for_working_day(
+        provider, target_date, working_window, target_loc, [*internal_events, *external_events],
+        policy=policy, duration_mins=duration_mins,
+        slot_filter=(lambda start, _end: start == start_utc) if start_utc is not None else None,
+        slot_limit=1 if start_utc is not None else None,
+    )
+
+
+def resolve_availability_location(
+    provider: ProviderConfiguration,
+    client_address: str,
+    is_instructor_facility: bool,
+    *,
+    routing: BaseRoutingProvider | None = None,
+) -> LocationInfo:
+    if is_instructor_facility:
+        service = provider.service_location
+        if service is None:
+            raise ProviderSetupIncomplete(provider.setup_missing_fields)
+        return LocationInfo(
+            address=service.address, lat=service.lat, lng=service.lng, is_instructor_facility=True,
+        )
+    lat, lng = (routing or routing_provider).geocode(client_address)
+    return LocationInfo(address=client_address, lat=lat, lng=lng)
+
+
+def slots_for_working_day(
+    provider: ProviderConfiguration,
+    target_date: datetime.date,
+    working_window: tuple[datetime.datetime, datetime.datetime],
+    target_location: LocationInfo,
+    events: List[dict],
+    *,
+    policy: BufferPolicy,
+    duration_mins: int,
+    routing: BaseRoutingProvider | None = None,
+    slot_filter: Callable[[datetime.datetime, datetime.datetime], bool] | None = None,
+    slot_limit: int | None = None,
+) -> List[TimeSlotDTO]:
+    base = provider.base_location
+    if base is None:
+        raise ProviderSetupIncomplete(provider.setup_missing_fields)
+    base_location = LocationInfo(address=base.address, lat=base.lat, lng=base.lng)
+    day_start, day_end = working_window
     constraint_engine = SwimSchedulerConstraintEngine(
-        routing_provider,
+        routing or routing_provider,
         policy,
         timezone_name=provider.timezone,
     )
     local_day_start, _ = timezones.local_day_window_utc_storage(target_date, provider.timezone)
+    needs_overnight_route = None
+    if slot_filter is not None:
+        duration = datetime.timedelta(minutes=duration_mins)
+
+        def needs_overnight_route(start: datetime.datetime, before: datetime.datetime | None) -> bool:
+            end = min(day_end, before) if before is not None else day_end
+            return constraint_engine.first_matching_start(start, end, duration, slot_filter) is not None
+
     position, existing_events = working_schedule_context(
-        day_start, instructor_base_loc, [*internal_events, *external_events],
+        day_start, base_location, events,
         local_day_start=timezones.storage_to_aware_utc(local_day_start),
         engine=constraint_engine,
+        needs_overnight_route=needs_overnight_route,
     )
     utc_slots = constraint_engine.find_available_slots_for_day(
         day_start=day_start,
         day_end=day_end,
-        instructor_main_location=instructor_base_loc,
+        instructor_main_location=base_location,
         existing_events=existing_events,
-        target_location=target_loc,
+        target_location=target_location,
         duration_mins=duration_mins,
         initial_position=position,
         next_shift_start=next_day_shift_start(provider, target_date),
+        slot_filter=slot_filter,
+        slot_limit=slot_limit,
     )
 
     return [
@@ -290,11 +326,12 @@ def routing_events_for_date(
     *,
     include_adjacent_days: bool = True,
     session: Session | None = None,
+    limit: int | None = None,
 ) -> list[dict]:
     return db.get_utc_appointment_events_for_date(
         instructor_id, target_date.isoformat(), timezone_name=timezone_name,
         include_day_edges=True, include_adjacent_routing_anchors=include_adjacent_days,
-        session=session,
+        session=session, limit=limit,
     )
 
 def next_day_shift_start(provider: ProviderConfiguration, day: datetime.date) -> datetime.datetime | None:
@@ -335,6 +372,7 @@ def working_schedule_context(
     *,
     local_day_start: datetime.datetime,
     engine: SwimSchedulerConstraintEngine,
+    needs_overnight_route: Callable[[datetime.datetime, datetime.datetime | None], bool] | None = None,
 ) -> tuple[SchedulePosition, List[dict]]:
     """Keep the known location before work and travel anchors after it."""
     base_position = SchedulePosition(work_start, (base.lat, base.lng))
@@ -359,6 +397,18 @@ def working_schedule_context(
     if last_location is None and position.free_at < work_start:
         position = replace(position, free_at=work_start)
     elif last_location is not None and last_location.free_at <= local_day_start:
+        if needs_overnight_route is not None:
+            free_at = work_start
+            for event in working_events:
+                if needs_overnight_route(free_at, event["start_time"]):
+                    break
+                if event_coordinates(event) is not None:
+                    # This event sets the origin for every remaining gap.
+                    return position, working_events
+                free_at = max(free_at, event["end_time"])
+            else:
+                if not needs_overnight_route(free_at, None):
+                    return position, working_events
         return_windows = [(position, return_deadline)]
         if first_block_start is not None:
             return_windows.append((last_location, min(first_block_start, return_deadline)))
@@ -584,6 +634,7 @@ def _book_swim_lesson(
         calendar_busy_source=_take_calendar_busy_source(
             calendar_busy_source_handoff
         ),
+        requested_start=start_time,
     )
     if not any(timezones.to_utc_storage(slot.start_time) == start_time_storage for slot in available_slots):
         raise db.ScheduleConflictError("The requested start is no longer available.")

@@ -104,8 +104,10 @@ def load_provider_configuration(
         return _configuration_from_rows(instructor, hour_rows)
 
 
-def require_provider_setup(instructor_id: str) -> ProviderConfiguration:
-    configuration = load_provider_configuration(instructor_id)
+def require_provider_setup(
+    instructor_id: str, *, session: Session | None = None
+) -> ProviderConfiguration:
+    configuration = load_provider_configuration(instructor_id, session=session)
     if not configuration.setup_complete:
         raise ProviderSetupIncomplete(configuration.setup_missing_fields)
     return configuration

@@ -4,9 +4,14 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextvars import ContextVar
 from datetime import datetime
 from http.client import HTTPException
+from time import monotonic
 from typing import Callable, Optional, Tuple
+
+import anyio
+import httpcore
 
 from app import timezones
 from app.routing import (
@@ -23,6 +28,8 @@ from app.routing import (
 JsonFetcher = Callable[[str, float], dict]
 GEOCODE_OPERATION = "geocode"
 DIRECTIONS_OPERATION = "directions"
+routing_request_deadline: ContextVar[float | None] = ContextVar("routing_request_deadline", default=None)
+_MAX_RANGE_ROUTING_BYTES = 256 * 1024
 
 
 class MapboxRoutingProvider(BaseRoutingProvider):
@@ -116,8 +123,14 @@ class MapboxRoutingProvider(BaseRoutingProvider):
         )
 
     def _fetch(self, url: str, operation: str) -> dict:
+        timeout = self.timeout_seconds
+        deadline = routing_request_deadline.get()
+        if deadline is not None:
+            timeout = min(timeout, deadline - monotonic())
+            if timeout <= 0:
+                raise RoutingTimeout("Mapbox request timed out.")
         try:
-            payload = self._fetch_json(url, self.timeout_seconds)
+            payload = self._fetch_json(url, timeout)
         except TimeoutError as exc:
             raise RoutingTimeout("Mapbox request timed out.") from exc
         except socket.timeout as exc:
@@ -140,9 +153,65 @@ class MapboxRoutingProvider(BaseRoutingProvider):
 
     @staticmethod
     def _urllib_fetch_json(url: str, timeout_seconds: float) -> dict:
+        if routing_request_deadline.get() is not None:
+            return anyio.run(_fetch_range_routing_json, url, timeout_seconds)
         request = urllib.request.Request(url, headers={"accept": "application/json"})
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             return json.loads(response.read().decode("utf-8"))
+
+
+async def _fetch_range_routing_json(url: str, timeout_seconds: float) -> dict:
+    try:
+        with anyio.fail_after(timeout_seconds):
+            # Mapbox puts the credential and location in the URL. Use the
+            # transport directly so the high-level client never logs that URL.
+            async with httpcore.AsyncConnectionPool(
+                max_connections=1, max_keepalive_connections=0, proxy=_mapbox_proxy(),
+            ) as client:
+                async with client.stream("GET", url, headers=[
+                    (b"accept", b"application/json"), (b"accept-encoding", b"identity"),
+                ]) as response:
+                    if not 200 <= response.status < 300:
+                        raise urllib.error.HTTPError(
+                            "https://api.mapbox.com/", response.status, "Mapbox request failed.", None, None,
+                        )
+                    encodings = [
+                        value.strip().lower() for key, value in response.headers
+                        if key.lower() == b"content-encoding"
+                    ]
+                    if encodings not in ([], [b"identity"]):
+                        raise RoutingProviderUnavailable("Mapbox response encoding is unsupported.")
+                    body = bytearray()
+                    async for chunk in response.aiter_stream():
+                        if len(body) + len(chunk) > _MAX_RANGE_ROUTING_BYTES:
+                            raise RoutingProviderUnavailable("Mapbox response is too large.")
+                        body.extend(chunk)
+                    return json.loads(body)
+    except httpcore.TimeoutException:
+        raise RoutingTimeout("Mapbox request timed out.") from None
+    except (httpcore.NetworkError, httpcore.ProtocolError, httpcore.ProxyError):
+        raise RoutingProviderUnavailable("Mapbox request failed.") from None
+
+
+def _mapbox_proxy() -> httpcore.Proxy | None:
+    address = urllib.request.getproxies().get("https")
+    if not address or urllib.request.proxy_bypass("api.mapbox.com"):
+        return None
+    if "://" not in address:
+        address = f"http://{address}"
+    try:
+        endpoint = urllib.parse.urlsplit(address)
+        if endpoint.scheme not in {"http", "https"} or not endpoint.hostname or endpoint.port == 0:
+            raise ValueError
+        auth = None
+        if endpoint.username is not None:
+            auth = (
+                urllib.parse.unquote_to_bytes(endpoint.username),
+                urllib.parse.unquote_to_bytes(endpoint.password or ""),
+            )
+        return httpcore.Proxy(address, auth=auth)
+    except ValueError:
+        raise RoutingProviderNotConfigured("The routing proxy URL is invalid.") from None
 
 
 def _valid_coordinate(lat: float, lng: float) -> bool:

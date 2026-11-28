@@ -13,6 +13,7 @@ import uuid
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app import db, timezones, tools
 from app.api_errors import (
@@ -42,6 +43,8 @@ from app.api_schemas import (
     AvailabilitySearchRequest,
     AvailabilitySearchResponse,
     BookLessonResponse,
+    CoachAvailabilityRangeRequest,
+    CoachAvailabilityRangeResponse,
     CoachBookLessonRequest,
     CoachBlockerScheduleItemResponse,
     CoachBlockerMutation,
@@ -85,6 +88,7 @@ from app.api_schemas import (
     TimeSlotResponse,
     ClientInviteCalendarLinks,
 )
+from app.availability_search import search_one_time_availability
 from app.calendar_connections import (
     CalendarConnectionOwnerNotFound,
     disconnect_google_calendar,
@@ -1002,6 +1006,49 @@ def search_coach_availability(
         location=_resolve_location(instructor_id, request.client_address, request.is_instructor_facility),
         available_slots=[_slot_response(slot) for slot in slots],
     )
+
+
+def search_coach_availability_range(
+    instructor_id: str,
+    request: CoachAvailabilityRangeRequest,
+    *,
+    build_calendar_source: Callable[[Callable[[], Session]], CalendarBusySource],
+) -> CoachAvailabilityRangeResponse:
+    try:
+        result = search_one_time_availability(
+            instructor_id, request,
+            client_address=request.client_address or "",
+            is_instructor_facility=request.is_instructor_facility,
+            build_calendar_source=build_calendar_source,
+        )
+        return CoachAvailabilityRangeResponse(
+            start_date=request.start_date,
+            end_date=request.end_date,
+            duration_mins=request.duration_mins,
+            timezone=result.timezone,
+            location=LocationResponse(**result.location.model_dump()),
+            available_slots=[_slot_response(slot) for slot in result.slots],
+            empty_reason=result.empty_reason,
+        )
+    except ExternalCalendarUnavailable:
+        pass
+    except GeocodeFailed:
+        raise GeocodingFailedApiError({"field": "client_address"}) from None
+    except RoutingTimeout:
+        raise RoutingTimeoutApiError() from None
+    except RoutingProviderUnavailable:
+        raise RoutingProviderUnavailableApiError() from None
+    except RoutingProviderNotConfigured:
+        raise RoutingConfigurationError() from None
+    except RouteEstimateFailed:
+        raise RoutingEstimateFailedApiError() from None
+    except ProviderSetupIncomplete as exc:
+        raise ProviderSetupRequired(list(exc.missing_fields)) from None
+    except ProviderNotFound:
+        raise ResourceNotFound("The instructor could not be found.") from None
+    finally:
+        del build_calendar_source
+    raise CalendarAvailabilityUnavailable() from None
 
 
 INSTRUCTOR_CALENDAR_TITLE = "Appointment"

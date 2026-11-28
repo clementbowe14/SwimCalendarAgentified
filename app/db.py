@@ -591,6 +591,7 @@ def get_utc_appointment_events_for_date(
     include_day_edges: bool = False,
     include_adjacent_routing_anchors: bool = False,
     session: Session | None = None,
+    limit: int | None = None,
 ) -> List[dict]:
     if timezone_name is None:
         instructor = get_instructor_info(instructor_id)
@@ -604,6 +605,7 @@ def get_utc_appointment_events_for_date(
         include_day_edges=include_day_edges,
         include_adjacent_routing_anchors=include_adjacent_routing_anchors,
         session=session,
+        limit=limit,
     )
     return [_appointment_to_dict(row, aware_utc=True) for row in rows]
 
@@ -622,6 +624,7 @@ def _get_appointment_rows_for_local_date(
     include_day_edges: bool = False,
     include_adjacent_routing_anchors: bool = False,
     session: Session | None = None,
+    limit: int | None = None,
 ) -> List[AppointmentDB]:
     with read_session(session) as reading:
         target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
@@ -679,7 +682,8 @@ def _get_appointment_rows_for_local_date(
                     AppointmentDB.start_time < next_day_end,
                 ).correlate(None).scalar_subquery()
                 window = or_(window, and_(following_day, AppointmentDB.start_time <= next_located_start))
-        return query.filter(window).order_by(AppointmentDB.start_time.asc(), AppointmentDB.id.asc()).all()
+        ordered = query.filter(window).order_by(AppointmentDB.start_time.asc(), AppointmentDB.id.asc())
+        return ordered.limit(limit).all() if limit is not None else ordered.all()
 
 def get_clients_for_instructor(instructor_id: str) -> List[dict]:
     session = SessionLocal()

@@ -7,6 +7,7 @@ from starlette.responses import PlainTextResponse
 
 from app.api_errors import (
     ApiException,
+    AvailabilitySearchBudgetExceeded,
     SchedulingPolicyEndpointMoved,
 )
 from app.calendar_connection_access import (
@@ -27,6 +28,8 @@ from app.api_schemas import (
     AvailabilitySearchResponse,
     BookLessonResponse,
     ClientInviteCalendarLinks,
+    CoachAvailabilityRangeRequest,
+    CoachAvailabilityRangeResponse,
     CoachBlockerMutation,
     CoachBlockerResponse,
     CoachBlockerUpdate,
@@ -73,6 +76,7 @@ from app.api_services import (
     list_coach_clients,
     request_alternatives_for_coach_lesson_request,
     search_coach_availability,
+    search_coach_availability_range,
     update_coach_provider_settings,
     update_coach_blocker,
     update_coach_scheduling_policy,
@@ -434,6 +438,37 @@ def find_availability(
         )
     finally:
         # Keep request data and the authenticated principal out of route tracebacks.
+        del request, http_request, coach
+
+
+@router.post(
+    "/availability/search",
+    response_model=CoachAvailabilityRangeResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "The date range or location could not be used."},
+        409: {"model": ErrorResponse, "description": "Provider setup is incomplete or the account changed."},
+        422: {"model": ErrorResponse, "description": "The search fields failed validation."},
+        503: {"model": ErrorResponse, "description": "Availability could not be fully verified."},
+    },
+)
+def find_availability_range(
+    request: CoachAvailabilityRangeRequest,
+    http_request: Request,
+    coach: CoachContext = Depends(get_expected_instructor_coach),
+) -> CoachAvailabilityRangeResponse:
+    permits = http_request.app.state.provider_availability_reads
+    if not permits.acquire(blocking=False):
+        raise AvailabilitySearchBudgetExceeded()
+    try:
+        return search_coach_availability_range(
+            coach.instructor_id,
+            request,
+            build_calendar_source=partial(
+                _google_calendar_availability_source, http_request.app.state, coach.instructor_id
+            ),
+        )
+    finally:
+        permits.release()
         del request, http_request, coach
 
 

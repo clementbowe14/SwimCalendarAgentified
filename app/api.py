@@ -10,6 +10,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app import db, tools
 from app.api_errors import (
+    COACH_AVAILABILITY_RANGE_PATH,
     ApiException,
     AuthenticationRequired,
     api_exception_handler,
@@ -28,6 +29,7 @@ from app.dependencies import require_csrf_protection
 from app.google_calendar_busy_source_factory import (
     GoogleCalendarBusySourceFactory,
 )
+from app.google_calendar_oauth import google_calendar_oauth_route_path
 from app.routes import auth, coach, google_calendar_oauth, health, public
 from app.routing_service import build_routing_provider
 
@@ -69,6 +71,7 @@ def create_app() -> FastAPI:
     app.state.settings = settings
     app.state.calendar_busy_source_factory = GoogleCalendarBusySourceFactory()
     app.state.public_calendar_reads = BoundedSemaphore(4)
+    app.state.provider_availability_reads = BoundedSemaphore(4)
     app.state.routing_readiness = {
         "provider": routing_provider.provider_name,
         "mode": "external" if routing_provider.provider_name == "mapbox" else "synthetic",
@@ -81,11 +84,16 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def protect_sensitive_responses(request, call_next):
-        security_failure = await _provider_security_failure(request)
-        if security_failure is not None:
-            return security_failure
-        response = await call_next(request)
-        path = request.url.path
+        path = google_calendar_oauth_route_path(request.scope["path"], request.scope.get("root_path", ""))
+        try:
+            security_failure = await _provider_security_failure(request)
+            if security_failure is not None:
+                return security_failure
+            response = await call_next(request)
+        except Exception as exc:
+            if path.rstrip("/") != COACH_AVAILABILITY_RANGE_PATH:
+                raise
+            response = await unexpected_exception_handler(request, exc)
         is_coach_calendar_handoff = (
             path.startswith("/api/coach/appointments/")
             and path.endswith(("/calendar-links", "/calendar.ics"))
@@ -131,7 +139,7 @@ async def _provider_security_failure(request: Request):
 
     if request.method.upper() == "OPTIONS":
         return None
-    path = request.url.path
+    path = google_calendar_oauth_route_path(request.scope["path"], request.scope.get("root_path", ""))
     coach_namespace = path == "/api/coach" or path.startswith("/api/coach/")
     auth_namespace = path == "/api/auth/coach" or path.startswith("/api/auth/coach/")
     if not coach_namespace and not auth_namespace:

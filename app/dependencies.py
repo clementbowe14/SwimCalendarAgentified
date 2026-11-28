@@ -1,9 +1,11 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
 from fastapi import Request, Response, Security
 from fastapi.security import APIKeyCookie
+from sqlalchemy.orm import Session
 from starlette.datastructures import State
 
 from app import db
@@ -55,16 +57,16 @@ def get_current_coach(
 
 
 def google_calendar_availability_source(
-    state: State, instructor_id: str
+    state: State, instructor_id: str, session_factory: Callable[[], Session] | None = None
 ) -> GoogleCalendarAvailabilitySource:
     try:
         return GoogleCalendarAvailabilitySource(
-            db.SessionLocal,
+            session_factory if session_factory is not None else db.SessionLocal,
             instructor_id=instructor_id,
             busy_source_factory=state.calendar_busy_source_factory.create_for,
         )
     except (AttributeError, ValueError):
-        del state, instructor_id
+        del state, instructor_id, session_factory
     raise CalendarAvailabilityUnavailable() from None
 
 
