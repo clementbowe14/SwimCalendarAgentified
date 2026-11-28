@@ -523,12 +523,17 @@ def test_policy_query_timeout_returns_a_retryable_failure(provider, monkeypatch)
     assert response.json()["error"]["code"] == "AVAILABILITY_SEARCH_BUDGET_EXCEEDED"
 
 
-@pytest.mark.parametrize("irrelevant_origin", ["morning", "overnight"])
+@pytest.mark.parametrize("irrelevant_origin", ["morning", "overnight", "occupied_morning"])
 def test_search_and_booking_skip_routing_for_an_excluded_gap(provider, monkeypatch, irrelevant_origin):
+    windows = [{"days": ["tuesday"], "start_time": "14:00", "end_time": "14:15"}]
     with db.SessionLocal.begin() as session:
         session.add(_block("midday anchor", "2026-11-24T12:00:00-06:00", "2026-11-24T12:30:00-06:00", located=True))
-        if irrelevant_origin == "overnight":
+        if irrelevant_origin != "morning":
             session.add(_block("prior evening", "2026-11-23T19:00:00-06:00", "2026-11-23T19:30:00-06:00", located=True))
+        if irrelevant_origin == "occupied_morning":
+            _set_clock(monkeypatch, datetime.fromisoformat("2026-11-24T13:30:00+00:00"))
+            session.add(_block("morning personal event", "2026-11-24T08:00:00-06:00", "2026-11-24T09:00:00-06:00"))
+            windows.append({"days": ["tuesday"], "start_time": "08:00", "end_time": "09:00"})
     estimate = tools.routing_provider.estimate_route
     irrelevant_departure = datetime.fromisoformat(
         "2026-11-24T14:00:00+00:00" if irrelevant_origin == "morning" else "2026-11-24T01:30:00+00:00",
@@ -541,8 +546,7 @@ def test_search_and_booking_skip_routing_for_an_excluded_gap(provider, monkeypat
 
     monkeypatch.setattr(tools.routing_provider, "estimate_route", route)
     response = provider.post(PATH, json={
-        **REQUEST, "duration_mins": 15,
-        "windows": [{"days": ["tuesday"], "start_time": "14:00", "end_time": "14:15"}],
+        **REQUEST, "duration_mins": 15, "windows": windows,
     })
     assert response.status_code == 200, response.text
     expected_start = "2026-11-24T14:00:00-06:00"

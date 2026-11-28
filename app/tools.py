@@ -266,8 +266,9 @@ def slots_for_working_day(
     if slot_filter is not None:
         duration = datetime.timedelta(minutes=duration_mins)
 
-        def needs_overnight_route(before: datetime.datetime) -> bool:
-            return constraint_engine.first_matching_start(day_start, min(day_end, before), duration, slot_filter) is not None
+        def needs_overnight_route(start: datetime.datetime, before: datetime.datetime | None) -> bool:
+            end = min(day_end, before) if before is not None else day_end
+            return constraint_engine.first_matching_start(start, end, duration, slot_filter) is not None
 
     position, existing_events = working_schedule_context(
         day_start, base_location, events,
@@ -371,7 +372,7 @@ def working_schedule_context(
     *,
     local_day_start: datetime.datetime,
     engine: SwimSchedulerConstraintEngine,
-    needs_overnight_route: Callable[[datetime.datetime], bool] | None = None,
+    needs_overnight_route: Callable[[datetime.datetime, datetime.datetime | None], bool] | None = None,
 ) -> tuple[SchedulePosition, List[dict]]:
     """Keep the known location before work and travel anchors after it."""
     base_position = SchedulePosition(work_start, (base.lat, base.lng))
@@ -397,10 +398,17 @@ def working_schedule_context(
         position = replace(position, free_at=work_start)
     elif last_location is not None and last_location.free_at <= local_day_start:
         if needs_overnight_route is not None:
-            next_location = next((event for event in working_events if event_coordinates(event) is not None), None)
-            if next_location is not None and not needs_overnight_route(next_location["start_time"]):
-                # The next located event sets the origin for every eligible start.
-                return position, working_events
+            free_at = work_start
+            for event in working_events:
+                if needs_overnight_route(free_at, event["start_time"]):
+                    break
+                if event_coordinates(event) is not None:
+                    # This event sets the origin for every remaining gap.
+                    return position, working_events
+                free_at = max(free_at, event["end_time"])
+            else:
+                if not needs_overnight_route(free_at, None):
+                    return position, working_events
         return_windows = [(position, return_deadline)]
         if first_block_start is not None:
             return_windows.append((last_location, min(first_block_start, return_deadline)))
