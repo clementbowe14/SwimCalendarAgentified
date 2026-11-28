@@ -145,32 +145,10 @@ def create_lesson_request(
     elif recurrence_count < 1:
         recurrence_count = 4
     session = db.SessionLocal()
+    request = None
     try:
         invite = session.query(InviteTokenDB).filter_by(token=invite_token).first()
         capped_expires_at = _request_expires_at(invite, expires_at)
-        if idempotency_key:
-            existing = session.query(LessonRequestDB).filter_by(idempotency_key=idempotency_key).first()
-            if existing:
-                if (
-                    existing.invite_token != invite_token
-                    or existing.instructor_id != instructor_id
-                    or existing.client_name != client_name
-                    or existing.client_address != client_address
-                    or existing.slot_start != selected_slot_start
-                    or existing.slot_end != selected_slot_end
-                    or existing.duration_mins != duration_mins
-                    or existing.travel_time_mins != travel_time_mins
-                    or existing.buffer_mins != buffer_mins
-                    or existing.distance_miles != distance_miles
-                    or existing.location_type != location_type
-                    or existing.recurrence != recurrence
-                    or existing.recurrence_count != recurrence_count
-                ):
-                    raise db.IdempotencyKeyConflictError(
-                        "Idempotency key was already used for a different request."
-                    )
-                return _lesson_request_record(existing)
-
         request = LessonRequestDB(
             id=f"lr_{uuid4().hex[:12]}",
             request_token=f"req_{uuid4().hex[:12]}",
@@ -195,18 +173,34 @@ def create_lesson_request(
             original_slot_offer_id=original_slot_offer_id,
             expires_at=capped_expires_at,
         )
+        if idempotency_key:
+            existing = session.query(LessonRequestDB).filter_by(idempotency_key=idempotency_key).first()
+            if existing is not None:
+                return _replay_lesson_request(existing, request)
+
         session.add(request)
         session.commit()
         return _lesson_request_record(request)
     except IntegrityError as exc:
         session.rollback()
-        if idempotency_key:
+        if idempotency_key and request is not None:
             existing = session.query(LessonRequestDB).filter_by(idempotency_key=idempotency_key).first()
-            if existing:
-                return _lesson_request_record(existing)
+            if existing is not None:
+                return _replay_lesson_request(existing, request)
         raise exc
     finally:
         session.close()
+
+
+def _replay_lesson_request(existing: LessonRequestDB, requested: LessonRequestDB) -> LessonRequestRecord:
+    fields = (
+        "invite_token", "instructor_id", "original_slot_offer_id", "client_name", "client_address",
+        "slot_start", "slot_end", "duration_mins", "travel_time_mins", "buffer_mins",
+        "distance_miles", "location_type", "recurrence", "recurrence_count",
+    )
+    if any(getattr(existing, field) != getattr(requested, field) for field in fields):
+        raise db.IdempotencyKeyConflictError("Idempotency key was already used for a different request.")
+    return _lesson_request_record(existing)
 
 
 def resolve_lesson_request(request_token: str) -> LessonRequestRecord:

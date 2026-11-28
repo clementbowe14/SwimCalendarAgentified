@@ -1,23 +1,25 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
-from app import client_invites, db, tools
+from app import availability_search, client_invites, db, tools
 from app.auth import seed_demo_provider_account
 from app.calendar_connections import replace_google_calendar_connection
 from app.calendar_credentials import CalendarCredentialCipher
 from app.external_calendar import CalendarBusyInterval, CalendarBusySnapshot, ExternalCalendarTimeout
 from app.google_calendar_busy_source_factory import GoogleCalendarBusySourceFactory
-from app.models import InstructorDB, InviteSlotOfferDB, InviteTokenDB, ProviderAccountDB
-from app.public_tokens import require_active_invite
+from app.models import InstructorDB, InviteSlotOfferDB, InviteTokenDB, LessonRequestDB, ProviderAccountDB, ProviderWorkingHoursDB
+from app.public_tokens import _replay_lesson_request, require_active_invite
 from tests.public_contract_safety import PUBLIC_SCHEDULING_EVIDENCE_KEYS, flatten_keys
 
 
 INVITE = db.SOFIA_INVITE_TOKEN
 SLOTS_PATH = f"/api/public/client-invites/{INVITE}/slots"
+RANGE_PATH = f"/api/public/client-invites/{INVITE}/availability/search"
 LEGACY_PATH = f"/api/public/invites/{INVITE}/availability"
 ADDRESS = "450 North Blvd, Austin, TX"
 BASE_PAYLOAD = {"client_name": "Sofia Martinez", "requested_date": "2026-08-20", "duration_mins": 45}
@@ -27,6 +29,7 @@ SLOT_PAYLOAD = {
     "instructor_id": "inst_untrusted",
 }
 LEGACY_PAYLOAD = {**BASE_PAYLOAD, "client_address": ADDRESS}
+RANGE_PAYLOAD = {"client_name": "Client for range search", "duration_mins": 45, "is_instructor_facility": True}
 BUSY_START = datetime(2026, 8, 20, 18, tzinfo=timezone.utc)
 BUSY_END = datetime(2026, 8, 20, 21, tzinfo=timezone.utc)
 UNAVAILABLE = {
@@ -51,6 +54,111 @@ def _mock_google(monkeypatch, query: Mock) -> Mock:
     factory = Mock(return_value=SimpleNamespace(query_busy_periods=query))
     monkeypatch.setattr(GoogleCalendarBusySourceFactory, "create_for", factory)
     return factory
+
+
+def _set_range_clock(monkeypatch, instant):
+    monkeypatch.setattr(
+        client_invites, "search_one_time_availability",
+        partial(availability_search.search_one_time_availability, now=datetime.fromisoformat(instant)),
+    )
+
+
+def test_range_search_defaults_to_provider_dates_and_persists_exact_later_day(api_client, monkeypatch):
+    # UTC has reached December 1 while it is still November 30 for the provider.
+    _set_range_clock(monkeypatch, "2026-12-01T01:00:00+00:00")
+    _connect()
+    query = Mock(return_value=CalendarBusySnapshot("verified", (
+        CalendarBusyInterval(
+            datetime.fromisoformat("2026-12-02T14:00:00-06:00"),
+            datetime.fromisoformat("2026-12-02T14:45:00-06:00"),
+        ),
+    )))
+    _mock_google(monkeypatch, query)
+
+    payload = {**RANGE_PAYLOAD, "limit": 2, "windows": [
+        {"days": ["tuesday", "wednesday", "thursday"], "start_time": "14:00", "end_time": "14:45"},
+    ]}
+    response = api_client.post(RANGE_PATH, json=payload)
+
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    result = response.json()
+    assert set(result) == {"start_date", "end_date", "duration_mins", "slots"}
+    assert result["start_date"] == "2026-11-30"
+    assert result["end_date"] == "2026-12-13"
+    assert result["duration_mins"] == 45
+    slots = result["slots"]
+    assert [slot["start_iso"] for slot in slots] == ["2026-12-01T14:00:00-06:00", "2026-12-03T14:00:00-06:00"]
+    assert all(set(slot) == {"id", "start_iso", "end_iso", "display", "location_address"} for slot in slots)
+    query.assert_called_once()
+
+    later = slots[-1]
+    with db.SessionLocal() as session:
+        offer = session.get(InviteSlotOfferDB, later["id"])
+        assert offer.requested_date == date(2026, 12, 3)
+        assert (offer.recurrence, offer.recurrence_count, offer.recurrence_available) == ("single", 1, False)
+        assert (offer.invite_token, offer.instructor_id) == (INVITE, "inst_001")
+
+    other_path = f"/api/public/client-invites/{db.DEMO_INVITE_TOKEN}/lesson-requests"
+    create_path = f"/api/public/client-invites/{INVITE}/lesson-requests"
+    request = {"slot_id": later["id"], "idempotency_key": "range-selected-later-day"}
+    assert api_client.post(other_path, json=request).status_code == 404
+    check_slot = Mock(wraps=tools.find_available_swim_slots)
+    monkeypatch.setattr(tools, "find_available_swim_slots", check_slot)
+    submitted = api_client.post(create_path, json=request)
+    assert submitted.status_code == 200, submitted.text
+    replay = api_client.post(create_path, json=request)
+    assert replay.json()["id"] == submitted.json()["id"]
+    assert submitted.json()["slot"]["start_iso"] == later["start_iso"]
+    assert check_slot.call_args.kwargs["requested_start"] == datetime.fromisoformat(later["start_iso"])
+    with db.SessionLocal() as session:
+        record = session.query(LessonRequestDB).filter_by(request_token=submitted.json()["id"]).one()
+        assert record.requested_date == date(2026, 12, 3)
+
+
+def test_later_fold_offer_preserves_the_selected_instant(api_client, monkeypatch):
+    _set_range_clock(monkeypatch, "2026-11-01T05:00:00+00:00")
+    with db.SessionLocal.begin() as session:
+        sunday = session.get(ProviderWorkingHoursDB, ("inst_001", 6))
+        sunday.enabled, sunday.start_time, sunday.end_time = True, time(0, 30), time(4)
+    found = api_client.post(RANGE_PATH, json={
+        **RANGE_PAYLOAD, "start_date": "2026-11-01", "end_date": "2026-11-01", "duration_mins": 30,
+        "windows": [{"days": ["sunday"], "start_time": "01:00", "end_time": "02:00"}],
+    })
+    assert found.status_code == 200, found.text
+    by_start = {slot["start_iso"]: slot for slot in found.json()["slots"]}
+    assert by_start["2026-11-01T01:00:00-05:00"]["display"].endswith("CDT")
+    later = by_start["2026-11-01T01:00:00-06:00"]
+    assert later["display"].endswith("CST")
+
+    response = api_client.post(f"/api/public/client-invites/{INVITE}/lesson-requests", json={"slot_id": later["id"]})
+    assert response.status_code == 200, response.text
+    assert response.json()["slot"]["start_iso"] == later["start_iso"]
+
+
+def test_range_validation_keeps_contact_inputs_out_of_the_response(api_client):
+    address = "Private client address"
+    response = api_client.post(RANGE_PATH, json={
+        **RANGE_PAYLOAD, "is_instructor_facility": False, "client_address": address,
+        "start_date": "2026-12-03", "end_date": "2026-12-01",
+    })
+    assert response.status_code == 422
+    assert response.headers["cache-control"] == "private, no-store"
+    assert all(value not in response.text for value in (address, RANGE_PAYLOAD["client_name"]))
+
+
+@pytest.mark.parametrize("field", ["invite_token", "instructor_id", "original_slot_offer_id"])
+def test_request_replay_requires_the_same_invite_provider_and_offer(field):
+    context = {
+        "invite_token": "invite-for-client",
+        "instructor_id": "provider-for-client",
+        "original_slot_offer_id": "selected-offer",
+    }
+    saved = LessonRequestDB(**context)
+    submitted = LessonRequestDB(**{**context, field: "different"})
+    with pytest.raises(db.IdempotencyKeyConflictError):
+        _replay_lesson_request(saved, submitted)
 
 
 @pytest.mark.parametrize(("path", "payload", "field"), [
@@ -240,9 +348,11 @@ def test_weekly_public_search_rejects_mixed_calendar_generations(api_client, mon
         assert session.query(InviteSlotOfferDB).count() == total_offers
 
 
-def test_public_search_rolls_back_offers_if_calendar_changes_during_save(api_client, monkeypatch):
+@pytest.mark.parametrize("path,payload", [(SLOTS_PATH, SLOT_PAYLOAD), (RANGE_PATH, RANGE_PAYLOAD)])
+def test_public_search_rolls_back_offers_if_calendar_changes_during_save(api_client, monkeypatch, path, payload):
     _connect()
     _mock_google(monkeypatch, Mock(return_value=CalendarBusySnapshot("verified", ())))
+    _set_range_clock(monkeypatch, "2026-12-01T01:00:00+00:00")
     upsert = client_invites._upsert_slot_offer
     replaced = False
 
@@ -257,7 +367,7 @@ def test_public_search_rolls_back_offers_if_calendar_changes_during_save(api_cli
     with db.SessionLocal() as session:
         total_offers = session.query(InviteSlotOfferDB).count()
 
-    response = api_client.post(SLOTS_PATH, json=SLOT_PAYLOAD)
+    response = api_client.post(path, json=payload)
 
     assert replaced
     assert response.status_code == 503

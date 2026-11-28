@@ -29,6 +29,7 @@ from app.external_calendar import (
     query_calendar_busy_snapshot,
 )
 from app.google_calendar_availability_fence import (
+    GoogleCalendarAvailabilityFence,
     check_current_google_calendar_availability_fence,
     claim_google_calendar_availability_fence,
     revalidate_google_calendar_availability_fence,
@@ -116,10 +117,14 @@ class _BoundedRouting(BaseRoutingProvider):
 
 @dataclass(frozen=True)
 class AvailabilityRange:
+    start_date: date
+    end_date: date
     timezone: str
     location: LocationInfo
     slots: list[TimeSlotDTO]
     empty_reason: AvailabilityEmptyReason | None
+    calendar_fence: GoogleCalendarAvailabilityFence | None
+    session_factory: Callable[[], Session]
 
 
 @dataclass(frozen=True)
@@ -154,9 +159,11 @@ def search_one_time_availability(
             session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
             provider = require_provider_setup(instructor_id, session=session)
             today = timezones.requested_local_date(now or datetime.now(timezones.UTC), provider.timezone)
-            if criteria.start_date < today or (criteria.end_date - today).days >= PILOT_AVAILABILITY_DAYS:
+            start_date = criteria.start_date or today
+            end_date = criteria.end_date or today + timedelta(days=PILOT_AVAILABILITY_DAYS - 1)
+            if start_date < today or (end_date - today).days >= PILOT_AVAILABILITY_DAYS:
                 raise InvalidSchedulingRequest("Choose dates within the next 14 days, including today.")
-            working_days, empty_reason = _working_days(provider, criteria, routing)
+            working_days, empty_reason = _working_days(provider, criteria, (start_date, end_date), routing)
             if working_days and build_calendar_source is not None:
                 fence = claim_google_calendar_availability_fence(sessions, instructor_id=instructor_id)
                 check_current_google_calendar_availability_fence(session, fence=fence)
@@ -188,7 +195,10 @@ def search_one_time_availability(
     if fence is not None:
         revalidate_google_calendar_availability_fence(sessions, fence=fence)
     routing.check_deadline()
-    return AvailabilityRange(provider.timezone, location, slots, None if slots else empty_reason)
+    return AvailabilityRange(
+        start_date, end_date, provider.timezone, location,
+        slots, None if slots else empty_reason, fence, sessions,
+    )
 
 
 def _find_range_slots(
@@ -237,14 +247,16 @@ def _find_range_slots(
 def _working_days(
     provider: ProviderConfiguration,
     criteria: OneTimeAvailabilityCriteria,
+    date_range: tuple[date, date],
     routing: _BoundedRouting,
 ) -> tuple[list[_WorkingDay], AvailabilityEmptyReason]:
     days: list[_WorkingDay] = []
     has_working_day = False
     zone = timezones.get_zone(provider.timezone)
-    for offset in range((criteria.end_date - criteria.start_date).days + 1):
+    start_date, end_date = date_range
+    for offset in range((end_date - start_date).days + 1):
         routing.check_deadline()
-        day = criteria.start_date + timedelta(days=offset)
+        day = start_date + timedelta(days=offset)
         working = tools.working_window_utc(provider, day)
         if working is None:
             continue

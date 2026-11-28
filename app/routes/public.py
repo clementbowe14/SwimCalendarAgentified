@@ -1,5 +1,6 @@
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from functools import partial
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse
@@ -10,12 +11,15 @@ from app.api_errors import CalendarAvailabilityUnavailable
 from app.api_schemas import (
     ClientInviteAvailabilityRequest,
     ClientInviteAvailabilityResponse,
+    ClientInviteAvailabilityRangeRequest,
+    ClientInviteAvailabilityRangeResponse,
     ClientInviteCalendarLinks,
     ClientInviteEnvelopeResponse,
     ClientInviteIntake,
     ClientInviteAlternativeSelectionRequest,
     ClientInviteLessonRequestCreate,
     ClientInviteLessonRequestResponse,
+    ErrorResponse,
     PublicAvailabilitySearchRequest,
     PublicAvailabilitySearchResponse,
     PublicInviteResponse,
@@ -35,6 +39,7 @@ from app.client_invites import (
     get_client_invite_envelope,
     get_client_lesson_request_status,
     request_client_invite_lesson_slot,
+    search_client_invite_availability_range,
     search_client_invite_slots,
     select_client_lesson_request_alternative,
     submit_client_invite_intake,
@@ -66,7 +71,8 @@ def find_invite_availability(
 ) -> PublicAvailabilitySearchResponse:
     try:
         invite = resolve_invite(token)
-        with _invite_calendar_source(http_request.app.state, invite) as source:
+        with _invite_calendar_builder(http_request.app.state, invite) as build:
+            source = build() if build is not None else None
             result = search_public_availability(invite, request, calendar_busy_source=source)
             with db.SessionLocal() as session:
                 if source is None:
@@ -108,14 +114,43 @@ def find_client_invite_slots(
 ) -> ClientInviteAvailabilityResponse:
     try:
         invite = resolve_invite(token)
-        with _invite_calendar_source(http_request.app.state, invite) as source:
+        with _invite_calendar_builder(http_request.app.state, invite) as build:
+            source = build() if build is not None else None
             return search_client_invite_slots(invite, request, calendar_busy_source=source)
     finally:
         del http_request
 
 
+@router.post(
+    "/client-invites/{token}/availability/search",
+    response_model=ClientInviteAvailabilityRangeResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "The search dates, location or duration could not be used."},
+        404: {"model": ErrorResponse, "description": "The invite could not be found."},
+        409: {"model": ErrorResponse, "description": "Scheduling is temporarily unavailable."},
+        410: {"model": ErrorResponse, "description": "The invite expired."},
+        422: {"model": ErrorResponse, "description": "The search fields failed validation."},
+        503: {"model": ErrorResponse, "description": "Availability could not be fully verified."},
+    },
+)
+def find_client_invite_availability_range(
+    token: str,
+    request: ClientInviteAvailabilityRangeRequest,
+    http_request: Request,
+) -> ClientInviteAvailabilityRangeResponse:
+    try:
+        invite = resolve_invite(token)
+        with _invite_calendar_builder(http_request.app.state, invite) as build:
+            return search_client_invite_availability_range(invite, request, build_calendar_source=build)
+    finally:
+        invite = build = None
+        del token, request, http_request
+
+
 @contextmanager
-def _invite_calendar_source(state: State, invite: InviteContext) -> Iterator[CalendarBusySource | None]:
+def _invite_calendar_builder(
+    state: State, invite: InviteContext
+) -> Iterator[Callable[..., CalendarBusySource] | None]:
     permits = state.public_calendar_reads
     if not permits.acquire(blocking=False):
         raise CalendarAvailabilityUnavailable()
@@ -123,7 +158,7 @@ def _invite_calendar_source(state: State, invite: InviteContext) -> Iterator[Cal
         with db.SessionLocal() as session:
             owner = session.query(ProviderAccountDB.id).filter_by(instructor_id=invite.instructor_id).scalar()
         # A legacy instructor without a provider account cannot have an external connection.
-        yield google_calendar_availability_source(state, invite.instructor_id) if owner else None
+        yield partial(google_calendar_availability_source, state, invite.instructor_id) if owner else None
     finally:
         permits.release()
 
