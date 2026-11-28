@@ -1214,9 +1214,7 @@ def book_coach_lesson(
             start_time_iso=requested_start.isoformat(),
             duration_mins=request.duration_mins,
             location_address=location.address,
-            expected_service_address=(
-                request.client_address if request.client_id is not None and request.is_instructor_facility else None
-            ),
+            expected_location_address=request.client_address if request.client_id is not None else None,
             idempotency_key=request.idempotency_key,
             is_instructor_facility=request.is_instructor_facility,
             buffer_policy=policy,
@@ -1255,8 +1253,7 @@ def _validate_coach_booking_replay(
         existing["instructor_id"] != instructor_id
         or existing["client_id"] != client_id
         or (
-            request.client_id is not None and request.is_instructor_facility
-            and existing["location_address"] != request.client_address
+            request.client_id is not None and existing["location_address"] != request.client_address
         )
         or timezones.to_utc_storage(existing["start_time"]) != requested_start_storage
         or timezones.to_utc_storage(existing["end_time"]) != requested_end_storage

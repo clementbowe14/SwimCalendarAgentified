@@ -99,7 +99,11 @@ test.describe("MVP coach auth flow", () => {
 
   test("reload validates the cookie before restoring protected command data", async ({ page }) => {
     const api = await mockAuthenticatedCoachApi(page);
+    const initialSearch = page.waitForResponse((response) => (
+      response.request().method() === "POST" && response.url().endsWith("/coach/availability/search")
+    ));
     await signInThroughUi(page);
+    expect((await initialSearch).ok()).toBeTruthy();
     const priorSessionChecks = api.sessionCalls();
     const priorProtectedCalls = api.protectedCalls().length;
     const priorRequestCount = api.requestOrder().length;

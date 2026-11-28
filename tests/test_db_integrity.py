@@ -62,6 +62,21 @@ def test_booking_idempotency_key_retry_returns_existing_appointment(isolated_db)
     assert len(stored) == 1
 
 
+def test_appointment_write_replays_only_with_matching_location(isolated_db):
+    starts = datetime.datetime.fromisoformat("2026-08-21T10:00:00-05:00")
+    booking = {
+        "instructor_id": "inst_001", "client_id": "client_alice", "title": "Lesson with Alice",
+        "start_time": starts, "end_time": starts + datetime.timedelta(minutes=45),
+        "location_address": "450 North Blvd, Austin, TX", "lat": 30.3300, "lng": -97.7200,
+        "idempotency_key": "booking-location-retry", "match_location": True,
+    }
+    first = db.save_appointment(**booking)
+    assert db.save_appointment(**booking) == first
+    for different in ({"location_address": "Different pool"}, {"lat": 30.5, "lng": -97.5}):
+        with pytest.raises(db.IdempotencyKeyConflictError):
+            db.save_appointment(**{**booking, **different})
+
+
 def test_public_request_idempotency_key_retry_returns_existing_request(isolated_db):
     slot_start = datetime.datetime(2026, 8, 21, 10, 0)
     slot_end = slot_start + datetime.timedelta(minutes=45)

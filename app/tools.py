@@ -567,11 +567,11 @@ def book_swim_lesson(
     buffer_policy: Optional[BufferPolicy] = None,
     *,
     calendar_busy_source: Optional[CalendarBusySource] = None,
-    expected_service_address: str | None = None,
+    expected_location_address: str | None = None,
 ) -> dict:
     """Book a lesson without retaining a secret-bearing busy source."""
 
-    try: source_handoff: list[Optional[CalendarBusySource]] = [calendar_busy_source]; calendar_busy_source = None; return _book_swim_lesson(instructor_id, client_id, client_name, start_time_iso, duration_mins, location_address, idempotency_key, request_id, is_instructor_facility, buffer_policy, source_handoff, expected_service_address)
+    try: source_handoff: list[Optional[CalendarBusySource]] = [calendar_busy_source]; calendar_busy_source = None; return _book_swim_lesson(instructor_id, client_id, client_name, start_time_iso, duration_mins, location_address, idempotency_key, request_id, is_instructor_facility, buffer_policy, source_handoff, expected_location_address)
     finally:
         try: calendar_busy_source = None; _clear_optional_calendar_busy_source_handoff(locals().get("source_handoff"))
         except BaseException:
@@ -594,7 +594,7 @@ def _book_swim_lesson(
     is_instructor_facility: bool,
     buffer_policy: Optional[BufferPolicy],
     calendar_busy_source_handoff: list[Optional[CalendarBusySource]],
-    expected_service_address: str | None,
+    expected_location_address: str | None,
 ) -> dict:
     """Books an appointment after revalidating the authoritative schedule."""
     try:
@@ -617,7 +617,7 @@ def _book_swim_lesson(
         if (
             existing["instructor_id"] != instructor_id
             or existing["client_id"] != client_id
-            or (expected_service_address is not None and existing["location_address"] != expected_service_address)
+            or (expected_location_address is not None and existing["location_address"] != expected_location_address)
             or timezones.to_utc_storage(existing["start_time"]) != start_time_storage
             or timezones.to_utc_storage(existing["end_time"]) != end_time_storage
         ):
@@ -630,11 +630,11 @@ def _book_swim_lesson(
 
     if not provider.setup_complete:
         raise ProviderSetupIncomplete(provider.setup_missing_fields)
-    service_location = provider.service_location
-    if expected_service_address is not None and (
-        service_location is None or service_location.address != expected_service_address
-    ):
-        raise db.ScheduleConflictError("The service location changed after the availability search.")
+    expected_service_location = None
+    if is_instructor_facility and expected_location_address is not None:
+        expected_service_location = provider.service_location
+        if expected_service_location is None or expected_service_location.address != expected_location_address:
+            raise db.ScheduleConflictError("The service location changed after the availability search.")
 
     policy = buffer_policy or load_buffer_policy(instructor_id, operation="direct_booking")
     available_slots = find_available_swim_slots(
@@ -648,7 +648,7 @@ def _book_swim_lesson(
             calendar_busy_source_handoff
         ),
         requested_start=start_time,
-        expected_service_location=service_location if expected_service_address is not None else None,
+        expected_service_location=expected_service_location,
     )
     if not any(timezones.to_utc_storage(slot.start_time) == start_time_storage for slot in available_slots):
         raise db.ScheduleConflictError("The requested start is no longer available.")
@@ -672,6 +672,7 @@ def _book_swim_lesson(
         lng=lng,
         idempotency_key=idempotency_key,
         request_id=request_id,
+        match_location=expected_location_address is not None,
     )
 
     return {

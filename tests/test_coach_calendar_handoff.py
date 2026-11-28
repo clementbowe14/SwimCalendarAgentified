@@ -47,6 +47,11 @@ def test_finder_books_the_selected_client_in_the_expected_account(authenticated_
     assert booked.status_code == 200, booked.text
     replayed = api.post("/api/coach/bookings", json=payload, headers=expected)
     assert replayed.json() == booked.json()
+    different_location = api.post(
+        "/api/coach/bookings", json={**payload, "client_address": "800 West Lake Dr, Austin, TX"}, headers=expected,
+    )
+    assert different_location.status_code == 409
+    assert different_location.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
     with db.SessionLocal() as session:
         appointment = session.get(AppointmentDB, booked.json()["appointment_id"])
         client = db.get_client_profile_for_instructor("inst_001", "client_alice")
