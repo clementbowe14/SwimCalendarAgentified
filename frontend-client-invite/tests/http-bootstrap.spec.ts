@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
-import type { ClientInviteEnvelope } from "../src/api/types";
+import type { AvailabilitySearchResponse, ClientInviteEnvelope } from "../src/api/types";
+import { createRequestedLesson } from "../src/data/mockInvite";
 
 const apiPattern = "http://127.0.0.1:3109/api/public/client-invites/**";
 const serverEnvelope: ClientInviteEnvelope = {
@@ -124,6 +125,110 @@ test("default backend address sentinel stays empty until the client enters a loc
   await page.getByRole("button", { name: "Continue to availability" }).click();
   await expect(page.getByRole("heading", { name: "Choose the times that suit you" })).toBeVisible();
   expect(submittedIntakes.at(-1)?.location.address).toBe("77 Client Way");
+});
+
+test.describe("one-time availability search", () => {
+  test.use({ timezoneId: "America/Los_Angeles" });
+
+  const rangeResponse: AvailabilitySearchResponse = {
+    start_date: "2027-01-29",
+    end_date: "2027-02-11",
+    duration_mins: 30,
+    slots: [
+      {
+        id: "slot_earlier_day",
+        start_iso: "2027-01-30T10:15:00-06:00",
+        end_iso: "2027-01-30T10:45:00-06:00",
+        display: "Sat, Jan 30 at 10:15 AM",
+        location_address: "42 Server Lane",
+      },
+      {
+        id: "slot_later_day",
+        start_iso: "2027-02-04T16:30:00-06:00",
+        end_iso: "2027-02-04T17:00:00-06:00",
+        display: "Thu, Feb 4 at 4:30 PM",
+        location_address: "42 Server Lane",
+      },
+    ],
+  };
+
+  test("submits weekday preferences and requests the selected later-day offer", async ({ page }) => {
+    const laterSlot = rangeResponse.slots[1];
+    let releaseSearch = () => {};
+    const searchGate = new Promise<void>((resolve) => { releaseSearch = resolve; });
+    await page.route(apiPattern, async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/availability/search")) {
+        await searchGate;
+        return route.fulfill({ json: rangeResponse });
+      }
+      if (path.endsWith("/lesson-requests")) {
+        return route.fulfill({
+          json: { ...createRequestedLesson(laterSlot), invite_token: serverEnvelope.invite_token },
+        });
+      }
+      return route.fulfill({ json: serverEnvelope });
+    });
+
+    await page.goto("/?invite_token=server-invite-token");
+    await page.getByRole("button", { name: "Continue to availability" }).click();
+    await page.getByRole("button", { name: "Tue", exact: true }).click();
+    await page.getByRole("button", { name: "30 min", exact: true }).click();
+    const search = page.waitForRequest((request) => request.url().endsWith("/availability/search"));
+    await page.getByRole("button", { name: "Show available times" }).click();
+    try {
+      expect((await search).postDataJSON()).toEqual({
+        client_name: "Avery Chen",
+        client_address: "42 Server Lane",
+        is_instructor_facility: false,
+        duration_mins: 30,
+        windows: [
+          { days: ["thursday"], start_time: "16:00", end_time: "18:00" },
+          { days: ["saturday"], start_time: "10:00", end_time: "12:00" },
+        ],
+      });
+      await expect(page.getByRole("button", { name: "60 min", exact: true })).toBeDisabled();
+      await expect(page.getByRole("button", { name: "Thu", exact: true })).toBeDisabled();
+      await expect(page.getByRole("button", { name: "Sat", exact: true })).toBeDisabled();
+      await expect(page.getByRole("button", { name: "4 PM-6 PM", exact: true }).first()).toBeDisabled();
+    } finally {
+      releaseSearch();
+    }
+
+    await expect(page.getByText(/Searched Jan 29.*Feb 11, 2027/)).toBeVisible();
+    const laterCard = page.getByRole("button", { name: /Thu, Feb 4 at 4:30 PM/ });
+    await expect(laterCard).toContainText("42 Server Lane");
+    await expect(laterCard).toContainText("30 min");
+    await expect(laterCard).toHaveAttribute("aria-pressed", "false");
+    await laterCard.click();
+    await expect(laterCard).toHaveAttribute("aria-pressed", "true");
+    const redemption = page.waitForRequest((request) => request.url().endsWith("/lesson-requests"));
+    await page.getByRole("button", { name: "Request this time" }).click();
+    expect((await redemption).postDataJSON()).toEqual({
+      slot_id: laterSlot.id,
+      idempotency_key: `invite-request:server-invite-token:${laterSlot.id}`,
+    });
+    await expect(page.getByRole("status")).toContainText(laterSlot.display);
+  });
+
+  test("keeps the searched dates visible when no times are returned", async ({ page }) => {
+    await page.route(apiPattern, (route) => route.fulfill({
+      json: route.request().url().endsWith("/availability/search")
+        ? { ...rangeResponse, slots: [] }
+        : serverEnvelope,
+    }));
+
+    await page.goto("/?invite_token=server-invite-token");
+    await page.getByRole("button", { name: "Continue to availability" }).click();
+    await page.getByRole("button", { name: "Show available times" }).click();
+
+    await expect(page.getByText(/Searched Jan 29.*Feb 11, 2027/)).toBeVisible();
+    await expect(page.getByRole("status")).toContainText("No appointment times found");
+    await expect(page.getByText("Try changing your days, time windows, or duration.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Request this time" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Edit preferences" }).click();
+    await expect(page.getByRole("button", { name: "Show available times" })).toBeEnabled();
+  });
 });
 
 test("missing HTTP invite token shows an invalid-link state without making a request", async ({ page }) => {

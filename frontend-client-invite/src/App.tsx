@@ -15,7 +15,6 @@ import { inviteEnvelope } from "./data/mockInvite";
 import {
   buildSearchRequest,
   initialAvailabilityWindows,
-  selectRecommendedSlot,
   type InviteFlowState,
   type InviteStep,
 } from "./features/inviteFlow/flowModel";
@@ -29,13 +28,12 @@ type AppProps = {
   api: ClientInviteApi;
   dataMode: ClientInviteDataMode["mode"];
   inviteToken: string | null;
-  requestedDate: string;
   showMockBadge: boolean;
 };
 
 type BootstrapStatus = "loading" | "ready" | "error" | "missing-token";
 
-export default function App({ api, dataMode, inviteToken, requestedDate, showMockBadge }: AppProps) {
+export default function App({ api, dataMode, inviteToken, showMockBadge }: AppProps) {
   const initialEnvelope = dataMode === "mock" ? createMockEnvelope(inviteToken ?? inviteEnvelope.invite_token) : null;
   const [envelope, setEnvelope] = useState<ClientInviteEnvelope | null>(initialEnvelope);
   const [intake, setIntake] = useState<ClientIntake | null>(initialEnvelope?.intake ?? null);
@@ -129,25 +127,19 @@ export default function App({ api, dataMode, inviteToken, requestedDate, showMoc
   };
 
   const findSlots = async () => {
+    if (loading) return;
     setLoading(true);
     setErrorMessage(null);
     try {
       const response = await api.findAvailableSlots(
         envelope.invite_token,
-        buildSearchRequest(
-          intake,
-          requestedDate,
-          flow.duration_mins,
-          flow.recurrence,
-          flow.windows,
-        ),
+        buildSearchRequest(intake, flow.duration_mins, flow.windows),
       );
-      const recommended = selectRecommendedSlot(response.slots, flow.recurrence);
       setSlotResponse(response);
       setFlow((current) => ({
         ...current,
         step: "results",
-        selectedSlotId: recommended?.id ?? null,
+        selectedSlotId: response.slots[0]?.id ?? null,
       }));
     } catch (error) {
       setErrorMessage(readApiError(error));
@@ -157,7 +149,7 @@ export default function App({ api, dataMode, inviteToken, requestedDate, showMoc
   };
 
   const requestSelectedSlot = async () => {
-    if (!flow.selectedSlotId) return;
+    if (!flow.selectedSlotId || loading) return;
     setLoading(true);
     setErrorMessage(null);
     try {
@@ -234,10 +226,8 @@ export default function App({ api, dataMode, inviteToken, requestedDate, showMoc
         <AvailabilityPreferencesScreen
           durationMins={flow.duration_mins}
           allowedDurationsMins={envelope.allowed_durations_mins}
-          recurrence={flow.recurrence}
           windows={flow.windows}
           onDurationChange={(duration) => setFlow((current) => ({ ...current, duration_mins: duration }))}
-          onRecurrenceChange={(recurrence) => setFlow((current) => ({ ...current, recurrence }))}
           onWindowsChange={(windows) => setFlow((current) => ({ ...current, windows }))}
           onFindSlots={findSlots}
           searching={loading}
@@ -249,7 +239,6 @@ export default function App({ api, dataMode, inviteToken, requestedDate, showMoc
           response={slotResponse}
           instructorName={envelope.instructor_name}
           selectedSlotId={flow.selectedSlotId}
-          recurrence={flow.recurrence}
           onSelectSlot={(selectedSlotId) => setFlow((current) => ({ ...current, selectedSlotId }))}
           onRequestSlot={requestSelectedSlot}
           onBack={() => goToStep("preferences")}
@@ -329,7 +318,6 @@ function createFlow(envelope: ClientInviteEnvelope | null): InviteFlowState {
   return {
     step: "intake",
     selectedSlotId: null,
-    recurrence: "single",
     duration_mins: envelope?.preferred_duration_mins ?? 0,
     windows: envelope ? cloneAvailabilityWindows() : [],
   };
@@ -382,7 +370,6 @@ function getHeroContent(step: InviteStep, instructorName: string, lessonRequest:
     return {
       eyebrow: "Available times",
       title: "Choose your preferred time",
-      copy: "Every option shown is open and ready for you to request.",
     };
   }
 

@@ -2,18 +2,20 @@ import { expect, test, type Page } from "@playwright/test";
 import { createConfirmedLesson, inviteEnvelope, schedulerSlots, slotResponse } from "../src/data/mockInvite";
 import type { NotificationStatus } from "../src/api/types";
 
-test.use({ baseURL: "http://127.0.0.1:3003" });
-
 async function setup(page: Page, weekly = false) {
   const request = createConfirmedLesson(schedulerSlots[0]);
   const links = request.confirmation!.calendar_links;
   links.apple = links.ics = "/api/public/lesson-requests/request-token/calendar.ics";
-  if (weekly) links.google_events.push({ start_iso: "2026-09-05T17:30:00Z", end_iso: "2026-09-05T18:15:00Z", url: "https://calendar.google.com/calendar/render?action=TEMPLATE&dates=20260905T173000Z%2F20260905T181500Z" });
+  if (weekly) {
+    request.slot.recurrence = "weekly";
+    request.slot.recurrence_count = 2;
+    links.google_events.push({ start_iso: "2026-09-05T17:30:00Z", end_iso: "2026-09-05T18:15:00Z", url: "https://calendar.google.com/calendar/render?action=TEMPLATE&dates=20260905T173000Z%2F20260905T181500Z" });
+  }
   let failRefresh = false;
   await page.route("http://127.0.0.1:3109/api/public/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("calendar.ics")) return route.fulfill({ status: 200, contentType: "text/calendar;charset=utf-8", body: "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n" });
-    if (path.endsWith("/slots")) return route.fulfill({ json: slotResponse });
+    if (path.endsWith("/availability/search")) return route.fulfill({ json: slotResponse });
     if (path.endsWith("/lesson-requests")) return route.fulfill({ json: request });
     if (path.includes("/lesson-requests/")) return route.fulfill(failRefresh ? { status: 503, json: { error: { message: "Status refresh unavailable", code: "UNAVAILABLE" } } } : { json: request });
     return route.fulfill({ json: inviteEnvelope });

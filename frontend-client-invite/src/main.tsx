@@ -13,7 +13,6 @@ const environment = import.meta.env;
 const dataMode = resolveClientInviteDataMode(environment, "serve");
 const api = createClientInviteApi(environment, "serve");
 const inviteToken = readInviteToken(dataMode);
-const requestedDate = readConfigValue(environment.VITE_CLIENT_INVITE_DATE, "2026-08-29");
 
 if (import.meta.env.DEV) {
   document.documentElement.dataset.dataMode = dataMode.mode;
@@ -27,7 +26,6 @@ createRoot(root).render(
       api={api}
       dataMode={dataMode.mode}
       inviteToken={inviteToken}
-      requestedDate={requestedDate}
       showMockBadge={import.meta.env.DEV && dataMode.mode === "mock"}
     />
   </StrictMode>,
@@ -42,9 +40,5 @@ function readInviteToken(dataMode: ClientInviteDataMode): string | null {
   if (configured) return configured;
 
   return dataMode.mode === "mock" ? inviteEnvelope.invite_token : null;
-}
-
-function readConfigValue(value: string | undefined, fallback: string): string {
-  return value?.trim() || fallback;
 }
 

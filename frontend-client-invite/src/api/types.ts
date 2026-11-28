@@ -10,7 +10,7 @@ export type RequestStatus =
   | "expired";
 export type CalendarProvider = "google" | "apple" | "ics";
 
-export type DayKey = "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
+export type DayKey = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
 
 export type LocationInfo = {
   address: string;
@@ -35,37 +35,34 @@ export type ClientIntake = {
   location: LocationInfo;
 };
 
-export type BookingRequestDTO = {
+export type ClientAvailabilitySearchRequest = {
   client_name: string;
-  location: LocationInfo;
-  requested_date: string;
+  client_address?: string;
+  is_instructor_facility: boolean;
   duration_mins: number;
+  limit?: number;
+  windows?: Array<Omit<AvailabilityWindow, "id">>;
 };
 
-export type ClientAvailabilitySearchRequest = BookingRequestDTO & {
-  recurrence: BookingRecurrence;
-  windows: AvailabilityWindow[];
-};
-
-export type SchedulerSlot = {
+export type AvailabilitySlot = {
   id: string;
   start_iso: string;
   end_iso: string;
   display: string;
   location_address: string;
+};
+
+export type SchedulerSlot = AvailabilitySlot & {
   recurrence_available: boolean;
   recurrence: BookingRecurrence;
   recurrence_count: number;
 };
 
 export type AvailabilitySearchResponse = {
-  status: "PRESENTING" | "FAILED";
-  dialogue_response: string;
-  slots: SchedulerSlot[];
-  unavailable_windows: Array<{
-    id: string;
-    label: string;
-  }>;
+  start_date: string;
+  end_date: string;
+  duration_mins: number;
+  slots: AvailabilitySlot[];
 };
 
 export type LessonRequest = {

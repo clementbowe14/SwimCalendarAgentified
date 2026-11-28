@@ -4,7 +4,7 @@ import {
   ClientInviteApiError,
   FetchClientInviteApi,
 } from "../src/api/clientInviteApi.js";
-import type { ClientAvailabilitySearchRequest, ClientIntake } from "../src/api/types.js";
+import type { AvailabilitySearchResponse, ClientIntake } from "../src/api/types.js";
 import { buildSearchRequest } from "../src/features/inviteFlow/flowModel.js";
 
 type FetchCall = {
@@ -26,32 +26,50 @@ const intake: ClientIntake = {
   },
 };
 
-test("client invite slot search request is scoped by token path rather than raw internal IDs", async () => {
+test("client invite searches the server-selected date range with public weekday windows", async () => {
   const calls: FetchCall[] = [];
   const api = new FetchClientInviteApi("http://api.test/api/public/");
-  const request = buildSearchRequest(intake, "2026-08-29", 45, "weekly", [
-    { id: "sat", days: ["Sat"], start_time: "10:00", end_time: "12:00" },
+  const request = buildSearchRequest(intake, 45, [
+    { id: "sat", days: ["saturday"], start_time: "10:00", end_time: "12:00" },
+    { id: "weekdays", days: [], start_time: "16:00", end_time: "18:00" },
   ]);
+  const response: AvailabilitySearchResponse = {
+    start_date: "2026-08-29",
+    end_date: "2026-09-11",
+    duration_mins: 45,
+    slots: [],
+  };
 
-  await withMockFetch(calls, async () =>
-    jsonResponse({
-      status: "PRESENTING",
-      dialogue_response: "Found one slot.",
-      slots: [],
-      unavailable_windows: [],
-    }),
-    async () => {
-      await api.findAvailableSlots("invite_sofia_0826", request);
-    },
-  );
+  await withMockFetch(calls, async () => jsonResponse(response), async () => {
+    assert.deepEqual(await api.findAvailableSlots("invite_sofia_0826", request), response);
+  });
 
-  const body = JSON.parse(String(calls[0].init?.body)) as ClientAvailabilitySearchRequest;
-  assert.equal(calls[0].url, "http://api.test/api/public/client-invites/invite_sofia_0826/slots");
+  assert.equal(calls[0].url, "http://api.test/api/public/client-invites/invite_sofia_0826/availability/search");
+  assert.equal(calls[0].init?.method, "POST");
   assert.equal(calls[0].init?.credentials, "omit");
   assert.equal(new Headers(calls[0].init?.headers).get("authorization"), null);
-  assert.equal("instructor_id" in body, false);
-  assert.equal("client_id" in body, false);
-  assert.deepEqual(body, request);
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
+    client_name: "Sofia Martinez",
+    client_address: "820 Lakeview Dr, Austin, TX",
+    is_instructor_facility: false,
+    duration_mins: 45,
+    windows: [{ days: ["saturday"], start_time: "10:00", end_time: "12:00" }],
+  });
+});
+
+test("facility range searches use the configured provider location and can omit weekday filters", () => {
+  const facilityIntake: ClientIntake = {
+    ...intake,
+    location_type: "facility",
+    location: { ...intake.location, is_instructor_facility: true },
+  };
+
+  assert.deepEqual(buildSearchRequest(facilityIntake, 30, []), {
+    client_name: "Sofia Martinez",
+    is_instructor_facility: true,
+    duration_mins: 30,
+    windows: [],
+  });
 });
 
 test("client invite intake and request creation use the public invite routes", async () => {

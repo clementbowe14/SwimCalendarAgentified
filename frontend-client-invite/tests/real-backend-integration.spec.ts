@@ -9,7 +9,7 @@ if (!apiBase) {
 }
 
 test.describe("live backend calendar and notification handoff", () => {
-  test("weekly booking, canonical coach confirmation, notification refresh and parsed calendar download", async ({ page, request, context }) => {
+  test("one-time booking, canonical coach confirmation, notification refresh and parsed calendar download", async ({ page, request, context }, testInfo) => {
     const backend = new URL(apiBase).origin;
     const backendUrl = new URL(backend);
     const token = process.env.VITE_CLIENT_INVITE_TOKEN || "invite_sofia_0826";
@@ -31,7 +31,12 @@ test.describe("live backend calendar and notification handoff", () => {
     await expect(page.getByText("Mock data", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Client name")).toHaveValue("Sofia Martinez");
     await page.getByRole("button", { name: "Continue to availability" }).click();
-    await page.getByRole("button", { name: "Weekly", exact: true }).click();
+    const excludedDays = testInfo.project.name === "mobile-chrome" ? ["Tue", "Thu"] : ["Sat"];
+    for (const day of excludedDays) {
+      await page.getByRole("button", { name: day, exact: true }).click();
+    }
+    await page.getByLabel("Weekdays time availability")
+      .getByRole("button", { name: "10 AM-12 PM", exact: true }).click();
     await page.getByRole("button", { name: "Show available times" }).click();
     await expect(page.getByRole("button", { name: "Request this time" })).toBeEnabled();
     const createdPromise = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith("/lesson-requests"));
@@ -40,6 +45,7 @@ test.describe("live backend calendar and notification handoff", () => {
     expect(createdResponse.ok()).toBeTruthy();
     const created = await createdResponse.json() as LessonRequest;
     expect(created.notifications).toEqual([]);
+    expect(created.slot.recurrence).toBe("single");
     const selectedOccurrence = eventInstants(created.slot);
     const persistedResponse = await request.get(
       `${apiBase}/lesson-requests/${encodeURIComponent(created.id)}`,
@@ -51,7 +57,7 @@ test.describe("live backend calendar and notification handoff", () => {
     expect(eventInstants(persisted.slot)).toEqual(selectedOccurrence);
     const coachConfirmation = await confirmWithIsolatedCoachSession(backend, created.id);
     expect(coachConfirmation.status).toBe("confirmed");
-    expect(coachConfirmation.appointment_ids).toHaveLength(4);
+    expect(coachConfirmation.appointment_ids).toHaveLength(1);
     expect(coachConfirmation.calendar_links).not.toBeNull();
     const refreshedPromise = page.waitForResponse((r) => r.request().method() === "GET" && r.url().endsWith(`/lesson-requests/${created.id}`));
     await page.getByRole("button", { name: "Check confirmation" }).click();
@@ -73,22 +79,18 @@ test.describe("live backend calendar and notification handoff", () => {
     await page.getByRole("button", { name: "Refresh status" }).click();
     await expect(page.getByText("Email: queued")).toBeVisible();
     const events = confirmed.confirmation!.calendar_links.google_events;
-    expect(events.length).toBeGreaterThan(1);
-    await page.getByRole("button", { name: "Google Calendar", exact: true }).click();
-    const occurrenceLinks = page.getByRole("list", { name: "Google Calendar occurrences" }).getByRole("link");
-    await expect(occurrenceLinks).toHaveCount(events.length);
-    for (let i = 0; i < events.length; i++) {
-      await expect(occurrenceLinks.nth(i)).toHaveAttribute("href", events[i].url);
-      const params = new URL(events[i].url).searchParams;
-      const compact = (value: string) => new Date(value).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-      expect(params.get("dates")).toBe(`${compact(events[i].start_iso)}/${compact(events[i].end_iso)}`);
-    }
+    expect(events).toHaveLength(1);
+    const googleLink = page.getByRole("link", { name: "Google Calendar", exact: true });
+    await expect(googleLink).toHaveAttribute("href", events[0].url);
+    const params = new URL(events[0].url).searchParams;
+    const compact = (value: string) => new Date(value).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+    expect(params.get("dates")).toBe(`${compact(events[0].start_iso)}/${compact(events[0].end_iso)}`);
     await context.route("https://calendar.google.com/**", async (route) => {
       expect(route.request().headers().referer).toBeUndefined();
       await route.fulfill({ contentType: "text/html", body: "Google Calendar handoff" });
     });
     const popupPromise = page.waitForEvent("popup");
-    await occurrenceLinks.last().click();
+    await googleLink.click();
     const popup = await popupPromise;
     await popup.waitForLoadState();
     expect(await popup.evaluate(() => window.opener)).toBeNull();
@@ -116,6 +118,31 @@ test.describe("live backend calendar and notification handoff", () => {
       expect(text).not.toContain("ana.martinez");
     }
     await expect(page.getByText(/Added to Google|Text sent|Email sent/)).toHaveCount(0);
+  });
+
+  test("shows general suggestions when the provider cannot offer any times", async ({ page }) => {
+    const token = process.env.VITE_CLIENT_INVITE_TOKEN || "invite_sofia_0826";
+    await page.goto(`/?invite_token=${encodeURIComponent(token)}`);
+    await page.getByRole("button", { name: "Continue to availability" }).click();
+    for (const group of ["Weekdays", "Weekend"]) {
+      await page.getByLabel(`${group} time availability`)
+        .getByRole("button", { name: "8 PM-10 PM", exact: true }).click();
+    }
+    const search = page.waitForResponse((response) => (
+      response.request().method() === "POST" && response.url().endsWith("/availability/search")
+    ));
+    await page.getByRole("button", { name: "Show available times" }).click();
+    const response = await search;
+    expect(response.ok(), await response.text()).toBeTruthy();
+    expect(await response.json()).toEqual({
+      start_date: expect.any(String),
+      end_date: expect.any(String),
+      duration_mins: 45,
+      slots: [],
+    });
+    await expect(page.getByRole("status")).toContainText("Try changing your days, time windows, or duration.");
+    await expect(page.getByRole("button", { name: "Request this time" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Edit preferences" })).toBeVisible();
   });
 
   test("invalid invite reports stable API error", async ({ page }) => {

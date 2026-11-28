@@ -4,7 +4,6 @@ import { resolveClientInviteDataMode } from "./src/api/dataMode";
 type ClientInviteE2EMode = "mock" | "intercepted" | "live";
 
 const e2eMode = readE2EMode(process.env.CLIENT_INVITE_E2E_MODE);
-const firstDate = liveFirstDate();
 const interceptedApiUrl = "http://127.0.0.1:3109/api/public";
 const liveApiUrl = process.env.VITE_CLIENT_INVITE_API_URL?.trim() ?? "";
 
@@ -31,7 +30,6 @@ const modeConfig: Record<ClientInviteE2EMode, Pick<PlaywrightTestConfig, "testMa
       url: "http://127.0.0.1:3001",
       env: {
         ...serverEnvironment,
-        VITE_CLIENT_INVITE_DATE: "2026-08-29",
         VITE_CLIENT_INVITE_TOKEN: "",
       },
       reuseExistingServer: false,
@@ -45,7 +43,6 @@ const modeConfig: Record<ClientInviteE2EMode, Pick<PlaywrightTestConfig, "testMa
       url: "http://127.0.0.1:3003",
       env: {
         ...serverEnvironment,
-        VITE_CLIENT_INVITE_DATE: "2026-08-29",
         VITE_CLIENT_INVITE_TOKEN: "",
       },
       reuseExistingServer: false,
@@ -54,7 +51,7 @@ const modeConfig: Record<ClientInviteE2EMode, Pick<PlaywrightTestConfig, "testMa
   },
   live: {
     testMatch: "**/real-backend-integration.spec.ts",
-    webServer: [liveServer(4173, 0), liveServer(5173, 35)],
+    webServer: [liveServer(4173), liveServer(5173)],
     projects: [
       {
         name: "mobile-chrome",
@@ -92,21 +89,13 @@ function browserProjects(baseURL: string): PlaywrightTestConfig["projects"] {
   ];
 }
 
-function liveFirstDate(): Date {
-  const configured = process.env.VITE_CLIENT_INVITE_DATE;
-  const date = new Date(`${configured || new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10)}T12:00:00Z`);
-  if (!configured) date.setUTCDate(date.getUTCDate() + (6 - date.getUTCDay() + 7) % 7);
-  return date;
-}
-
-function liveServer(port: number, offset: number) {
+function liveServer(port: number) {
   return {
     command: `npm run dev -- --port ${port} --strictPort`,
     url: `http://127.0.0.1:${port}`,
     env: {
       VITE_USE_MOCK_API: "false",
       VITE_CLIENT_INVITE_API_URL: liveApiUrl,
-      VITE_CLIENT_INVITE_DATE: new Date(firstDate.getTime() + offset * 86400000).toISOString().slice(0, 10),
       VITE_CLIENT_INVITE_TOKEN: process.env.VITE_CLIENT_INVITE_TOKEN ?? "",
     },
     reuseExistingServer: false,
