@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
@@ -8,7 +9,7 @@ from icalendar import Calendar
 import pytest
 
 from app import db, timezones, tools
-from app.models import AppointmentDB, InstructorDB, InviteTokenDB, LessonRequestDB
+from app.models import AppointmentDB, ClientDB, InstructorDB, InviteTokenDB, LessonRequestDB
 
 
 UTC = timezone.utc
@@ -18,7 +19,7 @@ def _calendar_events(content: bytes | str):
     return Calendar.from_ical(content).walk("VEVENT")
 
 
-def test_finder_books_the_selected_client_in_the_expected_account(authenticated_api_client):
+def test_finder_books_the_selected_client_in_the_expected_account(authenticated_api_client, monkeypatch):
     api = authenticated_api_client
     expected = {"X-Expected-Instructor-Id": "inst_001"}
     stale = {"X-Expected-Instructor-Id": "a-different-provider"}
@@ -42,21 +43,27 @@ def test_finder_books_the_selected_client_in_the_expected_account(authenticated_
     assert api.post("/api/coach/bookings", json=payload, headers=stale).status_code == 409
     missing_client = api.post("/api/coach/bookings", json={**payload, "client_id": "unknown"}, headers=expected)
     assert missing_client.status_code == 404
+    different_address = {**payload, "client_address": "800 West Lake Dr, Austin, TX"}
+    stale_location = api.post("/api/coach/bookings", json=different_address, headers=expected)
+    assert stale_location.status_code == 409
+    assert stale_location.json()["error"]["code"] == "SCHEDULING_CONFLICT"
 
+    geocode = Mock(return_value=(30.33, -97.72))
+    monkeypatch.setattr(tools.routing_provider, "geocode", geocode)
     booked = api.post("/api/coach/bookings", json=payload, headers=expected)
     assert booked.status_code == 200, booked.text
     replayed = api.post("/api/coach/bookings", json=payload, headers=expected)
     assert replayed.json() == booked.json()
-    different_location = api.post(
-        "/api/coach/bookings", json={**payload, "client_address": "800 West Lake Dr, Austin, TX"}, headers=expected,
-    )
+    different_location = api.post("/api/coach/bookings", json=different_address, headers=expected)
     assert different_location.status_code == 409
     assert different_location.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+    geocode.assert_called_once_with(payload["client_address"])
     with db.SessionLocal() as session:
         appointment = session.get(AppointmentDB, booked.json()["appointment_id"])
         client = db.get_client_profile_for_instructor("inst_001", "client_alice")
         assert appointment.client_id == client["id"]
         assert appointment.title == f"Lesson with {client['name']}"
+        assert (appointment.lat, appointment.lng) == (30.33, -97.72)
 
 
 @pytest.mark.parametrize("change_during_recheck", [False, True])
@@ -64,6 +71,8 @@ def test_finder_booking_rejects_a_facility_change_for_the_selected_slot(
     authenticated_api_client, monkeypatch, change_during_recheck,
 ):
     api = authenticated_api_client
+    with db.SessionLocal.begin() as session:
+        session.get(ClientDB, "client_alice").location_mode = "service_location"
     availability = api.post("/api/coach/availability", json={
         "client_name": "Selected client",
         "client_address": "facility",

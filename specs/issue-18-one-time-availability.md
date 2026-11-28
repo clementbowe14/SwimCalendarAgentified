@@ -18,5 +18,5 @@
 
 ## Client invite
 
-- Search the same one-time range from the canonical invite workflow. Expose time, duration, location and selection only. Commit offers under the invite and calendar protections and save each offer’s provider-local date so a later-day selection revalidates on the correct day.
+- `POST /api/public/client-invites/{token}/availability/search` uses the provider’s current 14-day window when dates are omitted. It returns time, duration, location and selection only. Commit offers under the invite and calendar protections and save each offer’s provider-local date so a later-day selection revalidates on the correct day.
 - Keep the legacy single-day API and existing offer redemption compatible. Issue #58 owns the wider pilot recurrence cleanup.

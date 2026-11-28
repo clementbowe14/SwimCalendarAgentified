@@ -10,10 +10,10 @@ from starlette.concurrency import run_in_threadpool
 
 from app import db, tools
 from app.api_errors import (
-    COACH_AVAILABILITY_RANGE_PATH,
     ApiException,
     AuthenticationRequired,
     api_exception_handler,
+    is_availability_search_path,
     unexpected_exception_handler,
     validation_exception_handler,
 )
@@ -91,7 +91,7 @@ def create_app() -> FastAPI:
                 return security_failure
             response = await call_next(request)
         except Exception as exc:
-            if path.rstrip("/") != COACH_AVAILABILITY_RANGE_PATH:
+            if not is_availability_search_path(path):
                 raise
             response = await unexpected_exception_handler(request, exc)
         is_coach_calendar_handoff = (
