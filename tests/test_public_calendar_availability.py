@@ -12,7 +12,7 @@ from app.calendar_connections import replace_google_calendar_connection
 from app.calendar_credentials import CalendarCredentialCipher
 from app.external_calendar import CalendarBusyInterval, CalendarBusySnapshot, ExternalCalendarTimeout
 from app.google_calendar_busy_source_factory import GoogleCalendarBusySourceFactory
-from app.models import InstructorDB, InviteSlotOfferDB, InviteTokenDB, LessonRequestDB, ProviderAccountDB, ProviderWorkingHoursDB
+from app.models import AppointmentDB, InstructorDB, InviteSlotOfferDB, InviteTokenDB, LessonRequestDB, ProviderAccountDB, ProviderWorkingHoursDB
 from app.public_tokens import _replay_lesson_request, require_active_invite
 from tests.public_contract_safety import PUBLIC_SCHEDULING_EVIDENCE_KEYS, flatten_keys
 
@@ -117,7 +117,7 @@ def test_range_search_defaults_to_provider_dates_and_persists_exact_later_day(ap
         assert record.requested_date == date(2026, 12, 3)
 
 
-def test_range_offer_ids_preserve_location_mode_at_the_same_address(api_client, monkeypatch):
+def test_range_offer_preserves_location_through_confirmation(api_client, coach_auth_headers, monkeypatch):
     _set_range_clock(monkeypatch, "2026-12-01T01:00:00+00:00")
     payload = {**RANGE_PAYLOAD, "limit": 1, "windows": [
         {"days": ["tuesday"], "start_time": "14:00", "end_time": "14:45"},
@@ -140,6 +140,20 @@ def test_range_offer_ids_preserve_location_mode_at_the_same_address(api_client, 
         assert original_facility.location_type == "facility"
         assert stored_home.location_type == "home"
         assert (stored_home.lat, stored_home.lng) == home_coords
+
+    geocode = Mock(side_effect=AssertionError("The saved offer location should be reused"))
+    monkeypatch.setattr(tools.routing_provider, "geocode", geocode)
+    selection = api_client.post(f"/api/public/client-invites/{INVITE}/lesson-requests", json={"slot_id": home["id"]})
+    assert selection.status_code == 200, selection.text
+    confirmed = api_client.post(
+        f"/api/coach/lesson-requests/{selection.json()['id']}/confirm", headers=coach_auth_headers, json={},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    geocode.assert_not_called()
+    with db.SessionLocal() as session:
+        appointment = session.get(AppointmentDB, confirmed.json()["appointment_ids"][0])
+        assert appointment.location_address == home["location_address"]
+        assert (appointment.lat, appointment.lng) == home_coords
 
 
 @pytest.mark.parametrize(("change", "status", "code"), [
@@ -178,7 +192,7 @@ def test_redemption_rechecks_invite_and_offer_before_writing(api_client, monkeyp
         assert session.query(LessonRequestDB).filter_by(idempotency_key=key).first() is None
 
 
-def test_later_fold_offer_preserves_the_selected_instant(api_client, monkeypatch):
+def test_later_fold_offer_preserves_the_selected_instant(api_client, coach_auth_headers, monkeypatch):
     _set_range_clock(monkeypatch, "2026-11-01T05:00:00+00:00")
     with db.SessionLocal.begin() as session:
         sunday = session.get(ProviderWorkingHoursDB, ("inst_001", 6))
@@ -196,6 +210,13 @@ def test_later_fold_offer_preserves_the_selected_instant(api_client, monkeypatch
     response = api_client.post(f"/api/public/client-invites/{INVITE}/lesson-requests", json={"slot_id": later["id"]})
     assert response.status_code == 200, response.text
     assert response.json()["slot"]["start_iso"] == later["start_iso"]
+    confirmed = api_client.post(
+        f"/api/coach/lesson-requests/{response.json()['id']}/confirm", headers=coach_auth_headers, json={},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    with db.SessionLocal() as session:
+        appointment = session.get(AppointmentDB, confirmed.json()["appointment_ids"][0])
+        assert appointment.start_time == datetime(2026, 11, 1, 7)
 
 
 def test_range_validation_keeps_contact_inputs_out_of_the_response(api_client):

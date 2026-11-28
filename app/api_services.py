@@ -112,6 +112,7 @@ from app.models import (
     InviteSlotOfferDB,
     InviteTokenDB,
     LessonRequestDB,
+    LocationInfo,
     TimeSlotDTO,
 )
 from app.notifications import coach_email_delivery_for_request, list_coach_email_deliveries
@@ -1691,12 +1692,13 @@ def _request_occurrences(
     *,
     timezone_name: str | None = None,
 ) -> list[tuple[datetime, datetime]]:
+    if lesson_request.recurrence != "weekly":
+        return [(lesson_request.slot_start, lesson_request.slot_end)]
     timezone_name = timezone_name or _instructor_timezone(lesson_request.instructor_id)
     base_local_start = timezones.storage_to_local(lesson_request.slot_start, timezone_name).replace(tzinfo=None)
     base_local_end = timezones.storage_to_local(lesson_request.slot_end, timezone_name).replace(tzinfo=None)
-    count = lesson_request.recurrence_count if lesson_request.recurrence == "weekly" else 1
     occurrences: list[tuple[datetime, datetime]] = []
-    for index in range(count):
+    for index in range(lesson_request.recurrence_count):
         local_start = base_local_start + timedelta(days=7 * index)
         local_end = base_local_end + timedelta(days=7 * index)
         try:
@@ -1751,6 +1753,10 @@ def _validate_occurrences(
 ) -> None:
     try:
         timezone_name = _instructor_timezone(lesson_request.instructor_id)
+        location = LocationInfo(
+            address=lesson_request.client_address, lat=lesson_request.lat, lng=lesson_request.lng,
+            is_instructor_facility=lesson_request.location_type == "facility",
+        )
         for start, end in occurrences:
             requested_start = timezones.storage_to_aware_utc(start)
             _require_available_start(
@@ -1763,6 +1769,7 @@ def _validate_occurrences(
                 requested_end=timezones.storage_to_aware_utc(end),
                 buffer_policy=buffer_policy,
                 calendar_busy_source=calendar_busy_source,
+                target_location=location,
             )
     finally:
         calendar_busy_source = None
@@ -2288,6 +2295,8 @@ def _find_slots(
     public: bool = False,
     *,
     calendar_busy_source: Optional[CalendarBusySource] = None,
+    requested_start: datetime | None = None,
+    target_location: LocationInfo | None = None,
 ) -> list[TimeSlotDTO]:
     try: control_kind = None; system_exit_code = None; cleanup_failure = False; return _find_slots_evaluated(
             calendar_busy_source=(
@@ -2301,6 +2310,8 @@ def _find_slots(
             duration_mins=duration_mins,
             buffer_policy=buffer_policy,
             public=public,
+            requested_start=requested_start,
+            target_location=target_location,
         )
     except asyncio.CancelledError:
         control_kind = "cancelled"
@@ -2382,6 +2393,8 @@ def _find_slots_evaluated(
     public: bool = False,
     *,
     calendar_busy_source: Optional[CalendarBusySource] = None,
+    requested_start: datetime | None = None,
+    target_location: LocationInfo | None = None,
 ) -> list[TimeSlotDTO]:
     try: calendar_failure = False; return tools.find_available_swim_slots(
             calendar_busy_source=(
@@ -2394,6 +2407,8 @@ def _find_slots_evaluated(
             is_instructor_facility=is_instructor_facility,
             duration_mins=duration_mins,
             buffer_policy=buffer_policy,
+            requested_start=requested_start,
+            target_location=target_location,
         )
     except ExternalCalendarUnavailable:
         try: calendar_failure = True
@@ -2508,6 +2523,7 @@ def _require_available_start(
     *,
     requested_end: datetime | None = None,
     calendar_busy_source: CalendarBusySource | None = None,
+    target_location: LocationInfo | None = None,
 ) -> TimeSlotDTO:
     try:
         slots = _find_slots(
@@ -2519,6 +2535,8 @@ def _require_available_start(
             buffer_policy=buffer_policy,
             public=public,
             calendar_busy_source=calendar_busy_source,
+            requested_start=requested_start if target_location is not None else None,
+            target_location=target_location,
         )
     finally:
         calendar_busy_source = None

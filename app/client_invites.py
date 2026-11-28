@@ -51,7 +51,7 @@ from app.api_schemas import (
     ClientInviteUnavailableWindow,
 )
 from app.availability_search import search_one_time_availability
-from app.models import AppointmentDB, InviteIntakeDB, InviteSlotOfferDB, LessonRequestDB, TimeSlotDTO
+from app.models import AppointmentDB, InviteIntakeDB, InviteSlotOfferDB, LessonRequestDB, LocationInfo, TimeSlotDTO
 from app.provider_settings import (
     ProviderConfiguration,
     ProviderNotFound,
@@ -423,6 +423,7 @@ def _find_slots(
     *,
     calendar_busy_source: CalendarBusySource | None = None,
     requested_start: datetime.datetime | None = None,
+    target_location: LocationInfo | None = None,
 ) -> list[TimeSlotDTO]:
     try:
         return tools.find_available_swim_slots(
@@ -434,6 +435,7 @@ def _find_slots(
             buffer_policy=buffer_policy,
             calendar_busy_source=calendar_busy_source,
             requested_start=requested_start,
+            target_location=target_location,
         )
     except ExternalCalendarUnavailable:
         pass
@@ -466,6 +468,10 @@ def _validate_offer_occurrences(
     count = offer.recurrence_count if offer.recurrence == "weekly" else 1
     if base_local.date() != offer.requested_date:
         raise InvalidSchedulingRequest("The selected lesson time is no longer available.")
+    location = LocationInfo(
+        address=offer.location_address, lat=offer.lat, lng=offer.lng,
+        is_instructor_facility=offer.location_type == "facility",
+    )
     for index in range(count):
         occurrence = base_local
         if offer.recurrence == "weekly":
@@ -487,6 +493,7 @@ def _validate_offer_occurrences(
             duration_mins=offer.duration_mins,
             buffer_policy=buffer_policy,
             requested_start=occurrence,
+            target_location=location,
         )
         occurrence_storage = timezones.to_utc_storage(occurrence)
         if not any(timezones.to_utc_storage(slot.start_time) == occurrence_storage for slot in slots):
