@@ -29,6 +29,7 @@ from app.external_calendar import (
     query_calendar_busy_snapshot,
 )
 from app.google_calendar_availability_fence import (
+    check_current_google_calendar_availability_fence,
     claim_google_calendar_availability_fence,
     revalidate_google_calendar_availability_fence,
 )
@@ -158,6 +159,7 @@ def search_one_time_availability(
             working_days, empty_reason = _working_days(provider, criteria, routing)
             if working_days and build_calendar_source is not None:
                 fence = claim_google_calendar_availability_fence(sessions, instructor_id=instructor_id)
+                check_current_google_calendar_availability_fence(session, fence=fence)
             days = _read_search_days(provider, working_days, routing, session)
             routing.check_deadline()
             policy = load_buffer_policy(instructor_id, operation="availability", session=session) if days else None

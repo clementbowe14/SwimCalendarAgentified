@@ -370,6 +370,24 @@ def test_calendar_connection_change_during_geocoding_invalidates_the_range(provi
     assert response.json()["error"]["code"] == "CALENDAR_AVAILABILITY_UNAVAILABLE"
 
 
+def test_calendar_connection_change_during_snapshot_read_invalidates_the_range(provider, monkeypatch):
+    _connect_calendar(monkeypatch, Mock(return_value=CalendarBusySnapshot("verified", ())))
+    read_provider = availability_search.require_provider_setup
+
+    def read_then_disconnect(instructor_id, *, session):
+        result = read_provider(instructor_id, session=session)
+        with db.SessionLocal.begin() as writer:
+            account = writer.query(ProviderAccountDB).filter_by(instructor_id=INSTRUCTOR).one()
+            disconnect_google_calendar(writer, account_id=account.id)
+        return result
+
+    monkeypatch.setattr(availability_search, "require_provider_setup", read_then_disconnect)
+    response = provider.post(PATH, json=REQUEST)
+
+    assert response.status_code == 503, response.text
+    assert response.json()["error"]["code"] == "CALENDAR_AVAILABILITY_UNAVAILABLE"
+
+
 def test_range_errors_do_not_echo_client_details_or_allow_caching(provider, monkeypatch):
     address = "20 Private Client Street"
     payload = {**REQUEST, "is_instructor_facility": False, "client_address": address}
