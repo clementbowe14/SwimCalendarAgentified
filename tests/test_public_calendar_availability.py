@@ -117,6 +117,67 @@ def test_range_search_defaults_to_provider_dates_and_persists_exact_later_day(ap
         assert record.requested_date == date(2026, 12, 3)
 
 
+def test_range_offer_ids_preserve_location_mode_at_the_same_address(api_client, monkeypatch):
+    _set_range_clock(monkeypatch, "2026-12-01T01:00:00+00:00")
+    payload = {**RANGE_PAYLOAD, "limit": 1, "windows": [
+        {"days": ["tuesday"], "start_time": "14:00", "end_time": "14:45"},
+    ]}
+    in_facility = api_client.post(RANGE_PATH, json=payload)
+    assert in_facility.status_code == 200, in_facility.text
+    facility = in_facility.json()["slots"][0]
+    home_coords = (30.28, -97.75)
+    monkeypatch.setattr(tools.routing_provider, "geocode", lambda _address: home_coords)
+    at_home = api_client.post(RANGE_PATH, json={
+        **payload, "is_instructor_facility": False, "client_address": facility["location_address"],
+    })
+    assert at_home.status_code == 200, at_home.text
+    home = at_home.json()["slots"][0]
+    assert home["start_iso"] == facility["start_iso"]
+    assert home["id"] != facility["id"]
+    with db.SessionLocal() as session:
+        original_facility = session.get(InviteSlotOfferDB, facility["id"])
+        stored_home = session.get(InviteSlotOfferDB, home["id"])
+        assert original_facility.location_type == "facility"
+        assert stored_home.location_type == "home"
+        assert (stored_home.lat, stored_home.lng) == home_coords
+
+
+@pytest.mark.parametrize(("change", "status", "code"), [
+    ("revoked", 404, "INVITE_NOT_FOUND"),
+    ("invite_expired", 410, "INVITE_EXPIRED"),
+    ("offer_expired", 404, "SLOT_OFFER_NOT_FOUND"),
+])
+def test_redemption_rechecks_invite_and_offer_before_writing(api_client, monkeypatch, change, status, code):
+    _set_range_clock(monkeypatch, "2026-12-01T01:00:00+00:00")
+    result = api_client.post(RANGE_PATH, json={**RANGE_PAYLOAD, "limit": 1})
+    assert result.status_code == 200, result.text
+    slot_id = result.json()["slots"][0]["id"]
+    validate_occurrences = client_invites._validate_offer_occurrences
+
+    def validate_then_change(*args):
+        validate_occurrences(*args)
+        now = datetime.utcnow()
+        with db.SessionLocal.begin() as session:
+            if change == "offer_expired":
+                session.get(InviteSlotOfferDB, slot_id).expires_at = now
+            else:
+                invite = session.get(InviteTokenDB, INVITE)
+                if change == "revoked":
+                    invite.revoked_at = now
+                else:
+                    invite.expires_at = now
+
+    monkeypatch.setattr(client_invites, "_validate_offer_occurrences", validate_then_change)
+    key = "range-selected-slot-invite-liveness"
+    response = api_client.post(f"/api/public/client-invites/{INVITE}/lesson-requests", json={
+        "slot_id": slot_id, "idempotency_key": key,
+    })
+    assert response.status_code == status, response.text
+    assert response.json()["error"]["code"] == code
+    with db.SessionLocal() as session:
+        assert session.query(LessonRequestDB).filter_by(idempotency_key=key).first() is None
+
+
 def test_later_fold_offer_preserves_the_selected_instant(api_client, monkeypatch):
     _set_range_clock(monkeypatch, "2026-11-01T05:00:00+00:00")
     with db.SessionLocal.begin() as session:

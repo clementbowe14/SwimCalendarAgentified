@@ -1,5 +1,6 @@
 import datetime
 import hashlib
+import json
 from collections.abc import Callable
 from typing import Optional
 
@@ -63,6 +64,7 @@ from app.public_tokens import (
     create_lesson_request,
     demo_invite_is_enabled,
     require_active_invite,
+    require_active_search_offer,
     require_unprovisioned_invite_instructor,
     resolve_invite,
     resolve_lesson_request_by_idempotency_key,
@@ -228,11 +230,11 @@ def search_client_invite_availability_range(
         response_slots = []
         for slot in result.slots:
             offer_request = persisted_request.model_copy(update={"requested_date": slot.start_time.date()})
-            offer = _shape_slot(invite, offer_request, location, slot, result.timezone)
-            offers.append((offer_request, slot, offer.model_copy(update={"recurrence_available": False})))
+            offer = _shape_slot(invite, offer_request, location, slot, result.timezone, one_time_range=True)
+            offers.append((offer_request, slot, offer))
             response_slots.append(ClientInviteOneTimeSlot(
                 id=offer.id, start_iso=offer.start_iso, end_iso=offer.end_iso,
-                display=_display_slot(offer.start_iso, timezone_label=offer.start_iso.tzname()),
+                display=offer.display,
                 location_address=offer.location_address,
             ))
         if offers:
@@ -275,7 +277,9 @@ def request_client_invite_lesson_slot(
     request: ClientInviteLessonRequestCreate,
 ) -> ClientInviteLessonRequestResponse:
     invite = resolve_invite(invite_token)
-    offer = _load_active_offer(invite.token, request.slot_id)
+    with db.SessionLocal() as session:
+        offer = require_active_search_offer(session, invite.token, invite.instructor_id, request.slot_id)
+        session.expunge(offer)
     if offer.recurrence == "weekly" and not offer.recurrence_available:
         raise InvalidSchedulingRequest("The selected lesson time is not available for weekly booking.")
     idempotency_key = request.idempotency_key or f"public-slot:{invite.token}:{request.slot_id}"
@@ -647,17 +651,19 @@ def _shape_slot(
     location: ClientInviteLocation,
     slot: TimeSlotDTO,
     timezone_name: str,
+    *,
+    one_time_range: bool = False,
 ) -> ClientInviteSchedulerSlot:
     local_start = timezones.aware_to_local(slot.start_time, timezone_name)
     local_end = timezones.aware_to_local(slot.end_time, timezone_name)
-    slot_id = _slot_id(invite.token, request, slot.start_time)
+    slot_id = _slot_id(invite.token, request, slot.start_time, range_location=location if one_time_range else None)
     return ClientInviteSchedulerSlot(
         id=slot_id,
         start_iso=local_start,
         end_iso=local_end,
-        display=_display_slot(local_start),
+        display=_display_slot(local_start, timezone_label=local_start.tzname() if one_time_range else None),
         location_address=location.address,
-        recurrence_available=True,
+        recurrence_available=not one_time_range,
         recurrence=request.recurrence,
         recurrence_count=WEEKLY_OCCURRENCE_COUNT if request.recurrence == "weekly" else 1,
     )
@@ -728,28 +734,6 @@ def _upsert_slot_offer(
     existing.notified_at = None
     existing.expires_at = datetime.datetime.utcnow() + datetime.timedelta(minutes=SLOT_OFFER_TTL_MINUTES)
     existing.updated_at = datetime.datetime.utcnow()
-
-
-def _load_active_offer(invite_token: str, slot_id: str) -> InviteSlotOfferDB:
-    session = db.SessionLocal()
-    try:
-        offer = (
-            session.query(InviteSlotOfferDB)
-            .filter(
-                InviteSlotOfferDB.id == slot_id,
-                InviteSlotOfferDB.invite_token == invite_token,
-                InviteSlotOfferDB.offer_kind == "search",
-                InviteSlotOfferDB.lesson_request_id.is_(None),
-                InviteSlotOfferDB.expires_at > datetime.datetime.utcnow(),
-            )
-            .first()
-        )
-        if offer is None:
-            raise SlotOfferNotFound()
-        session.expunge(offer)
-        return offer
-    finally:
-        session.close()
 
 
 def _lesson_request_response(request_token: str) -> ClientInviteLessonRequestResponse:
@@ -873,19 +857,28 @@ def _unavailable_windows(
     ]
 
 
-def _slot_id(invite_token: str, request: ClientInviteAvailabilityRequest, slot_start: datetime.datetime) -> str:
-    raw = "|".join(
-        [
-            invite_token,
-            request.client_name.strip().lower(),
-            request.location.address.strip().lower(),
-            request.requested_date.isoformat(),
-            timezones.canonical_instant_text(slot_start),
-            str(request.duration_mins),
-            request.recurrence,
-            str(WEEKLY_OCCURRENCE_COUNT if request.recurrence == "weekly" else 1),
-        ]
-    )
+def _slot_id(
+    invite_token: str,
+    request: ClientInviteAvailabilityRequest,
+    slot_start: datetime.datetime,
+    *,
+    range_location: ClientInviteLocation | None = None,
+) -> str:
+    fields = [
+        invite_token,
+        request.client_name.strip().lower(),
+        request.location.address.strip().lower(),
+        request.requested_date.isoformat(),
+        timezones.canonical_instant_text(slot_start),
+        str(request.duration_mins),
+        request.recurrence,
+        str(WEEKLY_OCCURRENCE_COUNT if request.recurrence == "weekly" else 1),
+    ]
+    if range_location is None:
+        raw = "|".join(fields)
+    else:
+        mode = "facility" if range_location.is_instructor_facility else "home"
+        raw = json.dumps([*fields, mode, range_location.lat, range_location.lng], separators=(",", ":"))
     return f"slot_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]}"
 
 

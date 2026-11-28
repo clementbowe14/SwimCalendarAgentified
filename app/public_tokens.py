@@ -4,9 +4,11 @@ from typing import Optional
 from uuid import uuid4
 
 from app import db, timezones
-from app.api_errors import CalendarAvailabilityUnavailable, InviteExpired, InviteNotFound, LessonRequestNotFound
+from app.api_errors import (
+    CalendarAvailabilityUnavailable, InviteExpired, InviteNotFound, LessonRequestNotFound, SlotOfferNotFound,
+)
 from app.config import demo_data_access_enabled_from_env
-from app.models import InstructorDB, InviteTokenDB, LessonRequestDB, ProviderAccountDB
+from app.models import InstructorDB, InviteSlotOfferDB, InviteTokenDB, LessonRequestDB, ProviderAccountDB
 from app.provider_settings import ProviderLocation, ProviderNotFound, load_provider_configuration
 from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -100,6 +102,18 @@ def require_active_invite(
     return invite
 
 
+def require_active_search_offer(session, invite_token: str, instructor_id: str, slot_id: str) -> InviteSlotOfferDB:
+    offer = (
+        session.query(InviteSlotOfferDB)
+        .filter_by(id=slot_id, invite_token=invite_token, instructor_id=instructor_id,
+                   offer_kind="search", lesson_request_id=None)
+        .first()
+    )
+    if offer is None or offer.expires_at <= datetime.utcnow():
+        raise SlotOfferNotFound()
+    return offer
+
+
 def require_unprovisioned_invite_instructor(session, instructor_id: str) -> None:
     # Provider-account inserts take a foreign-key lock on the instructor row.
     try:
@@ -147,7 +161,10 @@ def create_lesson_request(
     session = db.SessionLocal()
     request = None
     try:
-        invite = session.query(InviteTokenDB).filter_by(token=invite_token).first()
+        invite = require_active_invite(session, invite_token, instructor_id=instructor_id, lock=True)
+        offer = None
+        if original_slot_offer_id is not None:
+            offer = require_active_search_offer(session, invite_token, instructor_id, original_slot_offer_id)
         capped_expires_at = _request_expires_at(invite, expires_at)
         request = LessonRequestDB(
             id=f"lr_{uuid4().hex[:12]}",
@@ -179,6 +196,12 @@ def create_lesson_request(
                 return _replay_lesson_request(existing, request)
 
         session.add(request)
+        session.flush()
+        now = datetime.utcnow()
+        if invite.expires_at <= now:
+            raise InviteExpired()
+        if offer is not None and offer.expires_at <= now:
+            raise SlotOfferNotFound()
         session.commit()
         return _lesson_request_record(request)
     except IntegrityError as exc:
@@ -186,6 +209,7 @@ def create_lesson_request(
         if idempotency_key and request is not None:
             existing = session.query(LessonRequestDB).filter_by(idempotency_key=idempotency_key).first()
             if existing is not None:
+                require_active_invite(session, invite_token, instructor_id=instructor_id)
                 return _replay_lesson_request(existing, request)
         raise exc
     finally:
