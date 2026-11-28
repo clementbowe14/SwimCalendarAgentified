@@ -1320,6 +1320,10 @@ def save_appointment(
             AppointmentDB.end_time > start_time,
         ).first()
         if conflict:
+            if idempotency_key and conflict.idempotency_key == idempotency_key:
+                existing = _idempotent_appointment_or_conflict(session, instructor_id, idempotency_key)
+                if existing is not None:
+                    return replay_id(existing)
             raise ScheduleConflictError("An active schedule item already occupies that time.")
 
         app_id = f"app_{uuid.uuid4().hex[:8]}"

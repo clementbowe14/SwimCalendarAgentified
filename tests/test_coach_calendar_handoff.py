@@ -62,6 +62,18 @@ def test_finder_books_the_selected_client_in_the_expected_account(authenticated_
     assert different_location.status_code == 409
     assert different_location.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
     geocode.assert_called_once_with(payload["client_address"])
+
+    # An identical booking may commit after both early idempotency reads.
+    lookup = db.get_appointment_by_idempotency_key
+    found_on_retry = iter([False, False, True])
+
+    def see_concurrent_booking(*args):
+        return lookup(*args) if next(found_on_retry) else None
+
+    monkeypatch.setattr(db, "get_appointment_by_idempotency_key", see_concurrent_booking)
+    concurrent = api.post("/api/coach/bookings", json=payload, headers=expected)
+    assert concurrent.status_code == 200, concurrent.text
+    assert concurrent.json() == booked.json()
     with db.SessionLocal() as session:
         appointment = session.get(AppointmentDB, booked.json()["appointment_id"])
         client = db.get_client_profile_for_instructor("inst_001", "client_alice")

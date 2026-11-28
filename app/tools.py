@@ -616,14 +616,17 @@ def _book_swim_lesson(
     start_time_storage = timezones.to_utc_storage(start_time)
     end_time_storage = start_time_storage + datetime.timedelta(minutes=duration_mins)
 
-    existing = db.get_appointment_by_idempotency_key(instructor_id, idempotency_key)
-    if existing is not None:
+    def replay(existing: dict, resolved_location: LocationInfo | None) -> dict:
         if (
             existing["instructor_id"] != instructor_id
             or existing["client_id"] != client_id
             or (
                 expected_location_address is not None
                 and (existing["location_address"] or "").strip() != expected_location_address
+            )
+            or (
+                expected_location_address is not None and resolved_location is not None
+                and (existing["lat"], existing["lng"]) != (resolved_location.lat, resolved_location.lng)
             )
             or timezones.to_utc_storage(existing["start_time"]) != start_time_storage
             or timezones.to_utc_storage(existing["end_time"]) != end_time_storage
@@ -634,6 +637,10 @@ def _book_swim_lesson(
             "appointment_id": existing["id"],
             "message": f"Successfully booked swim lesson for {client_name} on {timezones.aware_to_local(start_time, provider.timezone).strftime('%b %d, %Y at %I:%M %p')}!",
         }
+
+    existing = db.get_appointment_by_idempotency_key(instructor_id, idempotency_key)
+    if existing is not None:
+        return replay(existing, target_location)
 
     if not provider.setup_complete:
         raise ProviderSetupIncomplete(provider.setup_missing_fields)
@@ -656,6 +663,10 @@ def _book_swim_lesson(
         target_location=location,
     )
     if not any(timezones.to_utc_storage(slot.start_time) == start_time_storage for slot in available_slots):
+        if idempotency_key:
+            existing = db.get_appointment_by_idempotency_key(instructor_id, idempotency_key)
+            if existing is not None:
+                return replay(existing, location)
         raise db.ScheduleConflictError("The requested start is no longer available.")
 
     app_id = db.save_appointment(

@@ -62,7 +62,7 @@ def test_booking_idempotency_key_retry_returns_existing_appointment(isolated_db)
     assert len(stored) == 1
 
 
-def test_appointment_write_replays_only_with_matching_location(isolated_db):
+def test_appointment_write_replays_only_with_matching_location(isolated_db, monkeypatch):
     starts = datetime.datetime.fromisoformat("2026-08-21T10:00:00-05:00")
     booking = {
         "instructor_id": "inst_001", "client_id": "client_alice", "title": "Lesson with Alice",
@@ -75,6 +75,15 @@ def test_appointment_write_replays_only_with_matching_location(isolated_db):
     for different in ({"location_address": "Different pool"}, {"lat": 30.5, "lng": -97.5}):
         with pytest.raises(db.IdempotencyKeyConflictError):
             db.save_appointment(**{**booking, **different})
+
+    lookup = db._idempotent_appointment_or_conflict
+    found_on_retry = iter([False, True])
+
+    def see_concurrent_booking(*args):
+        return lookup(*args) if next(found_on_retry) else None
+
+    monkeypatch.setattr(db, "_idempotent_appointment_or_conflict", see_concurrent_booking)
+    assert db.save_appointment(**booking) == first
 
 
 def test_public_request_idempotency_key_retry_returns_existing_request(isolated_db):
