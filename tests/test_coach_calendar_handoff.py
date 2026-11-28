@@ -23,6 +23,8 @@ def test_finder_books_the_selected_client_in_the_expected_account(authenticated_
     api = authenticated_api_client
     expected = {"X-Expected-Instructor-Id": "inst_001"}
     stale = {"X-Expected-Instructor-Id": "a-different-provider"}
+    with db.SessionLocal.begin() as session:
+        session.get(ClientDB, "client_alice").default_location_address = "  450 North Blvd, Austin, TX  "
     availability = api.post("/api/coach/availability", json={
         "client_name": "Selected client",
         "client_address": "450 North Blvd, Austin, TX",
@@ -52,7 +54,9 @@ def test_finder_books_the_selected_client_in_the_expected_account(authenticated_
     monkeypatch.setattr(tools.routing_provider, "geocode", geocode)
     booked = api.post("/api/coach/bookings", json=payload, headers=expected)
     assert booked.status_code == 200, booked.text
-    replayed = api.post("/api/coach/bookings", json=payload, headers=expected)
+    replayed = api.post(
+        "/api/coach/bookings", json={**payload, "client_address": f"  {payload['client_address']}  "}, headers=expected,
+    )
     assert replayed.json() == booked.json()
     different_location = api.post("/api/coach/bookings", json=different_address, headers=expected)
     assert different_location.status_code == 409

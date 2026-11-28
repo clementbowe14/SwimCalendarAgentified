@@ -1293,7 +1293,9 @@ def save_appointment(
             or existing.client_id != client_id
             or (
                 match_location
-                and (existing.location_address, existing.lat, existing.lng) != (location_address, lat, lng)
+                and (
+                    (existing.location_address or "").strip(), existing.lat, existing.lng,
+                ) != (location_address.strip(), lat, lng)
             )
         ):
             raise IdempotencyKeyConflictError("Idempotency key was already used for a different booking.")

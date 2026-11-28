@@ -70,7 +70,7 @@ def test_appointment_write_replays_only_with_matching_location(isolated_db):
         "location_address": "450 North Blvd, Austin, TX", "lat": 30.3300, "lng": -97.7200,
         "idempotency_key": "booking-location-retry", "match_location": True,
     }
-    first = db.save_appointment(**booking)
+    first = db.save_appointment(**{**booking, "location_address": f"  {booking['location_address']}  "})
     assert db.save_appointment(**booking) == first
     for different in ({"location_address": "Different pool"}, {"lat": 30.5, "lng": -97.5}):
         with pytest.raises(db.IdempotencyKeyConflictError):

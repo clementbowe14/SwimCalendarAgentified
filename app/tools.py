@@ -621,7 +621,10 @@ def _book_swim_lesson(
         if (
             existing["instructor_id"] != instructor_id
             or existing["client_id"] != client_id
-            or (expected_location_address is not None and existing["location_address"] != expected_location_address)
+            or (
+                expected_location_address is not None
+                and (existing["location_address"] or "").strip() != expected_location_address
+            )
             or timezones.to_utc_storage(existing["start_time"]) != start_time_storage
             or timezones.to_utc_storage(existing["end_time"]) != end_time_storage
         ):
@@ -635,7 +638,7 @@ def _book_swim_lesson(
     if not provider.setup_complete:
         raise ProviderSetupIncomplete(provider.setup_missing_fields)
     location = target_location or resolve_availability_location(provider, location_address, is_instructor_facility)
-    if expected_location_address is not None and location.address != expected_location_address:
+    if expected_location_address is not None and location.address.strip() != expected_location_address:
         raise db.ScheduleConflictError("The appointment location changed after the availability search.")
 
     policy = buffer_policy or load_buffer_policy(instructor_id, operation="direct_booking")
