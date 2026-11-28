@@ -7,7 +7,7 @@ from uuid import uuid4
 from icalendar import Calendar
 import pytest
 
-from app import db, timezones
+from app import db, timezones, tools
 from app.models import AppointmentDB, InstructorDB, InviteTokenDB, LessonRequestDB
 
 
@@ -16,6 +16,84 @@ UTC = timezone.utc
 
 def _calendar_events(content: bytes | str):
     return Calendar.from_ical(content).walk("VEVENT")
+
+
+def test_finder_books_the_selected_client_in_the_expected_account(authenticated_api_client):
+    api = authenticated_api_client
+    expected = {"X-Expected-Instructor-Id": "inst_001"}
+    stale = {"X-Expected-Instructor-Id": "a-different-provider"}
+    availability = api.post("/api/coach/availability", json={
+        "client_name": "Selected client",
+        "client_address": "450 North Blvd, Austin, TX",
+        "requested_date": "2026-08-21",
+        "duration_mins": 45,
+    })
+    assert availability.status_code == 200, availability.text
+    payload = {
+        "client_id": "client_alice",
+        "client_name": "Name from an old client list",
+        "client_address": "450 North Blvd, Austin, TX",
+        "start_time": availability.json()["available_slots"][0]["start_iso"],
+        "duration_mins": 45,
+        "idempotency_key": "book-selected-client-by-id",
+    }
+
+    assert api.get("/api/coach/clients", headers=stale).status_code == 409
+    assert api.post("/api/coach/bookings", json=payload, headers=stale).status_code == 409
+    missing_client = api.post("/api/coach/bookings", json={**payload, "client_id": "unknown"}, headers=expected)
+    assert missing_client.status_code == 404
+
+    booked = api.post("/api/coach/bookings", json=payload, headers=expected)
+    assert booked.status_code == 200, booked.text
+    replayed = api.post("/api/coach/bookings", json=payload, headers=expected)
+    assert replayed.json() == booked.json()
+    with db.SessionLocal() as session:
+        appointment = session.get(AppointmentDB, booked.json()["appointment_id"])
+        client = db.get_client_profile_for_instructor("inst_001", "client_alice")
+        assert appointment.client_id == client["id"]
+        assert appointment.title == f"Lesson with {client['name']}"
+
+
+@pytest.mark.parametrize("change_during_recheck", [False, True])
+def test_finder_booking_rejects_a_facility_change_for_the_selected_slot(
+    authenticated_api_client, monkeypatch, change_during_recheck,
+):
+    api = authenticated_api_client
+    availability = api.post("/api/coach/availability", json={
+        "client_name": "Selected client",
+        "client_address": "facility",
+        "requested_date": "2026-08-21",
+        "duration_mins": 45,
+        "is_instructor_facility": True,
+    })
+    assert availability.status_code == 200, availability.text
+    result = availability.json()
+
+    def change_facility():
+        with db.SessionLocal.begin() as session:
+            session.get(InstructorDB, "inst_001").service_address = "New service location"
+
+    if change_during_recheck:
+        require_setup = tools.require_provider_setup
+
+        def load_changed_provider(instructor_id):
+            change_facility()
+            return require_setup(instructor_id)
+
+        monkeypatch.setattr(tools, "require_provider_setup", load_changed_provider)
+    else:
+        change_facility()
+    key = "book-stale-finder-facility"
+    response = api.post("/api/coach/bookings", json={
+        "client_id": "client_alice", "client_name": "Selected client",
+        "client_address": result["location"]["address"],
+        "start_time": result["available_slots"][0]["start_iso"], "duration_mins": 45,
+        "is_instructor_facility": True, "idempotency_key": key,
+    }, headers={"X-Expected-Instructor-Id": "inst_001"})
+
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["code"] == "SCHEDULING_CONFLICT"
+    assert db.get_appointment_by_idempotency_key("inst_001", key) is None
 
 
 def _create_confirmed_series(*, count: int = 3) -> tuple[str, list[str]]:

@@ -6,6 +6,7 @@ import type {
   SchedulingPolicy,
 } from "../src/api/types";
 import { agendaResponse } from "./agenda-fixture";
+import { finderClientList, finderSearchResult } from "./finder-fixture";
 
 const SESSION_COOKIE_NAME = "swim_session";
 const SESSION_COOKIE_VALUE = "provider-settings-session";
@@ -270,9 +271,21 @@ async function installProviderApi(page: Page, options: ProviderApiOptions = {}):
       }) });
       return;
     }
-    if (pathname.endsWith("/coach/availability")) {
+    if (pathname.endsWith("/coach/clients")) return route.fulfill({ json: finderClientList });
+    if (pathname.endsWith("/coach/availability/search")) {
       availabilityCallCount += 1;
-      await route.fulfill({ json: availabilityResponse() });
+      const result = finderSearchResult(request);
+      await route.fulfill({ json: {
+        ...result,
+        available_slots: [{
+          start_iso: `${result.start_date}T16:00:00-05:00`,
+          end_iso: `${result.start_date}T16:45:00-05:00`,
+          display: "4:00 PM",
+          travel_time_mins: 12,
+          buffer_mins: 10,
+          distance_miles: 2.1,
+        }],
+      } });
       return;
     }
     if (pathname.includes("/lesson-requests/") && pathname.endsWith("/confirm")) {
@@ -465,29 +478,6 @@ function slotResponse(): Record<string, unknown> {
       lng: -97.739,
       is_instructor_facility: false,
     },
-  };
-}
-
-function availabilityResponse(): Record<string, unknown> {
-  return {
-    status: "PRESENTING",
-    client_name: "Sofia Martinez",
-    requested_date: "2026-08-27",
-    duration_mins: 45,
-    location: {
-      address: "820 Lakeview Dr, Austin, TX",
-      lat: 30.289,
-      lng: -97.739,
-      is_instructor_facility: false,
-    },
-    available_slots: [{
-      start_iso: "2026-08-27T16:00:00",
-      end_iso: "2026-08-27T16:45:00",
-      display: "4:00 PM",
-      travel_time_mins: 12,
-      buffer_mins: 10,
-      distance_miles: 2.1,
-    }],
   };
 }
 

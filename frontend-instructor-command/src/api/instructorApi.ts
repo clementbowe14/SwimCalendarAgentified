@@ -1,10 +1,13 @@
 import { candidateSlots, providerConfiguration, snapshot } from "./mockData.js";
 import { trustedGoogleCalendarAuthorizationUrl, trustedInstructorCalendarUrl } from "./calendar.js";
+import { shiftDateKey } from "../lib/format.js";
 import {
   resolveInstructorDataMode,
   type InstructorDataModeEnvironment,
 } from "../config/dataMode.js";
 import type {
+  AvailabilityRangeRequest,
+  AvailabilityRangeResult,
   BookLessonPayload,
   BookLessonResponse,
   BlockerScheduleItem,
@@ -17,6 +20,7 @@ import type {
   CoachLessonRequestActionResponse,
   CoachLessonRequestConfirmResponse,
   CommandCenterSnapshot,
+  FinderClient,
   GoogleCalendarConnection,
   Id,
   InstructorAuthCredentials,
@@ -25,6 +29,8 @@ import type {
   LessonRequest,
   ProviderConfiguration,
   ProviderConfigurationUpdate,
+  ProviderLocation,
+  ProviderWeekday,
   ProviderBlocker,
   SchedulingPolicy,
   SchedulingPolicyUpdate,
@@ -321,6 +327,53 @@ export class MockInstructorCommandApi implements InstructorCommandApi {
         };
       })
       .filter((slot) => !this.mockScheduleOverlaps(slot.start_time, slot.end_time));
+  }
+
+  async getFinderClients(_expectedInstructorId: Id): Promise<FinderClient[]> {
+    const location = this.currentProvider.service.location;
+    return clone(this.currentSnapshot.clients.map((client) => client.location_mode === "client_home" ? client : {
+      ...client,
+      default_location: location && { ...location, is_instructor_facility: true },
+    }));
+  }
+
+  async searchAvailability(request: AvailabilityRangeRequest, _expectedInstructorId: Id): Promise<AvailabilityRangeResult> {
+    const { timezone, service, working_hours } = this.currentProvider;
+    const { start_date, end_date, duration_mins, is_instructor_facility, client_address, windows, limit = 24 } = request;
+    const savedLocation = this.currentSnapshot.clients.find((client) => client.default_location.address === client_address)?.default_location;
+    const resolved = is_instructor_facility ? service.location : client_address && mockGeocodedLocation(client_address, savedLocation ?? null, 0);
+    if (!resolved) throw new InstructorCommandApiError(422, "VALIDATION_ERROR", "Choose a saved lesson location.");
+    const location = { ...resolved, is_instructor_facility };
+    const distance_miles = is_instructor_facility ? 0 : 2.4;
+    const travel_time_mins = is_instructor_facility ? 0 : 8;
+    const buffer_mins = mockDistanceBufferMinutes(this.currentSnapshot.scheduling_policy, distance_miles);
+    const available_slots: TimeSlotDTO[] = [];
+    const weekdayFormat = new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: "UTC" });
+    let empty_reason: AvailabilityRangeResult["empty_reason"] = "no_working_hours";
+    const step = 15 * 60_000;
+    for (let date = start_date; date <= end_date && available_slots.length < limit; date = shiftDateKey(date, 1)) {
+      const weekday = weekdayFormat.format(new Date(`${date}T00:00:00Z`)).toLowerCase() as ProviderWeekday;
+      const hours = working_hours.find((item) => item.weekday === weekday);
+      if (!hours?.enabled || !hours.start_time || !hours.end_time) continue;
+      if (empty_reason === "no_working_hours") empty_reason = "outside_client_windows";
+      const dayWindows = windows.filter((window) => window.days.includes(weekday));
+      if (windows.length && !dayWindows.length) continue;
+      empty_reason = "no_safe_slots";
+      const opening = Date.parse(`${date}T${hours.start_time}:00Z`);
+      const closing = Date.parse(`${date}T${hours.end_time}:00Z`);
+      const firstStart = Math.ceil((opening + (travel_time_mins + buffer_mins) * 60_000) / step) * step;
+      const duration = duration_mins * 60_000;
+      for (let start = firstStart; start + duration <= closing && available_slots.length < limit; start += step) {
+        const startClock = new Date(start).toISOString().slice(11, 16);
+        const endClock = new Date(start + duration).toISOString().slice(11, 16);
+        if (dayWindows.length && !dayWindows.some((window) => window.start_time <= startClock && window.end_time >= endClock)) continue;
+        const start_time = mockLocalDateTimeWithOffset(date, startClock, timezone, "start_time");
+        const end_time = addMinutes(start_time, duration_mins);
+        if (this.mockScheduleOverlaps(start_time, end_time)) continue;
+        available_slots.push({ id: `slot_${start_time}`, start_time, end_time, travel_time_mins, buffer_mins, distance_miles, target_location: location });
+      }
+    }
+    return { start_date, end_date, timezone, duration_mins, location, available_slots, empty_reason: available_slots.length ? null : empty_reason };
   }
 
   async bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse> {
@@ -723,15 +776,39 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     return response.available_slots.map((slot, index) => mapAvailabilitySlot(slot, response.location, index));
   }
 
+  async getFinderClients(expectedInstructorId: Id): Promise<FinderClient[]> {
+    const { clients } = await this.get<{ clients: CoachFinderClient[] }>("/coach/clients", expectedInstructorId);
+    return clients.map((client) => ({
+      id: client.id,
+      name: client.name,
+      availability: client.availability ?? [],
+      lesson_duration_mins: client.default_duration_mins,
+      location_mode: client.location_mode === "service_location" ? "instructor_facility" : "client_home",
+      default_location: client.effective_location && {
+        ...client.effective_location,
+        is_instructor_facility: client.location_mode === "service_location",
+      },
+    }));
+  }
+
+  async searchAvailability(request: AvailabilityRangeRequest, expectedInstructorId: Id): Promise<AvailabilityRangeResult> {
+    const response = await this.post<CoachAvailabilityRangeResponse>("/coach/availability/search", request, expectedInstructorId);
+    return {
+      ...response,
+      available_slots: response.available_slots.map((slot, index) => mapAvailabilitySlot(slot, response.location, index)),
+    };
+  }
+
   bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse> {
     return this.post("/coach/bookings", {
+      client_id: payload.client_id,
       client_name: payload.client_name,
       client_address: payload.location_address,
       start_time: payload.start_time_iso,
       duration_mins: payload.duration_mins,
       is_instructor_facility: payload.is_instructor_facility ?? false,
       ...(payload.idempotency_key ? { idempotency_key: payload.idempotency_key } : {}),
-    });
+    }, payload.instructor_id);
   }
 
   confirmRequest(requestId: Id, slotId?: Id): Promise<CoachLessonRequestConfirmResponse> {
@@ -792,8 +869,8 @@ export class HttpInstructorCommandApi implements InstructorCommandApi {
     return parseResponse<T>(response);
   }
 
-  private async post<T>(path: string, body: unknown): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, unsafeJsonInit("POST", body));
+  private async post<T>(path: string, body: unknown, expectedInstructorId?: Id): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, withExpectedInstructor(unsafeJsonInit("POST", body), expectedInstructorId));
     return parseResponse<T>(response);
   }
 
@@ -861,6 +938,15 @@ type CoachAvailabilityResponse = {
     buffer_mins: number;
     distance_miles: number;
   }>;
+};
+
+type CoachAvailabilityRangeResponse = Omit<AvailabilityRangeResult, "available_slots">
+  & Pick<CoachAvailabilityResponse, "available_slots">;
+
+type CoachFinderClient = Pick<FinderClient, "id" | "name" | "availability"> & {
+  location_mode: "client_location" | "service_location";
+  effective_location: ProviderLocation | null;
+  default_duration_mins: number;
 };
 
 function unsafeJsonInit(
@@ -1369,6 +1455,7 @@ function mockGeocodedLocation(
 }
 
 function addMinutes(isoDateTime: string, minutes: number): string {
+  if (hasTimezone(isoDateTime)) return new Date(Date.parse(isoDateTime) + minutes * 60_000).toISOString();
   const [datePart, timePart] = isoDateTime.split("T");
   const [hour = 0, minute = 0, second = 0] = timePart.split(":").map(Number);
   const date = new Date(`${datePart}T00:00:00`);

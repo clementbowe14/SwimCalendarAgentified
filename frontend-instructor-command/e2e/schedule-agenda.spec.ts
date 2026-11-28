@@ -2,6 +2,7 @@ import { expect, test, type Page, type Request, type Route } from "@playwright/t
 import { providerConfiguration, snapshot } from "../src/api/mockData";
 import type { BlockerScheduleItem, CoachAgenda, LessonScheduleItem, ProviderBlocker, ScheduleItem } from "../src/api/types";
 import { agendaResponse } from "./agenda-fixture";
+import { finderClientList, finderSearchResult } from "./finder-fixture";
 
 const day = "2026-08-27";
 const providerId = "coach/É +1";
@@ -756,8 +757,10 @@ async function mockApi(
       case "/api/coach/agenda":
         agendaRequests.push(request);
         return route.fulfill(await reply(date));
-      case "/api/coach/availability":
-        return route.fulfill({ json: { status: "PRESENTING", location: lessonLocation, available_slots: [] } });
+      case "/api/coach/clients":
+        return route.fulfill({ json: finderClientList });
+      case "/api/coach/availability/search":
+        return route.fulfill({ json: { ...finderSearchResult(request), available_slots: [], empty_reason: "no_safe_slots" } });
       case "/api/coach/calendar-connections/google":
         return route.fulfill({ json: { provider: "google", state: "disconnected" } });
       case "/api/coach/blockers":

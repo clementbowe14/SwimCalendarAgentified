@@ -947,6 +947,7 @@ class ClientInviteCalendarLinks(BaseModel):
 
 
 class CoachBookLessonRequest(BaseModel):
+    client_id: Optional[str] = Field(default=None, min_length=1, max_length=120)
     client_name: str = Field(min_length=1, max_length=120)
     client_address: str = Field(min_length=1, max_length=300)
     start_time: datetime

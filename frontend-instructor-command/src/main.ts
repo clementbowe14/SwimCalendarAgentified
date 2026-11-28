@@ -8,20 +8,22 @@ import {
   InstructorCommandApiError,
 } from "./api/instructorApi.js";
 import type {
-  BookingRequestDTO,
+  AvailabilityDateRange,
+  AvailabilityRangeRequest,
+  AvailabilityRangeResult,
   BlockerMutation,
   CalendarLinks,
   CoachEmailDelivery,
   CommandCenterSnapshot,
+  FinderClient,
   ProviderBlocker,
   InstructorAuthSession,
   ProviderConfiguration,
   ProviderConfigurationUpdate,
   SchedulingPolicy,
-  TimeSlotDTO,
 } from "./api/types.js";
 import { resolveInstructorDataMode } from "./config/dataMode.js";
-import { renderAvailabilityFinder } from "./components/AvailabilityFinder.js";
+import { renderAvailabilityFinder, renderAvailabilityResults } from "./components/AvailabilityFinder.js";
 import {
   renderBlockerEditor,
   type BlockerEditorModel,
@@ -50,7 +52,7 @@ import {
 } from "./components/ProviderSettings.js";
 import { renderSettingsRules } from "./components/SettingsRules.js";
 import { agendaTimeZone, renderTodaySchedule, scheduleItems, type AgendaLoadState } from "./components/TodaySchedule.js";
-import { buildFindSlotsRequest, findFeaturedClient, isScheduleBlocker } from "./domain/screenModels.js";
+import { buildAvailabilityRangeRequest, isScheduleBlocker } from "./domain/screenModels.js";
 import { mergeEmailDeliveries } from "./domain/emailDelivery.js";
 import {
   availabilityAfterPolicySave,
@@ -76,7 +78,7 @@ import {
   validateProviderDraft,
   type ProviderFieldErrors,
 } from "./domain/providerSettings.js";
-import { dateKeyInTimeZone, scheduleLocalFields, scheduleTimeZone, shiftDateKey, supportedScheduleTimeZone } from "./lib/format.js";
+import { dateKeyInTimeZone, formatShortDate, scheduleLocalFields, scheduleTimeZone, shiftDateKey, supportedScheduleTimeZone } from "./lib/format.js";
 import { escapeHtml } from "./lib/html.js";
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -90,6 +92,13 @@ const instructorRuntimeConfig = resolveInstructorDataMode(import.meta.env);
 const instructorCommandApi = createInstructorCommandApi(import.meta.env);
 
 exposeDevelopmentDataMode(instructorRuntimeConfig.mode);
+
+type FinderSearchContext = {
+  instructorId: string;
+  clientId: string;
+  clientName: string;
+  request: AvailabilityRangeRequest;
+};
 
 type AppState = {
   activeScreen: ScreenId;
@@ -114,8 +123,10 @@ type AppState = {
   deliveryRefreshResult: string;
   deliveryRefreshError: string;
   deliveryFocus: { primary: string; fallback?: string } | null;
-  recommendedSlots: TimeSlotDTO[];
-  availabilityContext: BookingRequestDTO | null;
+  finderClients: FinderClient[] | null;
+  finderRange: AvailabilityDateRange | null;
+  availabilityResult: AvailabilityRangeResult | null;
+  availabilityContext: FinderSearchContext | null;
   availability: AvailabilityUiState;
   calendarHandoff: CalendarHandoffModalModel | null;
   blockerEditor: BlockerEditorModel | null;
@@ -168,7 +179,9 @@ const state: AppState = {
   deliveryRefreshResult: "",
   deliveryRefreshError: "",
   deliveryFocus: null,
-  recommendedSlots: [],
+  finderClients: null,
+  finderRange: null,
+  availabilityResult: null,
   availabilityContext: null,
   availability: { status: "idle", message: "" },
   calendarHandoff: null,
@@ -456,12 +469,17 @@ function renderActiveScreen(snapshot: CommandCenterSnapshot): string {
       : renderTodaySchedule(snapshot);
   }
   if (state.activeScreen === "finder") {
-    return renderAvailabilityFinder(
-      { ...snapshot, date: activeScheduleDate() },
-      findFeaturedClient(snapshot, state.selectedClientId),
-      state.recommendedSlots,
-      state.availability,
-    );
+    const bounds = finderDateBounds();
+    const range = state.finderRange ?? bounds;
+    return renderAvailabilityFinder(snapshot, {
+      clients: state.finderClients,
+      selectedClient: selectedFinderClient(),
+      range,
+      bounds,
+      rangeError: finderRangeError(range, bounds),
+      result: state.availabilityResult,
+      availability: state.availability,
+    });
   }
   if (state.activeScreen === "client") return renderClientDetail(snapshot, state.selectedClientId);
   if (state.activeScreen === "requests") {
@@ -508,6 +526,9 @@ function wireEvents(): void {
       state.providerSetupPrompt = "";
       if (nextScreen === "today") void refreshAgenda(authGeneration);
       render();
+      if (nextScreen === "finder" && state.finderClients === null && state.availability.status === "idle") {
+        void refreshSlots(authGeneration);
+      }
       focusActiveScreenNavigation(nextScreen);
     });
   });
@@ -555,20 +576,42 @@ function wireEvents(): void {
     });
   });
 
-  app.querySelector<HTMLSelectElement>("[data-client-picker]")?.addEventListener("change", async (event) => {
+  app.querySelector<HTMLSelectElement>("[data-client-picker]")?.addEventListener("change", (event) => {
     const target = event.currentTarget as HTMLSelectElement;
-    await runAction(async (generation) => {
-      state.selectedClientId = target.value;
-      await refreshSlots(generation);
-    });
+    state.selectedClientId = target.value;
+    state.error = "";
+    void refreshSlots(authGeneration);
   });
 
-  app.querySelector<HTMLButtonElement>("[data-refresh-slots]")?.addEventListener("click", async () => {
-    await runAction(async (generation) => {
-      const refreshed = await refreshSlots(generation);
-      if (!refreshed || !isCurrentSignedInGeneration(generation)) return;
-      state.toast = "Safe starts refreshed.";
+  const finder = app.querySelector<HTMLFormElement>("[data-finder-form]");
+  finder?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (state.availability.status === "refreshing") return;
+    state.error = "";
+    void refreshSlots(authGeneration);
+  });
+  finder?.addEventListener("input", () => {
+    const dates = new FormData(finder);
+    const range = {
+      start_date: String(dates.get("start_date") ?? ""),
+      end_date: String(dates.get("end_date") ?? ""),
+    };
+    const bounds = finderDateBounds();
+    const previous = state.finderRange ?? bounds;
+    if (range.start_date === previous.start_date && range.end_date === previous.end_date) return;
+    state.finderRange = range;
+    clearAvailability();
+    const message = finderRangeError(range, bounds);
+    const error = finder.querySelector<HTMLElement>("#finder-date-error")!;
+    error.hidden = !message;
+    error.textContent = message;
+    finder.querySelectorAll<HTMLInputElement>('input[type="date"]').forEach((field) => {
+      field.setAttribute("aria-invalid", String(Boolean(message)));
     });
+    const submit = finder.querySelector<HTMLButtonElement>("[data-refresh-slots]")!;
+    submit.disabled = !isProviderSetupComplete() || (state.finderClients !== null && !selectedFinderClient()?.default_location);
+    submit.textContent = "Find safe starts";
+    app.querySelector<HTMLElement>("[data-finder-results]")!.innerHTML = renderAvailabilityResults(null, state.availability);
   });
 
   app.querySelectorAll<HTMLButtonElement>("[data-retry-availability]").forEach((button) => {
@@ -643,7 +686,6 @@ async function changeScheduleDate(date: string | null): Promise<void> {
   state.scheduleDate = date ?? (instructorCommandApi.authMode === "mock" ? providerLocalToday() : null);
   if (date === null) state.agendaToday = null;
   persistScheduleSelection();
-  clearAvailability();
   state.error = "";
   void refreshAgenda(generation);
   render();
@@ -747,7 +789,7 @@ async function refreshAgenda(
       const snapshotTimeZoneChanged = agenda.timezone !== state.snapshot?.instructor.timezone;
       if (snapshotTimeZoneChanged || (date === null && agenda.date !== state.snapshot?.date)) {
         if (date === null) persistScheduleSelection();
-        clearAvailability();
+        if (snapshotTimeZoneChanged) clearAvailability();
         void refreshAgendaSnapshot(generation, agenda.date, persistedMessage);
       }
     }
@@ -759,7 +801,6 @@ async function refreshAgenda(
       state.agendaToday = null;
       const fallbackDate = activeScheduleDate();
       if (state.snapshot?.date !== fallbackDate) {
-        clearAvailability();
         void refreshAgendaSnapshot(generation, fallbackDate, persistedMessage);
       }
     }
@@ -770,7 +811,10 @@ async function refreshAgenda(
 
 async function refreshAgendaSnapshot(generation: number, date: string, persistedMessage?: string): Promise<void> {
   try {
-    if (await refreshScheduleSnapshot(generation, date)) renderScheduleUpdate();
+    if (await refreshScheduleSnapshot(generation, date)) {
+      if (state.activeScreen === "finder") render();
+      else renderScheduleUpdate();
+    }
   } catch (error) {
     handleAuthFailure(error, persistedMessage, generation);
   }
@@ -1294,13 +1338,8 @@ async function saveSchedulingPolicy(form: HTMLFormElement): Promise<void> {
     ) {
       state.policyConflict = true;
       state.policyFocus = "conflict";
-      if (state.availabilityContext) {
-        availabilityRequestGate.invalidate();
-        state.recommendedSlots = [];
-        state.availability = {
-          status: "stale",
-          message: "The saved policy changed elsewhere. Reload it and retry safe starts before booking.",
-        };
+      if (state.availability.status !== "idle") {
+        clearAvailability("stale", "The saved policy changed elsewhere. Reload it and retry safe starts before booking.");
       }
     } else {
       state.policyError = formatApiError(error);
@@ -1313,11 +1352,7 @@ async function saveSchedulingPolicy(form: HTMLFormElement): Promise<void> {
   }
 
   if (!saved || !state.availabilityContext || !isCurrentSignedInGeneration(generation)) return;
-  const context = structuredClone(state.availabilityContext);
-  state.recommendedSlots = [];
-  state.availability = availabilityAfterPolicySave(true);
-  render();
-  await refreshAvailabilityContext(context, generation, true);
+  await refreshAvailabilityContext(state.availabilityContext, generation, true);
 }
 
 async function reloadSchedulingPolicy(): Promise<void> {
@@ -1357,11 +1392,7 @@ async function reloadSchedulingPolicy(): Promise<void> {
   }
 
   if (!reloaded || !state.availabilityContext || !isCurrentSignedInGeneration(generation)) return;
-  const context = structuredClone(state.availabilityContext);
-  state.recommendedSlots = [];
-  state.availability = { status: "refreshing", message: "Rechecking safe starts with the saved policy…" };
-  render();
-  await refreshAvailabilityContext(context, generation, false);
+  await refreshAvailabilityContext(state.availabilityContext, generation, false);
 }
 
 function schedulingPolicyDraftFromForm(
@@ -1429,13 +1460,8 @@ function restorePolicyFocus(): void {
 }
 
 async function retryAvailability(): Promise<void> {
-  const generation = authGeneration;
-  const context = state.availabilityContext;
-  if (!context || state.availability.status === "refreshing") return;
-  state.recommendedSlots = [];
-  state.availability = { status: "refreshing", message: "Rechecking safe starts…" };
-  render();
-  await refreshAvailabilityContext(structuredClone(context), generation, false);
+  if (state.availability.status === "refreshing") return;
+  await refreshAvailabilityContext(state.availabilityContext, authGeneration, false);
 }
 
 function openSettings(): void {
@@ -1628,6 +1654,7 @@ async function saveProviderSettings(form: HTMLFormElement): Promise<void> {
       state.agenda = { status: "loading", timezone: saved.timezone };
     }
     state.provider = saved;
+    state.finderClients = null;
     state.providerDraft = providerDraftFromConfiguration(saved);
     state.providerFieldErrors = {};
     state.providerError = "";
@@ -1882,13 +1909,8 @@ function applySnapshot(snapshot: CommandCenterSnapshot): boolean {
   if (!currentPolicy) {
     replaceSchedulingPolicy(incomingPolicy);
   } else if (revisionOrder === "newer") {
-    availabilityRequestGate.invalidate();
-    state.recommendedSlots = [];
-    if (state.availabilityContext) {
-      state.availability = {
-        status: "stale",
-        message: "The saved policy changed. Retry safe starts before booking.",
-      };
+    if (state.availability.status !== "idle") {
+      clearAvailability("stale", "The saved policy changed. Retry safe starts before booking.");
     }
     if (!draft || schedulingPolicyDraftMatchesPolicy(currentPolicy, draft)) {
       replaceSchedulingPolicy(incomingPolicy);
@@ -2043,77 +2065,116 @@ async function signOut(): Promise<void> {
   render();
 }
 
-async function refreshSlots(generation: number): Promise<boolean> {
-  if (!state.snapshot) return false;
-  if (!isProviderSetupComplete()) {
-    clearAvailability("idle");
-    return false;
+function selectedFinderClient(): FinderClient | undefined {
+  return state.finderClients?.find((client) => client.id === state.selectedClientId) ?? state.finderClients?.[0];
+}
+
+function finderDateBounds(): AvailabilityDateRange {
+  const timezone = scheduleTimeZone(agendaTimeZone(state.agenda) ?? state.provider?.timezone);
+  const start_date = instructorCommandApi.authMode === "mock" && configuredCommandDate
+    ? configuredCommandDate : dateKeyInTimeZone(new Date(), timezone);
+  return { start_date, end_date: shiftDateKey(start_date, 13) };
+}
+
+function finderRangeError(range: AvailabilityDateRange, bounds: AvailabilityDateRange): string {
+  if (!parseCommandDate(range.start_date) || !parseCommandDate(range.end_date)) return "Enter a start date and an end date.";
+  if (range.start_date > range.end_date) return "The end date must be on or after the start date.";
+  if (range.start_date < bounds.start_date || range.end_date > bounds.end_date) {
+    return `Choose dates from ${formatShortDate(bounds.start_date)} through ${formatShortDate(bounds.end_date)}, inclusive.`;
   }
-  const selectedClient = findFeaturedClient(state.snapshot, state.selectedClientId);
-  const request = buildFindSlotsRequest(state.snapshot.instructor.id, selectedClient, activeScheduleDate());
-  state.availabilityContext = structuredClone(request);
-  state.recommendedSlots = [];
-  state.availability = { status: "refreshing", message: "Finding safe starts…" };
-  render();
-  return refreshAvailabilityContext(request, generation, false);
+  return "";
+}
+
+function refreshSlots(generation: number): Promise<void> {
+  return refreshAvailabilityContext(null, generation, false);
 }
 
 async function refreshAvailabilityContext(
-  request: BookingRequestDTO,
+  context: FinderSearchContext | null,
   generation: number,
   afterPolicySave: boolean,
-): Promise<boolean> {
-  const requestToken = availabilityRequestGate.next();
-  try {
-    const slots = await instructorCommandApi.findAvailableSlots(request);
-    if (
-      !isCurrentSignedInGeneration(generation)
-      || !availabilityRequestGate.isCurrent(requestToken)
-    ) return false;
-    state.availabilityContext = structuredClone(request);
-    state.recommendedSlots = slots;
-    state.availability = { status: "current", message: "" };
+): Promise<void> {
+  const instructorId = state.snapshot?.instructor.id;
+  if (!instructorId || !isCurrentSignedInGeneration(generation) || !isProviderSetupComplete()) return;
+  const bounds = finderDateBounds();
+  const range = state.finderRange ?? bounds;
+  if (finderRangeError(range, bounds)) {
+    clearAvailability();
     render();
-    return true;
-  } catch (error) {
-    if (!isCurrentGeneration(generation) || !availabilityRequestGate.isCurrent(requestToken)) return false;
-    if (handleAuthFailure(error, undefined, generation) || handleProviderSetupRequired(error)) return false;
-    state.recommendedSlots = [];
-    state.availability = availabilityRefreshFailed(afterPolicySave);
-    if (error instanceof InstructorCommandApiError && error.status === 403) {
-      state.availability = { status: "stale", message: formatApiError(error) };
-    }
-    render();
-    return false;
+    return;
   }
+  state.finderRange = range;
+  state.availabilityContext = context;
+  state.availabilityResult = null;
+  state.availability = afterPolicySave ? availabilityAfterPolicySave(true)
+    : { status: "refreshing", message: context ? "Rechecking safe starts…" : "Finding safe starts…" };
+  const requestToken = availabilityRequestGate.next();
+  const isCurrent = () => isCurrentSignedInGeneration(generation) && availabilityRequestGate.isCurrent(requestToken);
+  render();
+
+  try {
+    if (!context) {
+      const clients = await instructorCommandApi.getFinderClients(instructorId);
+      if (!isCurrent()) return;
+      state.finderClients = clients;
+      const client = selectedFinderClient();
+      if (!client?.default_location) {
+        clearAvailability();
+        render();
+        return;
+      }
+      state.selectedClientId = client.id;
+      context = {
+        instructorId,
+        clientId: client.id,
+        clientName: client.name,
+        request: buildAvailabilityRangeRequest(client, range),
+      };
+      state.availabilityContext = context;
+    }
+    const result = await instructorCommandApi.searchAvailability(context.request, context.instructorId);
+    if (!isCurrent()) return;
+    state.availabilityResult = result;
+    state.availability = { status: "current", message: "" };
+  } catch (error) {
+    if (!isCurrent() || handleAuthFailure(error, undefined, generation) || handleChangedProvider(error, generation)) return;
+    if (!handleProviderSetupRequired(error)) {
+      state.availability = availabilityRefreshFailed(afterPolicySave);
+      if (error instanceof Error && !(error instanceof TypeError)
+        && (!afterPolicySave || (error instanceof InstructorCommandApiError && error.status < 500))) {
+        state.availability.message = error.message;
+      }
+    }
+  }
+  render();
 }
 
-function clearAvailability(status: "idle" | "stale" = "idle"): void {
+function clearAvailability(status: "idle" | "stale" = "idle", message = "Safe starts need to be refreshed before booking."): void {
   availabilityRequestGate.invalidate();
-  state.recommendedSlots = [];
-  state.availabilityContext = null;
-  state.availability = {
-    status,
-    message: status === "stale" ? "Safe starts need to be refreshed before booking." : "",
-  };
+  state.availabilityResult = null;
+  if (status === "idle") state.availabilityContext = null;
+  state.availability = { status, message: status === "stale" ? message : "" };
 }
 
 async function bookSlot(slotId: string, returnFocusKey: string): Promise<void> {
   await runAction(async (generation) => {
-    if (!state.snapshot || state.availability.status !== "current") return;
-    const selectedClient = findFeaturedClient(state.snapshot, state.selectedClientId);
-    const slot = state.recommendedSlots.find((item) => item.id === slotId);
-    if (!slot) return;
+    const context = state.availabilityContext;
+    const slot = state.availabilityResult?.available_slots.find((item) => item.id === slotId);
+    if (!context || !slot || state.availability.status !== "current" || state.policyPending || state.providerPending) return;
+    if (finderRangeError(context.request, finderDateBounds())) {
+      clearAvailability();
+      return;
+    }
 
     const booking = await instructorCommandApi.bookLesson({
-      instructor_id: state.snapshot.instructor.id,
-      client_id: selectedClient.id,
-      client_name: selectedClient.name,
+      instructor_id: context.instructorId,
+      client_id: context.clientId,
+      client_name: context.clientName,
       start_time_iso: slot.start_time,
-      duration_mins: selectedClient.lesson_duration_mins,
+      duration_mins: context.request.duration_mins,
       location_address: slot.target_location.address,
       is_instructor_facility: slot.target_location.is_instructor_facility,
-      idempotency_key: `command:${selectedClient.id}:${slot.start_time}`,
+      idempotency_key: `command:${context.clientId}:${slot.start_time}`,
     });
     if (!isCurrentSignedInGeneration(generation)) return;
     await completePersistedAction(
@@ -2182,9 +2243,14 @@ function unavailableHandoff(
 
 async function refreshAfterPersistence(generation: number): Promise<void> {
   if (!isCurrentSignedInGeneration(generation)) return;
+  const context = state.availabilityContext;
+  if (context) clearAvailability("stale");
   void refreshAgenda(generation, persistedRefreshAuthMessage());
   try {
-    if (await refreshScheduleSnapshot(generation)) await refreshSlots(generation);
+    const refreshed = await refreshScheduleSnapshot(generation);
+    if (refreshed && context && state.availabilityContext === context) {
+      await refreshAvailabilityContext(context, generation, false);
+    }
   } catch (error) {
     if (!isCurrentGeneration(generation)) return;
     if (
@@ -2205,7 +2271,7 @@ async function runAction(action: (generation: number) => Promise<void>): Promise
     render();
   } catch (error) {
     if (!isCurrentGeneration(generation)) return;
-    if (!handleAuthFailure(error, undefined, generation) && !handleProviderSetupRequired(error)) {
+    if (!handleAuthFailure(error, undefined, generation) && !handleChangedProvider(error, generation) && !handleProviderSetupRequired(error)) {
       state.error = formatApiError(error);
     }
     render();
@@ -2288,7 +2354,7 @@ function isCurrentSignedInGeneration(generation: number): boolean {
 }
 
 function clearProtectedState(): void {
-  availabilityRequestGate.invalidate();
+  clearAvailability();
   policyRequestGate.invalidate();
   agendaRequestGate.invalidate();
   scheduleSnapshotRequestGate.invalidate();
@@ -2298,9 +2364,8 @@ function clearProtectedState(): void {
   state.scheduleDate = null;
   state.agendaToday = null;
   state.agenda = { status: "loading" };
-  state.recommendedSlots = [];
-  state.availabilityContext = null;
-  state.availability = { status: "idle", message: "" };
+  state.finderClients = null;
+  state.finderRange = null;
   state.calendarHandoff = null;
   state.blockerEditor = null;
   state.blockerReturnFocus = null;

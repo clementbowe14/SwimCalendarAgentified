@@ -9,6 +9,7 @@ import { renderSettingsRules } from "../src/components/SettingsRules.js";
 import { renderTodaySchedule } from "../src/components/TodaySchedule.js";
 import {
   buildAgendaRows,
+  buildAvailabilityRangeRequest,
   buildFindSlotsRequest,
   buildReadinessReport,
   findFeaturedClient,
@@ -50,13 +51,17 @@ test("request labels preserve provider-local wall time for naive and offset time
 test("Availability Finder builds backend-shaped slot requests and renders safety evidence", async () => {
   const api = new MockInstructorCommandApi();
   const client = findFeaturedClient(snapshot, "client_sofia");
-  const request = buildFindSlotsRequest(snapshot.instructor.id, client, snapshot.date);
-  const slots = await api.findAvailableSlots(request);
-  const html = renderAvailabilityFinder(snapshot, client, slots);
+  const range = { start_date: snapshot.date, end_date: "2026-08-29" };
+  const request = buildAvailabilityRangeRequest(client, range);
+  const result = await api.searchAvailability(request, snapshot.instructor.id);
+  const html = renderAvailabilityFinder(snapshot, {
+    clients: snapshot.clients, selectedClient: client, range, bounds: range, rangeError: "",
+    result, availability: { status: "current", message: "" },
+  });
 
-  assert.equal(request.instructor_id, "inst_riley_001");
-  assert.equal(request.location.address, client.default_location.address);
-  assert.equal(slots.length, 3);
+  assert.deepEqual(request.windows.map(({ days }) => days), [["thursday"], ["saturday"]]);
+  assert.equal(request.client_address, client.default_location.address);
+  assert.match(result.available_slots[0].start_time, /^2026-08-29T10:00:00-05:00$/);
   assert.match(html, /Travel 8 min/);
   assert.match(html, /15 min rounding/);
 });
@@ -192,7 +197,7 @@ test("Readiness report covers every representative screen and calls out backend 
   );
 });
 
-test("Availability Finder can fall back when real backend schedule has no clients for the date", () => {
+test("legacy screen models supply a placeholder when the snapshot has no clients", () => {
   const quietSnapshot = {
     ...snapshot,
     clients: [],

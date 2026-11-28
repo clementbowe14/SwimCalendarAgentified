@@ -16,6 +16,7 @@ from app.external_calendar import (
 from app.models import LocationInfo, TimeSlotDTO
 from app.provider_settings import (
     ProviderConfiguration,
+    ProviderLocation,
     ProviderNotFound,
     ProviderSetupIncomplete,
     load_provider_configuration,
@@ -156,10 +157,11 @@ def find_available_swim_slots(
     *,
     calendar_busy_source: Optional[CalendarBusySource] = None,
     requested_start: datetime.datetime | None = None,
+    expected_service_location: ProviderLocation | None = None,
 ) -> List[TimeSlotDTO]:
     """Find valid slots without retaining a secret-bearing busy source."""
 
-    try: source_handoff: list[Optional[CalendarBusySource]] = [calendar_busy_source]; calendar_busy_source = None; return _find_available_swim_slots(instructor_id, date_str, client_address, is_instructor_facility, duration_mins, buffer_policy, source_handoff, requested_start)
+    try: source_handoff: list[Optional[CalendarBusySource]] = [calendar_busy_source]; calendar_busy_source = None; return _find_available_swim_slots(instructor_id, date_str, client_address, is_instructor_facility, duration_mins, buffer_policy, source_handoff, requested_start, expected_service_location)
     finally:
         try: calendar_busy_source = None; _clear_optional_calendar_busy_source_handoff(locals().get("source_handoff"))
         except BaseException:
@@ -179,6 +181,7 @@ def _find_available_swim_slots(
     buffer_policy: Optional[BufferPolicy],
     calendar_busy_source_handoff: list[Optional[CalendarBusySource]],
     requested_start: datetime.datetime | None,
+    expected_service_location: ProviderLocation | None,
 ) -> List[TimeSlotDTO]:
     """
     Finds all valid swim lesson slots for a given client request on a specific date.
@@ -193,6 +196,8 @@ def _find_available_swim_slots(
     # keeps this boundary fail-closed if malformed legacy data is introduced.
     if provider.base_location is None or provider.service_location is None:
         raise ProviderSetupIncomplete(provider.setup_missing_fields)
+    if expected_service_location is not None and provider.service_location != expected_service_location:
+        raise db.ScheduleConflictError("The service location changed after the availability search.")
 
     target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
     working_window = working_window_utc(provider, target_date)
@@ -562,10 +567,11 @@ def book_swim_lesson(
     buffer_policy: Optional[BufferPolicy] = None,
     *,
     calendar_busy_source: Optional[CalendarBusySource] = None,
+    expected_service_address: str | None = None,
 ) -> dict:
     """Book a lesson without retaining a secret-bearing busy source."""
 
-    try: source_handoff: list[Optional[CalendarBusySource]] = [calendar_busy_source]; calendar_busy_source = None; return _book_swim_lesson(instructor_id, client_id, client_name, start_time_iso, duration_mins, location_address, idempotency_key, request_id, is_instructor_facility, buffer_policy, source_handoff)
+    try: source_handoff: list[Optional[CalendarBusySource]] = [calendar_busy_source]; calendar_busy_source = None; return _book_swim_lesson(instructor_id, client_id, client_name, start_time_iso, duration_mins, location_address, idempotency_key, request_id, is_instructor_facility, buffer_policy, source_handoff, expected_service_address)
     finally:
         try: calendar_busy_source = None; _clear_optional_calendar_busy_source_handoff(locals().get("source_handoff"))
         except BaseException:
@@ -588,6 +594,7 @@ def _book_swim_lesson(
     is_instructor_facility: bool,
     buffer_policy: Optional[BufferPolicy],
     calendar_busy_source_handoff: list[Optional[CalendarBusySource]],
+    expected_service_address: str | None,
 ) -> dict:
     """Books an appointment after revalidating the authoritative schedule."""
     try:
@@ -610,6 +617,7 @@ def _book_swim_lesson(
         if (
             existing["instructor_id"] != instructor_id
             or existing["client_id"] != client_id
+            or (expected_service_address is not None and existing["location_address"] != expected_service_address)
             or timezones.to_utc_storage(existing["start_time"]) != start_time_storage
             or timezones.to_utc_storage(existing["end_time"]) != end_time_storage
         ):
@@ -622,6 +630,11 @@ def _book_swim_lesson(
 
     if not provider.setup_complete:
         raise ProviderSetupIncomplete(provider.setup_missing_fields)
+    service_location = provider.service_location
+    if expected_service_address is not None and (
+        service_location is None or service_location.address != expected_service_address
+    ):
+        raise db.ScheduleConflictError("The service location changed after the availability search.")
 
     policy = buffer_policy or load_buffer_policy(instructor_id, operation="direct_booking")
     available_slots = find_available_swim_slots(
@@ -635,6 +648,7 @@ def _book_swim_lesson(
             calendar_busy_source_handoff
         ),
         requested_start=start_time,
+        expected_service_location=service_location if expected_service_address is not None else None,
     )
     if not any(timezones.to_utc_storage(slot.start_time) == start_time_storage for slot in available_slots):
         raise db.ScheduleConflictError("The requested start is no longer available.")

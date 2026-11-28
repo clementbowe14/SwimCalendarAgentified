@@ -255,11 +255,14 @@ def save_provider_settings(
 @router.get(
     "/clients",
     response_model=CoachClientListResponse,
-    responses=CLIENT_READ_ERROR_RESPONSES,
+    responses={
+        **CLIENT_READ_ERROR_RESPONSES,
+        409: {"model": ErrorResponse, "description": "The signed-in provider changed."},
+    },
 )
 def read_clients(
     response: Response,
-    coach: CoachContext = Depends(get_current_coach),
+    coach: CoachContext = Depends(get_expected_instructor_coach),
 ) -> CoachClientListResponse:
     _private_response(response)
     return list_coach_clients(coach.instructor_id)
@@ -472,11 +475,18 @@ def find_availability_range(
         del request, http_request, coach
 
 
-@router.post("/bookings", response_model=BookLessonResponse)
+@router.post(
+    "/bookings",
+    response_model=BookLessonResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "The provider or client could not be found."},
+        409: {"model": ErrorResponse, "description": "A conflict prevents booking this appointment."},
+    },
+)
 def create_booking(
     request: CoachBookLessonRequest,
     http_request: Request,
-    coach: CoachContext = Depends(get_current_coach),
+    coach: CoachContext = Depends(get_expected_instructor_coach),
 ) -> BookLessonResponse:
     try:
         return book_coach_lesson(

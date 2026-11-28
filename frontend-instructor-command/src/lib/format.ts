@@ -14,7 +14,7 @@ export function formatShortDate(isoDateTime: string, timeZone?: string): string 
     weekday: "short",
     month: "short",
     day: "numeric",
-    timeZone: explicitTimeZone(isoDateTime, timeZone),
+    timeZone: /^\d{4}-\d{2}-\d{2}$/.test(isoDateTime) ? "UTC" : explicitTimeZone(isoDateTime, timeZone),
   }).format(date);
 }
 

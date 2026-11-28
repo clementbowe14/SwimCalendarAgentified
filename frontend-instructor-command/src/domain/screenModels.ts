@@ -1,14 +1,18 @@
 import type {
+  AvailabilityDateRange,
+  AvailabilityRangeRequest,
   BookingRequestDTO,
   BlockerScheduleItem,
   Client,
   CommandCenterSnapshot,
+  FinderClient,
   LessonRequest,
   LocationInfo,
   ScheduleItem,
   TimeSlotDTO,
 } from "../api/types.js";
 import { formatShortDate, formatTimeRange, minutesBetween } from "../lib/format.js";
+import { PROVIDER_WEEKDAYS } from "./providerSettings.js";
 
 export type AgendaRow = {
   id: string;
@@ -60,6 +64,27 @@ export function buildFindSlotsRequest(
   };
 }
 
+export function buildAvailabilityRangeRequest(client: FinderClient, range: AvailabilityDateRange): AvailabilityRangeRequest {
+  if (!client.default_location) throw new Error("Save a lesson location for this client before searching.");
+  const is_instructor_facility = client.location_mode === "instructor_facility";
+  return {
+    ...range,
+    duration_mins: client.lesson_duration_mins,
+    client_address: is_instructor_facility ? null : client.default_location.address,
+    is_instructor_facility,
+    windows: client.availability.map(({ days, start_time, end_time }) => ({
+      days: days.map((day) => {
+        const savedDay = day.toLowerCase();
+        const weekday = PROVIDER_WEEKDAYS.find((value) => value === savedDay || value.slice(0, 3) === savedDay);
+        if (!weekday) throw new Error("The client has an invalid saved availability weekday.");
+        return weekday;
+      }),
+      start_time,
+      end_time,
+    })),
+  };
+}
+
 export function isScheduleBlocker(item: ScheduleItem): item is BlockerScheduleItem {
   return item.kind === "break" || item.kind === "personal" || item.kind === "unavailable";
 }
@@ -90,7 +115,7 @@ export function nextLessonForClient(snapshot: CommandCenterSnapshot, clientId: s
   return snapshot.schedule.find((item) => item.client_id === clientId && item.kind === "lesson");
 }
 
-export function clientAvailabilityLabel(client: Client): string {
+export function clientAvailabilityLabel(client: Pick<Client, "availability">): string {
   return client.availability
     .map((window) => `${window.days.join(", ")} ${window.start_time}-${window.end_time}`)
     .join(" | ");
@@ -107,7 +132,7 @@ export function buildReadinessReport(): ScreenReadiness[] {
     {
       screen: "Availability Finder/New Client",
       isReadyForBackend: false,
-      requiredApiMethods: ["findAvailableSlots", "bookLesson"],
+      requiredApiMethods: ["getFinderClients", "searchAvailability", "bookLesson"],
       missingApiContracts: ["new-client intake persistence", "server-issued slot hold IDs for coach-created bookings"],
     },
     {

@@ -1,5 +1,6 @@
-import { expect, type Page, type Route, test } from "@playwright/test";
+import { expect, type Page, type Request, type Route, test } from "@playwright/test";
 import { agendaResponse } from "./agenda-fixture";
+import { finderClientList, finderSearchResult } from "./finder-fixture";
 
 const SESSION_COOKIE_NAME = "swim_session";
 const SESSION_COOKIE_VALUE = "playwright-opaque-session";
@@ -142,6 +143,82 @@ test.describe("MVP coach auth flow", () => {
     ).toBe(true);
   });
 
+  test("searches provider-local dates using the saved profile and books the later slot", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-08-28T02:00:00Z"));
+    const api = await mockAuthenticatedCoachApi(page);
+    const savedLocation = { address: "900 Lakeview Dr, Austin, TX", lat: 30.289, lng: -97.739 };
+    const window = { days: ["saturday"], start_time: "16:00", end_time: "18:00" };
+    await page.route("**/api/coach/clients", async (route) => {
+      expect(await route.request().headerValue("x-expected-instructor-id")).toBe("inst_001");
+      await route.fulfill({ json: { clients: [{
+        ...finderClientList.clients[0],
+        client_location: savedLocation,
+        effective_location: savedLocation,
+        default_duration_mins: 60,
+        availability: [{ id: "window_sat", ...window }],
+      }] } });
+    });
+    await signInThroughUi(page);
+    await page.getByRole("button", { name: "Find", exact: true }).click();
+    const book = page.getByRole("button", { name: "Book lesson" });
+    await expect(book).toBeVisible();
+
+    const start = page.getByLabel("Start date");
+    const end = page.getByLabel("End date");
+    const find = page.getByRole("button", { name: "Find safe starts" });
+    await expect(start).toHaveAttribute("min", "2026-08-27");
+    await expect(end).toHaveAttribute("max", "2026-09-09");
+    await end.fill("2026-09-10");
+    await expect(page.getByRole("alert")).toContainText("Thu, Aug 27 through Wed, Sep 9");
+    await expect(book).toHaveCount(0);
+    await find.click();
+    expect(api.protectedCalls().filter((call) => call.path.endsWith("/availability/search"))).toHaveLength(1);
+
+    await start.fill("2026-08-30");
+    await end.fill("2026-09-01");
+    const searchPath = "**/api/coach/availability/search";
+    await page.route(searchPath, (route) => route.fulfill({ json: {
+      ...finderSearchResult(route.request()), available_slots: [], empty_reason: "outside_client_windows",
+    } }), { times: 1 });
+    const searched = page.waitForRequest(searchPath);
+    await find.click();
+    const request = await searched;
+    expect(await request.headerValue("x-expected-instructor-id")).toBe("inst_001");
+    expect(await request.headerValue("x-csrf-protection")).toBe("1");
+    expect(request.postDataJSON()).toEqual({
+      start_date: "2026-08-30", end_date: "2026-09-01", duration_mins: 60,
+      windows: [window], client_address: savedLocation.address, is_instructor_facility: false,
+    });
+    await expect(page.locator("[data-finder-results]")).toContainText("Sun, Aug 30 to Tue, Sep 1");
+    await expect(page.getByText("The client’s saved windows fall outside the provider’s working hours in this range.")).toBeVisible();
+
+    await start.fill("2026-08-28");
+    await end.fill("2026-08-29");
+    await find.click();
+    await book.click();
+    await expect(page.getByRole("dialog", { name: "Ready for your calendar" })).toBeVisible();
+    expect(api.protectedCalls().find((call) => call.path.endsWith("/coach/bookings"))?.body).toEqual({
+      client_id: "client_sofia", client_name: "Sofia Martinez", client_address: "820 Lakeview Dr, Austin, TX",
+      start_time: "2026-08-29T16:00:00-05:00", duration_mins: 60, is_instructor_facility: false,
+      idempotency_key: "command:client_sofia:2026-08-29T16:00:00-05:00",
+    });
+  });
+
+  test("clears Finder when booking detects a changed provider", async ({ page }) => {
+    await mockAuthenticatedCoachApi(page);
+    await signInThroughUi(page);
+    await page.getByRole("button", { name: "Find", exact: true }).click();
+    const path = "**/api/coach/bookings";
+    await page.route(path, (route) => route.fulfill({
+      status: 409, json: apiError("CALENDAR_CONNECTION_OWNER_CHANGED", "The provider changed."),
+    }));
+    const booked = page.waitForRequest(path);
+    await page.getByRole("button", { name: "Book lesson" }).first().click();
+    expect(await (await booked).headerValue("x-expected-instructor-id")).toBe("inst_001");
+    await expect(page.getByRole("alert")).toContainText("Your signed-in provider changed");
+    await expect(page.locator("[data-command-surface]")).toHaveCount(0);
+  });
+
   test("confirms through the canonical route and renders every persisted occurrence", async ({ page }) => {
     const api = await mockAuthenticatedCoachApi(page);
     await signInThroughUi(page);
@@ -279,8 +356,9 @@ test.describe("MVP coach auth flow", () => {
     const api = await mockAuthenticatedCoachApi(page);
     await signInThroughUi(page);
 
-    api.revokeSession();
     await page.getByRole("button", { name: "Find", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Book lesson" }).first()).toBeVisible();
+    api.revokeSession();
     await page.getByRole("button", { name: "Find safe starts" }).click();
 
     await expect(page.getByRole("heading", { name: "Session expired" })).toBeVisible();
@@ -290,9 +368,10 @@ test.describe("MVP coach auth flow", () => {
   test("keeps a valid session and protected UI on provider 403", async ({ page }) => {
     const api = await mockAuthenticatedCoachApi(page);
     await signInThroughUi(page);
-    api.failProtectedRequestsWith(403);
 
     await page.getByRole("button", { name: "Find", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Book lesson" }).first()).toBeVisible();
+    api.failProtectedRequestsWith(403);
     await page.getByRole("button", { name: "Find safe starts" }).click();
 
     await expect(page.getByRole("alert")).toContainText(/permission|forbidden/i);
@@ -352,9 +431,12 @@ test.describe("MVP coach auth flow", () => {
     const api = await mockAuthenticatedCoachApi(page);
     await signInThroughUi(page);
     await page.getByRole("button", { name: "Find", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Book lesson" }).first()).toBeVisible();
     api.delayNextAvailability();
 
-    await page.getByRole("button", { name: "Find safe starts" }).click({ noWaitAfter: true });
+    const pending = page.waitForRequest("**/api/coach/availability/search");
+    await page.getByRole("button", { name: "Find safe starts" }).click();
+    await pending;
     await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: /sign out/i }).click();
     await expect(page.getByRole("heading", { name: LOCKED_OR_EXPIRED_HEADING })).toBeVisible();
@@ -550,6 +632,12 @@ async function mockAuthenticatedCoachApi(page: Page, options: MockCoachApiOption
         return;
       }
 
+      if (["/api/coach/clients", "/api/coach/availability/search", "/api/coach/bookings"].includes(url.pathname)
+        && request.headers()["x-expected-instructor-id"] !== "inst_001") {
+        await route.fulfill({ status: 409, json: apiError("CALENDAR_CONNECTION_OWNER_CHANGED", "The provider changed.") });
+        return;
+      }
+
       if (expiredStatus) {
         await route.fulfill({
           status: expiredStatus,
@@ -570,7 +658,7 @@ async function mockAuthenticatedCoachApi(page: Page, options: MockCoachApiOption
         return;
       }
 
-      if (url.pathname.endsWith("/coach/availability") && delayAvailability && availabilityGate) {
+      if (url.pathname.endsWith("/coach/availability/search") && delayAvailability && availabilityGate) {
         await availabilityGate;
         delayAvailability = false;
         availabilityGate = null;
@@ -756,8 +844,13 @@ async function fulfillProtectedCoachRoute(
     return;
   }
 
-  if (pathname.endsWith("/coach/availability")) {
-    await route.fulfill({ json: availabilityResponse() });
+  if (pathname.endsWith("/coach/clients")) {
+    await route.fulfill({ json: finderClientList });
+    return;
+  }
+
+  if (pathname.endsWith("/coach/availability/search")) {
+    await route.fulfill({ json: availabilityResponse(route.request()) });
     return;
   }
 
@@ -864,23 +957,15 @@ function apiError(code: string, message: string): Record<string, unknown> {
   };
 }
 
-function availabilityResponse(): Record<string, unknown> {
+function availabilityResponse(request: Request) {
+  const result = finderSearchResult(request);
   return {
-    status: "PRESENTING",
-    client_name: "Sofia Martinez",
-    requested_date: "2026-08-27",
-    duration_mins: 45,
-    location: {
-      address: "820 Lakeview Dr, Austin, TX",
-      lat: 30.289,
-      lng: -97.739,
-      is_instructor_facility: false,
-    },
+    ...result,
     available_slots: [
       {
-        start_iso: "2026-08-27T16:00:00",
-        end_iso: "2026-08-27T16:45:00",
-        display: "Thu, Aug 27 at 4:00 PM",
+        start_iso: `${result.end_date}T16:00:00-05:00`,
+        end_iso: `${result.end_date}T${result.duration_mins === 60 ? "17:00" : "16:45"}:00-05:00`,
+        display: "4:00 PM",
         travel_time_mins: 12,
         buffer_mins: 10,
         distance_miles: 2.1,

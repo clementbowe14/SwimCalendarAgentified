@@ -53,12 +53,17 @@ type SessionCookie = {
 
 test.describe("instructor command real-backend integration", () => {
   test("signs in, loads protected coach data, and signs out", async ({ page }) => {
+    const initialSearch = page.waitForResponse((response) => (
+      response.request().method() === "POST" && response.url().endsWith("/coach/availability/search")
+    ));
     const { cookie } = await signIn(page);
 
     await expect(page.locator("html")).toHaveAttribute("data-data-mode", "http");
     await expect(page.getByText("Mock data", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "Today schedule" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Sign out" })).toHaveCount(0);
+    const initialResponse = await initialSearch;
+    expect(initialResponse.ok(), await initialResponse.text()).toBeTruthy();
 
     const apiOrder: string[] = [];
     let sessionValidated = false;
@@ -114,7 +119,7 @@ test.describe("instructor command real-backend integration", () => {
     }
   });
 
-  test("loads coach schedule data and searches availability through /api/coach", async ({ page }) => {
+  test("searches a provider-local date range and reports a fully blocked day", async ({ page }) => {
     const agendaResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/coach/agenda");
     await signIn(page);
     const agenda = await agendaResponse;
@@ -128,9 +133,59 @@ test.describe("instructor command real-backend integration", () => {
     await page.getByRole("button", { name: "Find", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Availability finder" })).toBeVisible();
 
+    const search = page.waitForResponse((response) => (
+      response.request().method() === "POST" && response.url().endsWith("/coach/availability/search")
+    ));
     await page.getByRole("button", { name: "Find safe starts" }).click();
-    await expect(page.getByRole("heading", { name: "Availability finder" })).toBeVisible();
-    await expect(page.locator("main")).toContainText(/safe options|No safe starts/i);
+    const response = await search;
+    expect(response.ok(), await response.text()).toBeTruthy();
+    const request = response.request().postDataJSON();
+    expect(await response.request().headerValue("x-expected-instructor-id")).toBe("inst_001");
+    expect(request.end_date).toBe(shiftIsoDate(request.start_date, 13));
+    const results = await response.json();
+    expect(results).toMatchObject({
+      start_date: request.start_date,
+      end_date: request.end_date,
+      available_slots: expect.any(Array),
+    });
+    expect(results.available_slots.length).toBeGreaterThan(0);
+    await expect(page.getByRole("heading", { name: `${results.available_slots.length} safe options` })).toBeVisible();
+
+    const blockedDate = shiftIsoDate(request.start_date, 10);
+    const coachRequest = page.context().request;
+    const blocker = await jsonResponse<ProviderBlocker>(await coachRequest.post(`${liveApiBase}/coach/blockers`, {
+      headers: { "X-CSRF-Protection": "1", "Idempotency-Key": `live-finder-blocker-${Date.now()}` },
+      data: {
+        kind: "unavailable",
+        title: "Live Finder unavailable day",
+        date: blockedDate,
+        start_time: "08:00",
+        end_time: "17:00",
+      },
+    }), "Finder blocker create");
+    try {
+      await page.getByLabel("Start date").fill(blockedDate);
+      await page.getByLabel("End date").fill(blockedDate);
+      const emptySearch = page.waitForResponse((result) => (
+        result.request().method() === "POST" && result.url().endsWith("/coach/availability/search")
+      ));
+      await page.getByRole("button", { name: "Find safe starts" }).click();
+      const empty = await emptySearch;
+      expect(empty.ok(), await empty.text()).toBeTruthy();
+      expect(await empty.json()).toMatchObject({
+        start_date: blockedDate,
+        end_date: blockedDate,
+        available_slots: [],
+        empty_reason: "no_safe_slots",
+      });
+      await expect(page.getByText("No safe starts found", { exact: true })).toBeVisible();
+    } finally {
+      const cleanup = await coachRequest.delete(
+        `${liveApiBase}/coach/blockers/${encodeURIComponent(blocker.id)}?expected_revision=${blocker.revision}`,
+        { headers: { "X-CSRF-Protection": "1" } },
+      );
+      expect(cleanup.status()).toBe(204);
+    }
   });
 
   test("creates, persists, edits, and removes a provider schedule blocker", async ({ page }) => {

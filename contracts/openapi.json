@@ -1560,6 +1560,19 @@
             "title": "Client Address",
             "type": "string"
           },
+          "client_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
           "client_name": {
             "maxLength": 120,
             "minLength": 1,
@@ -5193,6 +5206,22 @@
         "operationId": "create_booking_api_coach_bookings_post",
         "parameters": [
           {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
+            }
+          },
+          {
             "description": "Required anti-CSRF marker for provider mutations. The value must be `1`.",
             "example": "1",
             "in": "header",
@@ -5227,6 +5256,26 @@
               }
             },
             "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The provider or client could not be found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "A conflict prevents booking this appointment."
           },
           "422": {
             "content": {
@@ -5501,6 +5550,24 @@
     "/api/coach/clients": {
       "get": {
         "operationId": "read_clients_api_coach_clients_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Expected-Instructor-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Expected-Instructor-Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5521,6 +5588,26 @@
               }
             },
             "description": "The provider or client could not be found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The signed-in provider changed."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "security": [

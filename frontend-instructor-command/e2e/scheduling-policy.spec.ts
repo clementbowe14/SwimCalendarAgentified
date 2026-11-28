@@ -1,6 +1,7 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Page, type Request, test } from "@playwright/test";
 import type { SchedulingPolicy, SchedulingPolicyUpdate } from "../src/api/types";
 import { agendaResponse } from "./agenda-fixture";
+import { finderClientList, finderSearchResult } from "./finder-fixture";
 
 const SESSION_COOKIE_NAME = "swim_session";
 const SESSION_COOKIE_VALUE = "scheduling-policy-session";
@@ -152,11 +153,16 @@ test.describe("provider scheduling policy", () => {
   });
 
   test("ignores an older availability response after a policy save refresh", async ({ page }) => {
+    await page.clock.setFixedTime(new Date("2026-08-27T12:00:00Z"));
     const api = await installSchedulingPolicyApi(page);
     await page.goto("/");
     await page.getByRole("button", { name: "Find", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Book lesson" })).toBeVisible();
+    await page.getByLabel("End date").fill("2026-08-29");
     api.delayNextAvailability();
+    const pending = page.waitForRequest("**/api/coach/availability/search");
     await page.getByRole("button", { name: "Find safe starts" }).click();
+    await pending;
 
     await page.getByRole("button", { name: "Settings" }).click();
     const form = page.locator("[data-scheduling-policy-form]");
@@ -165,6 +171,7 @@ test.describe("provider scheduling policy", () => {
     await expect(form.locator("[data-policy-save-status]")).toContainText("Scheduling policy saved");
     await page.getByRole("button", { name: "Find", exact: true }).click();
     await expect(page.locator(".slot-card")).toContainText("Buffer 90 min");
+    await expect(page.locator("[data-finder-results]")).toContainText("Thu, Aug 27 to Sat, Aug 29");
     const currentSlot = await page.locator(".slot-card").textContent();
 
     await api.releaseAvailability();
@@ -266,9 +273,10 @@ async function installSchedulingPolicyApi(page: Page, options: ApiOptions = {}):
       await route.fulfill({ json: policy });
       return;
     }
-    if (pathname.endsWith("/coach/availability")) {
+    if (pathname.endsWith("/coach/clients")) return route.fulfill({ json: finderClientList });
+    if (pathname.endsWith("/coach/availability/search")) {
       availabilityCallCount += 1;
-      const response = availabilityResponse(policy);
+      const response = availabilityResponse(request, policy);
       const gate = availabilityGate;
       const completeDelayedAvailability = gate ? completeAvailability : null;
       if (gate) {
@@ -429,18 +437,15 @@ function snapshotResponse(policy: SchedulingPolicy, setupComplete: boolean): Rec
   };
 }
 
-function availabilityResponse(policy: SchedulingPolicy): Record<string, unknown> {
+function availabilityResponse(request: Request, policy: SchedulingPolicy) {
   const delayed = policy.distance_buffer_tiers[0].buffer_mins >= 60;
+  const result = finderSearchResult(request);
   return {
-    status: "PRESENTING",
-    client_name: "Sofia Martinez",
-    requested_date: "2026-08-27",
-    duration_mins: 45,
-    location: { address: "820 Lakeview Dr", lat: 30.289, lng: -97.739, is_instructor_facility: false },
+    ...result,
     available_slots: [{
-      start_iso: delayed ? "2026-08-27T16:30:00-05:00" : "2026-08-27T16:00:00-05:00",
-      end_iso: delayed ? "2026-08-27T17:15:00-05:00" : "2026-08-27T16:45:00-05:00",
-      display: delayed ? "Thu, Aug 27 at 4:30 PM" : "Thu, Aug 27 at 4:00 PM",
+      start_iso: `${result.start_date}T${delayed ? "16:30" : "16:00"}:00-05:00`,
+      end_iso: `${result.start_date}T${delayed ? "17:15" : "16:45"}:00-05:00`,
+      display: delayed ? "4:30 PM" : "4:00 PM",
       travel_time_mins: 12,
       buffer_mins: policy.distance_buffer_tiers[0].buffer_mins,
       distance_miles: 2.1,
