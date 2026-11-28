@@ -1170,6 +1170,7 @@ def book_coach_lesson(
     *,
     build_calendar_source: Optional[Callable[[], CalendarBusySource]] = None,
 ) -> BookLessonResponse:
+    client_id = request.client_id or _client_id_from_name(request.client_name)
     try:
         provider = load_provider_configuration(instructor_id)
     except ProviderNotFound as exc:
@@ -1186,28 +1187,50 @@ def book_coach_lesson(
     except timezones.InvalidTimezoneError as exc:
         if existing is not None and _is_aware(request.start_time):
             requested_start = request.start_time
-            _validate_coach_booking_replay(existing, instructor_id, request, requested_start)
+            _validate_coach_booking_replay(existing, instructor_id, client_id, request, requested_start)
             return _coach_booking_replay_response(existing, request, provider.timezone)
         raise ProviderSetupRequired(list(provider.setup_missing_fields)) from exc
     except (timezones.AmbiguousLocalTimeError, timezones.NonexistentLocalTimeError) as exc:
         raise InvalidSchedulingRequest("The requested local time is invalid for the instructor timezone.") from exc
     if existing:
-        _validate_coach_booking_replay(existing, instructor_id, request, requested_start)
+        _validate_coach_booking_replay(existing, instructor_id, client_id, request, requested_start)
         return _coach_booking_replay_response(existing, request, provider.timezone)
 
     if not provider.setup_complete:
         raise ProviderSetupRequired(list(provider.setup_missing_fields))
 
+    client_name = request.client_name
+    client_address = request.client_address
+    if request.client_id is not None:
+        client = db.get_client_profile_for_instructor(instructor_id, client_id)
+        if client is None:
+            raise ResourceNotFound("The client could not be found.")
+        client_address = client_address.strip()
+        at_facility = client["location_mode"] == "service_location"
+        saved_location = (
+            _client_service_location_response(provider.service_location)
+            if at_facility else _client_profile_location_response(client)
+        )
+        if (
+            at_facility != request.is_instructor_facility
+            or saved_location is None
+            or saved_location.address.strip() != client_address
+        ):
+            raise SchedulingConflict("The saved client location changed. Find new times for this client.")
+        client_name = client["name"]
+
     policy = load_buffer_policy(instructor_id, operation="coach_booking")
-    location = _resolve_location(instructor_id, request.client_address, request.is_instructor_facility)
+    location = _resolve_location(instructor_id, client_address, request.is_instructor_facility)
     try:
         result = tools.book_swim_lesson(
             instructor_id=instructor_id,
-            client_id=_client_id_from_name(request.client_name),
-            client_name=request.client_name,
+            client_id=client_id,
+            client_name=client_name,
             start_time_iso=requested_start.isoformat(),
             duration_mins=request.duration_mins,
             location_address=location.address,
+            expected_location_address=client_address if request.client_id is not None else None,
+            target_location=LocationInfo(**location.model_dump()),
             idempotency_key=request.idempotency_key,
             is_instructor_facility=request.is_instructor_facility,
             buffer_policy=policy,
@@ -1236,6 +1259,7 @@ def book_coach_lesson(
 def _validate_coach_booking_replay(
     existing: dict,
     instructor_id: str,
+    client_id: str,
     request: CoachBookLessonRequest,
     requested_start: datetime,
 ) -> None:
@@ -1243,7 +1267,11 @@ def _validate_coach_booking_replay(
     requested_end_storage = requested_start_storage + _duration_delta(request.duration_mins)
     if (
         existing["instructor_id"] != instructor_id
-        or existing["client_id"] != _client_id_from_name(request.client_name)
+        or existing["client_id"] != client_id
+        or (
+            request.client_id is not None
+            and (existing["location_address"] or "").strip() != request.client_address.strip()
+        )
         or timezones.to_utc_storage(existing["start_time"]) != requested_start_storage
         or timezones.to_utc_storage(existing["end_time"]) != requested_end_storage
     ):
@@ -1260,11 +1288,16 @@ def _coach_booking_replay_response(
         timezone_name,
     )
     timezone_suffix = "" if used_authoritative_timezone else " UTC"
+    client_name = (
+        existing["title"].removeprefix("Lesson with ")
+        if request.client_id is not None
+        else request.client_name
+    )
     return BookLessonResponse(
         success=True,
         appointment_id=existing["id"],
         message=(
-            f"Successfully booked swim lesson for {request.client_name} on "
+            f"Successfully booked swim lesson for {client_name} on "
             f"{readable_start.strftime('%b %d, %Y at %I:%M %p')}"
             f"{timezone_suffix}!"
         ),

@@ -1278,11 +1278,28 @@ def save_appointment(
     event_type: str = "lesson",
     status: str = "scheduled",
     request_id: Optional[str] = None,
+    match_location: bool = False,
 ) -> str:
     start_time = timezones.to_utc_storage(start_time)
     end_time = timezones.to_utc_storage(end_time)
     if end_time <= start_time:
         raise ValueError("Appointment end time must be after start time.")
+
+    def replay_id(existing: AppointmentDB) -> str:
+        if (
+            existing.instructor_id != instructor_id
+            or existing.start_time != start_time
+            or existing.end_time != end_time
+            or existing.client_id != client_id
+            or (
+                match_location
+                and (
+                    (existing.location_address or "").strip(), existing.lat, existing.lng,
+                ) != (location_address.strip(), lat, lng)
+            )
+        ):
+            raise IdempotencyKeyConflictError("Idempotency key was already used for a different booking.")
+        return existing.id
 
     session = SessionLocal()
     try:
@@ -1293,14 +1310,7 @@ def save_appointment(
                 idempotency_key,
             )
             if existing:
-                if (
-                    existing.instructor_id != instructor_id
-                    or existing.start_time != start_time
-                    or existing.end_time != end_time
-                    or existing.client_id != client_id
-                ):
-                    raise IdempotencyKeyConflictError("Idempotency key was already used for a different booking.")
-                return existing.id
+                return replay_id(existing)
 
         conflict = session.query(AppointmentDB).filter(
             AppointmentDB.instructor_id == instructor_id,
@@ -1310,6 +1320,10 @@ def save_appointment(
             AppointmentDB.end_time > start_time,
         ).first()
         if conflict:
+            if idempotency_key and conflict.idempotency_key == idempotency_key:
+                existing = _idempotent_appointment_or_conflict(session, instructor_id, idempotency_key)
+                if existing is not None:
+                    return replay_id(existing)
             raise ScheduleConflictError("An active schedule item already occupies that time.")
 
         app_id = f"app_{uuid.uuid4().hex[:8]}"
@@ -1335,8 +1349,6 @@ def save_appointment(
         return app_id
     except IntegrityError as exc:
         session.rollback()
-        if "exclude_appointments_active_overlap" in str(exc):
-            raise ScheduleConflictError("An active schedule item already occupies that time.") from exc
         if idempotency_key:
             existing = _idempotent_appointment_or_conflict(
                 session,
@@ -1344,15 +1356,9 @@ def save_appointment(
                 idempotency_key,
             )
             if existing:
-                if (
-                    existing.start_time != start_time
-                    or existing.end_time != end_time
-                    or existing.client_id != client_id
-                ):
-                    raise IdempotencyKeyConflictError(
-                        "Idempotency key was already used for a different booking."
-                    ) from exc
-                return existing.id
+                return replay_id(existing)
+        if "exclude_appointments_active_overlap" in str(exc):
+            raise ScheduleConflictError("An active schedule item already occupies that time.") from exc
         raise
     finally:
         session.close()

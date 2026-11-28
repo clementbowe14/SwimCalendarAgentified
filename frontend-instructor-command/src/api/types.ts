@@ -75,6 +75,24 @@ export type BookingRequestDTO = {
   duration_mins: number;
 };
 
+export type AvailabilityDateRange = { start_date: string; end_date: string };
+
+export type AvailabilityRangeRequest = AvailabilityDateRange & {
+  duration_mins: number;
+  windows: Array<Omit<AvailabilityWindow, "id" | "days"> & { days: ProviderWeekday[] }>;
+  client_address: string | null;
+  is_instructor_facility: boolean;
+  limit?: number;
+};
+
+export type AvailabilityRangeResult = AvailabilityDateRange & {
+  duration_mins: number;
+  timezone: string;
+  location: LocationInfo;
+  available_slots: TimeSlotDTO[];
+  empty_reason: "no_working_hours" | "outside_client_windows" | "no_safe_slots" | null;
+};
+
 export type BookLessonPayload = {
   instructor_id: Id;
   client_id: Id;
@@ -228,6 +246,10 @@ export type Client = {
   notes: string;
   history_summary: string;
   progress_focus: string;
+};
+
+export type FinderClient = Pick<Client, "id" | "name" | "location_mode" | "availability" | "lesson_duration_mins"> & {
+  default_location: LocationInfo | null;
 };
 
 type ScheduleItemBase = {
@@ -417,6 +439,8 @@ export type InstructorCommandApi = {
   updateBlocker(blocker_id: Id, blocker: BlockerUpdate, expectedInstructorId?: Id): Promise<ProviderBlocker>;
   deleteBlocker(blocker_id: Id, expected_revision: number, expectedInstructorId?: Id): Promise<void>;
   findAvailableSlots(request: BookingRequestDTO): Promise<TimeSlotDTO[]>;
+  getFinderClients(expectedInstructorId: Id): Promise<FinderClient[]>;
+  searchAvailability(request: AvailabilityRangeRequest, expectedInstructorId: Id): Promise<AvailabilityRangeResult>;
   bookLesson(payload: BookLessonPayload): Promise<BookLessonResponse>;
   confirmRequest(requestId: Id, slotId?: Id): Promise<CoachLessonRequestConfirmResponse>;
   getEmailDeliveries(): Promise<CoachEmailDelivery[]>;

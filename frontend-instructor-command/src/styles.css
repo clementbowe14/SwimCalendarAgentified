@@ -739,6 +739,20 @@ button {
   gap: 12px;
 }
 
+.finder-windows {
+  grid-column: 1 / -1;
+}
+
+.finder-form input[type="date"] {
+  min-width: 0;
+}
+
+#finder-date-help,
+.finder-result-context {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 label {
   display: grid;
   gap: 6px;

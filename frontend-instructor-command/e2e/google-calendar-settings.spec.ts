@@ -2,6 +2,7 @@ import { expect, type Page, type Request, type Route, test } from "@playwright/t
 import { candidateSlots, providerConfiguration, snapshot } from "../src/api/mockData";
 import type { GoogleCalendarConnection } from "../src/api/types";
 import { agendaResponse } from "./agenda-fixture";
+import { finderClientList, finderSearchResult } from "./finder-fixture";
 
 const calendarPath = "/api/coach/calendar-connections/google";
 const googleAuthorization = "https://accounts.google.com/o/oauth2/v2/auth?state=local-state";
@@ -19,6 +20,7 @@ type RouteResponse = NonNullable<Parameters<Route["fulfill"]>[0]>;
 
 test("connects from mobile Settings and clears cached Find results after disconnect", async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 320, height: 844 });
+  await page.clock.setFixedTime(new Date("2026-08-27T12:00:00Z"));
   const api = await installFakeCalendarProvider(page, baseURL);
   const initialStatus = deferredResponse();
   api.replyNext("GET", initialStatus.response);
@@ -343,9 +345,10 @@ async function installFakeCalendarProvider(
         timezone: providerConfiguration.timezone,
       }) });
     }
-    if (path === "/api/coach/availability") {
+    if (path === "/api/coach/clients") return route.fulfill({ json: finderClientList });
+    if (path === "/api/coach/availability/search") {
       availabilityReads += 1;
-      return route.fulfill({ json: availability(connection) });
+      return route.fulfill({ json: availability(request, connection) });
     }
     if (
       (path === calendarPath && (method === "GET" || method === "DELETE"))
@@ -395,14 +398,15 @@ function connectionStatus(state: CalendarState): GoogleCalendarConnection {
   };
 }
 
-function availability(connection: CalendarState) {
+function availability(request: Request, connection: CalendarState) {
   const hour = connection === "disconnected" ? 15 : 16;
+  const result = finderSearchResult(request);
   return {
-    status: "PRESENTING",
+    ...result,
     location: candidateSlots[0].target_location,
     available_slots: [{
-      start_iso: `2026-08-27T${hour}:15:00-04:00`,
-      end_iso: `2026-08-27T${hour}:45:00-04:00`,
+      start_iso: `${result.start_date}T${hour}:15:00-04:00`,
+      end_iso: `${result.start_date}T${hour}:45:00-04:00`,
       travel_time_mins: 15,
       buffer_mins: 10,
       distance_miles: 5,

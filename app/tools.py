@@ -569,10 +569,12 @@ def book_swim_lesson(
     buffer_policy: Optional[BufferPolicy] = None,
     *,
     calendar_busy_source: Optional[CalendarBusySource] = None,
+    expected_location_address: str | None = None,
+    target_location: LocationInfo | None = None,
 ) -> dict:
     """Book a lesson without retaining a secret-bearing busy source."""
 
-    try: source_handoff: list[Optional[CalendarBusySource]] = [calendar_busy_source]; calendar_busy_source = None; return _book_swim_lesson(instructor_id, client_id, client_name, start_time_iso, duration_mins, location_address, idempotency_key, request_id, is_instructor_facility, buffer_policy, source_handoff)
+    try: source_handoff: list[Optional[CalendarBusySource]] = [calendar_busy_source]; calendar_busy_source = None; return _book_swim_lesson(instructor_id, client_id, client_name, start_time_iso, duration_mins, location_address, idempotency_key, request_id, is_instructor_facility, buffer_policy, source_handoff, expected_location_address, target_location)
     finally:
         try: calendar_busy_source = None; _clear_optional_calendar_busy_source_handoff(locals().get("source_handoff"))
         except BaseException:
@@ -595,6 +597,8 @@ def _book_swim_lesson(
     is_instructor_facility: bool,
     buffer_policy: Optional[BufferPolicy],
     calendar_busy_source_handoff: list[Optional[CalendarBusySource]],
+    expected_location_address: str | None,
+    target_location: LocationInfo | None,
 ) -> dict:
     """Books an appointment after revalidating the authoritative schedule."""
     try:
@@ -612,11 +616,18 @@ def _book_swim_lesson(
     start_time_storage = timezones.to_utc_storage(start_time)
     end_time_storage = start_time_storage + datetime.timedelta(minutes=duration_mins)
 
-    existing = db.get_appointment_by_idempotency_key(instructor_id, idempotency_key)
-    if existing is not None:
+    def replay(existing: dict, resolved_location: LocationInfo | None) -> dict:
         if (
             existing["instructor_id"] != instructor_id
             or existing["client_id"] != client_id
+            or (
+                expected_location_address is not None
+                and (existing["location_address"] or "").strip() != expected_location_address
+            )
+            or (
+                expected_location_address is not None and resolved_location is not None
+                and (existing["lat"], existing["lng"]) != (resolved_location.lat, resolved_location.lng)
+            )
             or timezones.to_utc_storage(existing["start_time"]) != start_time_storage
             or timezones.to_utc_storage(existing["end_time"]) != end_time_storage
         ):
@@ -627,8 +638,15 @@ def _book_swim_lesson(
             "message": f"Successfully booked swim lesson for {client_name} on {timezones.aware_to_local(start_time, provider.timezone).strftime('%b %d, %Y at %I:%M %p')}!",
         }
 
+    existing = db.get_appointment_by_idempotency_key(instructor_id, idempotency_key)
+    if existing is not None:
+        return replay(existing, target_location)
+
     if not provider.setup_complete:
         raise ProviderSetupIncomplete(provider.setup_missing_fields)
+    location = target_location or resolve_availability_location(provider, location_address, is_instructor_facility)
+    if expected_location_address is not None and location.address.strip() != expected_location_address:
+        raise db.ScheduleConflictError("The appointment location changed after the availability search.")
 
     policy = buffer_policy or load_buffer_policy(instructor_id, operation="direct_booking")
     available_slots = find_available_swim_slots(
@@ -642,17 +660,14 @@ def _book_swim_lesson(
             calendar_busy_source_handoff
         ),
         requested_start=start_time,
+        target_location=location,
     )
     if not any(timezones.to_utc_storage(slot.start_time) == start_time_storage for slot in available_slots):
+        if idempotency_key:
+            existing = db.get_appointment_by_idempotency_key(instructor_id, idempotency_key)
+            if existing is not None:
+                return replay(existing, location)
         raise db.ScheduleConflictError("The requested start is no longer available.")
-
-    if is_instructor_facility:
-        if provider.service_location is None:
-            raise ProviderSetupIncomplete(provider.setup_missing_fields)
-        lat, lng = provider.service_location.lat, provider.service_location.lng
-        location_address = provider.service_location.address
-    else:
-        lat, lng = routing_provider.geocode(location_address)
 
     app_id = db.save_appointment(
         instructor_id=instructor_id,
@@ -660,11 +675,12 @@ def _book_swim_lesson(
         title=f"Lesson with {client_name}",
         start_time=start_time_storage,
         end_time=end_time_storage,
-        location_address=location_address,
-        lat=lat,
-        lng=lng,
+        location_address=location.address,
+        lat=location.lat,
+        lng=location.lng,
         idempotency_key=idempotency_key,
         request_id=request_id,
+        match_location=expected_location_address is not None,
     )
 
     return {
