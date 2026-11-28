@@ -131,6 +131,7 @@ from app.public_tokens import (
     InviteContext,
     LessonRequestRecord,
     create_lesson_request,
+    is_range_slot_offer,
     resolve_lesson_request_by_idempotency_key,
     resolve_lesson_request,
 )
@@ -1350,11 +1351,12 @@ def confirm_coach_lesson_request(
         try:
             try:
                 _validate_current_facility_request(lesson_request)
-                _validate_occurrences(lesson_request, occurrences, policy, calendar_busy_source=calendar)
+                location = _validate_occurrences(lesson_request, occurrences, policy, calendar_busy_source=calendar)
             except SchedulingConflict:
                 _lock_confirmation_calendar(session, calendar)
                 raise
             _lock_confirmation_calendar(session, calendar)
+            lesson_request.lat, lesson_request.lng = location.lat, location.lng
             appointments = _insert_occurrence_appointments(session, lesson_request, occurrences)
             # Force database overlap and integrity checks while they can still
             # be translated into the canonical scheduling-conflict contract.
@@ -1750,13 +1752,18 @@ def _validate_occurrences(
     buffer_policy: BufferPolicy,
     *,
     calendar_busy_source: CalendarBusySource | None = None,
-) -> None:
+) -> LocationInfo:
     try:
         timezone_name = _instructor_timezone(lesson_request.instructor_id)
-        location = LocationInfo(
-            address=lesson_request.client_address, lat=lesson_request.lat, lng=lesson_request.lng,
-            is_instructor_facility=lesson_request.location_type == "facility",
-        )
+        at_facility = lesson_request.location_type == "facility"
+        if at_facility or is_range_slot_offer(lesson_request.original_slot_offer_id):
+            location = LocationInfo(
+                address=lesson_request.client_address, lat=lesson_request.lat, lng=lesson_request.lng,
+                is_instructor_facility=at_facility,
+            )
+        else:
+            resolved = _resolve_location(lesson_request.instructor_id, lesson_request.client_address, False)
+            location = LocationInfo(**resolved.model_dump())
         for start, end in occurrences:
             requested_start = timezones.storage_to_aware_utc(start)
             _require_available_start(
@@ -1771,6 +1778,7 @@ def _validate_occurrences(
                 calendar_busy_source=calendar_busy_source,
                 target_location=location,
             )
+        return location
     finally:
         calendar_busy_source = None
 

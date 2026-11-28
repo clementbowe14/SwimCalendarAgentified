@@ -52,6 +52,12 @@ class LessonRequestRecord:
 
 
 DEMO_INVITE_TOKEN = "demo-invite-token"
+# Only range offers are guaranteed to have been created with server-resolved coordinates.
+RANGE_SLOT_OFFER_PREFIX = "slot_range_"
+
+
+def is_range_slot_offer(slot_id: str | None) -> bool:
+    return slot_id is not None and slot_id.startswith(RANGE_SLOT_OFFER_PREFIX)
 
 
 def resolve_invite(token: str) -> InviteContext:

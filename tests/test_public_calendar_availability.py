@@ -169,7 +169,7 @@ def test_redemption_rechecks_invite_and_offer_before_writing(api_client, monkeyp
     validate_occurrences = client_invites._validate_offer_occurrences
 
     def validate_then_change(*args):
-        validate_occurrences(*args)
+        location = validate_occurrences(*args)
         now = datetime.utcnow()
         with db.SessionLocal.begin() as session:
             if change == "offer_expired":
@@ -180,6 +180,7 @@ def test_redemption_rechecks_invite_and_offer_before_writing(api_client, monkeyp
                     invite.revoked_at = now
                 else:
                     invite.expires_at = now
+        return location
 
     monkeypatch.setattr(client_invites, "_validate_offer_occurrences", validate_then_change)
     key = "range-selected-slot-invite-liveness"
@@ -190,6 +191,36 @@ def test_redemption_rechecks_invite_and_offer_before_writing(api_client, monkeyp
     assert response.json()["error"]["code"] == code
     with db.SessionLocal() as session:
         assert session.query(LessonRequestDB).filter_by(idempotency_key=key).first() is None
+
+
+def test_legacy_home_coordinates_are_resolved_before_request_and_booking(api_client, coach_auth_headers, monkeypatch):
+    resolved = (30.28, -97.75)
+    geocode = Mock(return_value=resolved)
+    monkeypatch.setattr(tools.routing_provider, "geocode", geocode)
+    slots = api_client.post(SLOTS_PATH, json=SLOT_PAYLOAD)
+    assert slots.status_code == 200, slots.text
+    slot_id = slots.json()["slots"][0]["id"]
+    with db.SessionLocal.begin() as session:
+        offer = session.get(InviteSlotOfferDB, slot_id)
+        assert (offer.lat, offer.lng) == resolved
+        offer.lat, offer.lng = (30.25, -97.78)
+
+    response = api_client.post(f"/api/public/client-invites/{INVITE}/lesson-requests", json={"slot_id": slot_id})
+    assert response.status_code == 200, response.text
+    request_token = response.json()["id"]
+    with db.SessionLocal.begin() as session:
+        request = session.query(LessonRequestDB).filter_by(request_token=request_token).one()
+        assert (request.lat, request.lng) == resolved
+        request.lat, request.lng = (30.25, -97.78)
+
+    confirmed = api_client.post(
+        f"/api/coach/lesson-requests/{request_token}/confirm", headers=coach_auth_headers, json={},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    with db.SessionLocal() as session:
+        appointment = session.get(AppointmentDB, confirmed.json()["appointment_ids"][0])
+        assert (appointment.lat, appointment.lng) == resolved
+    assert geocode.call_count == 3
 
 
 def test_later_fold_offer_preserves_the_selected_instant(api_client, coach_auth_headers, monkeypatch):
