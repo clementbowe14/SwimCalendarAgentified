@@ -1,5 +1,5 @@
 import { ArrowLeftIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
-import type { AvailabilitySearchResponse, BookingRecurrence } from "../api/types";
+import type { AvailabilitySearchResponse } from "../api/types";
 import { SectionCard } from "../components/SectionCard";
 import { SlotCard } from "../components/SlotCard";
 
@@ -7,57 +7,67 @@ type SlotResultsScreenProps = {
   response: AvailabilitySearchResponse;
   instructorName: string;
   selectedSlotId: string | null;
-  recurrence: BookingRecurrence;
   onSelectSlot: (slotId: string) => void;
   onRequestSlot: () => void;
   onBack: () => void;
   requesting: boolean;
 };
 
+const searchDateFormat = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
 export function SlotResultsScreen({
   response,
   instructorName,
   selectedSlotId,
-  recurrence,
   onSelectSlot,
   onRequestSlot,
   onBack,
   requesting,
 }: SlotResultsScreenProps) {
   const selectedSlot = response.slots.find((slot) => slot.id === selectedSlotId);
+  const searchedDates = searchDateFormat.formatRange(
+    new Date(`${response.start_date}T00:00:00Z`),
+    new Date(`${response.end_date}T00:00:00Z`),
+  );
 
   return (
     <div className="screen-stack results-screen">
-      <button className="back-link" type="button" onClick={onBack}>
+      <button className="back-link" type="button" onClick={onBack} disabled={requesting}>
         <ArrowLeftIcon />
         Edit preferences
       </button>
       <SectionCard eyebrow="Open times" title="Available to request" meta={`${response.slots.length} found`}>
         <div className="booking-note">
-          <strong>Pick the time you prefer</strong>
-          <span>{recurrence === "weekly" ? "Weekly request" : "One-time request"} - {instructorName} confirms after final schedule check.</span>
+          <strong>Searched {searchedDates}</strong>
         </div>
-        <div className="slot-list">
-          {response.slots.map((slot) => (
-            <SlotCard
-              slot={slot}
-              selected={selectedSlotId === slot.id}
-              key={slot.id}
-              onSelect={() => onSelectSlot(slot.id)}
-            />
-          ))}
-        </div>
-      </SectionCard>
-
-      {response.unavailable_windows.map((window) => (
-        <div className="no-slots" key={window.id}>
-          <ExclamationTriangleIcon />
-          <div>
-            <strong>No matching options {window.label}</strong>
-            <span>Try editing your availability to see more times.</span>
+        {response.slots.length > 0 ? (
+          <div className="slot-list">
+            {response.slots.map((slot) => (
+              <SlotCard
+                slot={slot}
+                durationMins={response.duration_mins}
+                selected={selectedSlotId === slot.id}
+                disabled={requesting}
+                key={slot.id}
+                onSelect={() => onSelectSlot(slot.id)}
+              />
+            ))}
           </div>
-        </div>
-      ))}
+        ) : (
+          <div className="no-slots" role="status">
+            <ExclamationTriangleIcon aria-hidden="true" />
+            <div>
+              <strong>No appointment times found</strong>
+              <span>Try changing your days, time windows, or duration.</span>
+            </div>
+          </div>
+        )}
+      </SectionCard>
 
       {selectedSlot ? (
         <div className="confirmation-strip">
@@ -66,9 +76,11 @@ export function SlotResultsScreen({
         </div>
       ) : null}
 
-      <button className="primary-button" type="button" onClick={onRequestSlot} disabled={!selectedSlot || requesting}>
-        {requesting ? "Sending request" : selectedSlot ? "Request this time" : "Select a time"}
-      </button>
+      {selectedSlot ? (
+        <button className="primary-button" type="button" onClick={onRequestSlot} disabled={requesting}>
+          {requesting ? "Sending request" : "Request this time"}
+        </button>
+      ) : null}
     </div>
   );
 }

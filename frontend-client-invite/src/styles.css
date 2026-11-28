@@ -69,8 +69,7 @@ label {
   gap: 7px;
 }
 
-.segmented-control,
-.recurrence-control {
+.segmented-control {
   grid-template-columns: 1fr 1fr;
 }
 
@@ -125,26 +124,14 @@ label {
 }
 
 .slot-card strong,
-.slot-card span,
-.slot-card p {
+.slot-card span {
   display: block;
 }
 
-.slot-card span,
-.slot-card p {
+.slot-card span {
   color: #5f6e80;
   font-size: 13px;
   line-height: 1.3;
-}
-
-.slot-facts {
-  margin-top: 6px;
-  font-weight: 850;
-}
-
-.slot-card p {
-  margin: 7px 0 0;
-  font-weight: 500;
 }
 
 .slot-meta-grid {
@@ -873,20 +860,6 @@ input[readonly] {
   color: var(--ink);
   font-size: 20px;
   letter-spacing: -0.02em;
-}
-
-.slot-card .slot-facts {
-  display: inline-flex;
-  width: max-content;
-  margin-top: 7px;
-  padding: 4px 8px;
-  border-radius: 999px;
-  color: #2f6142;
-  background: #e3eee2;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
 .slot-meta-grid span {

@@ -1,10 +1,8 @@
 import type {
   AvailabilityWindow,
-  BookingRecurrence,
   ClientAvailabilitySearchRequest,
   ClientIntake,
   DayKey,
-  SchedulerSlot,
 } from "../../api/types.js";
 
 export type InviteStep = "intake" | "preferences" | "results" | "request" | "calendar";
@@ -12,24 +10,25 @@ export type InviteStep = "intake" | "preferences" | "results" | "request" | "cal
 export type InviteFlowState = {
   step: InviteStep;
   selectedSlotId: string | null;
-  recurrence: BookingRecurrence;
   duration_mins: number;
   windows: AvailabilityWindow[];
 };
 
-export const weekdayOptions: DayKey[] = ["Mon", "Tue", "Wed", "Thu", "Fri"];
-export const weekendOptions: DayKey[] = ["Sat", "Sun"];
+export const weekdayOptions: DayKey[] = ["monday", "tuesday", "wednesday", "thursday", "friday"];
+export const weekendOptions: DayKey[] = ["saturday", "sunday"];
+
+export const dayLabel = (day: DayKey): string => day[0].toUpperCase() + day.slice(1, 3);
 
 export const initialAvailabilityWindows: AvailabilityWindow[] = [
   {
     id: "weekday_after_school",
-    days: ["Tue", "Thu"],
+    days: ["tuesday", "thursday"],
     start_time: "16:00",
     end_time: "18:00",
   },
   {
     id: "weekend_late_morning",
-    days: ["Sat"],
+    days: ["saturday"],
     start_time: "10:00",
     end_time: "12:00",
   },
@@ -47,13 +46,10 @@ export const timeWindowPresets = [
 ];
 
 export const summarizeAvailability = (windows: AvailabilityWindow[]): string => {
-  if (windows.length === 0) {
-    return "No availability selected";
-  }
-
   return windows
-    .map((window) => `${window.days.join(", ") || "No days"} ${formatTimeRange(window.start_time, window.end_time)}`)
-    .join(" / ");
+    .filter((window) => window.days.length > 0)
+    .map((window) => `${window.days.map(dayLabel).join(", ")} ${formatTimeRange(window.start_time, window.end_time)}`)
+    .join(" / ") || "Any available time";
 };
 
 export const formatTimeRange = (startTime: string, endTime: string): string => {
@@ -70,21 +66,19 @@ export const formatTimeRange = (startTime: string, endTime: string): string => {
 
 export const buildSearchRequest = (
   intake: ClientIntake,
-  requestedDate: string,
   durationMins: number,
-  recurrence: BookingRecurrence,
   windows: AvailabilityWindow[],
-): ClientAvailabilitySearchRequest => ({
-  client_name: intake.client_name,
-  location: intake.location,
-  requested_date: requestedDate,
-  duration_mins: durationMins,
-  recurrence,
-  windows,
-});
-
-export const selectRecommendedSlot = (slots: SchedulerSlot[], recurrence: BookingRecurrence): SchedulerSlot | null => {
-  return slots.find((slot) => recurrence === "single" || slot.recurrence_available) ?? slots[0] ?? null;
+): ClientAvailabilitySearchRequest => {
+  const { address, is_instructor_facility } = intake.location;
+  return {
+    client_name: intake.client_name,
+    ...(is_instructor_facility ? {} : { client_address: address }),
+    is_instructor_facility,
+    duration_mins: durationMins,
+    windows: windows
+      .filter((window) => window.days.length > 0)
+      .map(({ days, start_time, end_time }) => ({ days, start_time, end_time })),
+  };
 };
 
 export const upsertWindowDays = (

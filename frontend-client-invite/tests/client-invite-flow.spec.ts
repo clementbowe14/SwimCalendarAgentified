@@ -67,7 +67,7 @@ test.describe("client invite self-booking flow", () => {
   test("finds backend-shaped slot results from availability preferences", async ({ page }) => {
     await page.goto("/");
     await page.getByRole("button", { name: "Continue to availability" }).click();
-    await page.getByRole("button", { name: "Weekly" }).click();
+    await expect(page.getByRole("button", { name: "Weekly", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Show available times" }).click();
     const bookingNote = page.locator(".booking-note");
     const firstSlot = page.locator(".slot-card").first();
@@ -90,8 +90,9 @@ test.describe("client invite self-booking flow", () => {
     await expect(resultsHeading).toBeVisible();
     await expect(resultsHeading).toBeFocused();
     await expect(page.getByText("Available to request").first()).toBeVisible();
-    await expect(page.getByText(/travel|buffer|distance/i)).toHaveCount(0);
-    await expect(page.getByText("No matching options Tue after 5 PM")).toBeVisible();
+    await expect(bookingNote).toContainText(/Searched Aug 29.*Sep 11, 2026/);
+    await expect(firstSlot).toContainText("45 min");
+    await expect(page.getByText(/weekly|travel|buffer|distance/i)).toHaveCount(0);
     await expectInviteProgress(page, "Step 3 of 5: Slots", 60);
 
     await page.getByRole("button", { name: "Edit preferences" }).click();

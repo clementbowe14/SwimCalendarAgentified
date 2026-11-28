@@ -7,6 +7,7 @@ import {
 } from "../data/mockInvite.js";
 import type {
   AvailabilitySearchResponse,
+  AvailabilitySlot,
   ClientAvailabilitySearchRequest,
   ClientInviteApi,
   ClientInviteEnvelope,
@@ -44,6 +45,7 @@ export class ClientInviteApiError extends Error {
 
 export class MockClientInviteApi implements ClientInviteApi {
   private lessonRequest: LessonRequest | null = null;
+  private offeredSlots: AvailabilitySlot[] = [];
 
   async getInvite(inviteToken: string): Promise<ClientInviteEnvelope> {
     await wait(120);
@@ -68,23 +70,27 @@ export class MockClientInviteApi implements ClientInviteApi {
   ): Promise<AvailabilitySearchResponse> {
     await wait(260);
 
-    const locationFilteredSlots = schedulerSlots.map((slot) => ({
+    const locationAddress = request.is_instructor_facility
+      ? inviteEnvelope.service_location?.address
+      : request.client_address;
+    this.offeredSlots = schedulerSlots.slice(0, request.limit).map((slot) => ({
       ...slot,
-      location_address: request.location.is_instructor_facility ? "Riverside Studio" : request.location.address,
-      recurrence_available: request.recurrence === "weekly" ? slot.recurrence_available : true,
-      recurrence: request.recurrence,
-      recurrence_count: request.recurrence === "weekly" ? 4 : 1,
+      end_iso: new Date(Date.parse(slot.start_iso) + request.duration_mins * 60_000).toISOString(),
+      location_address: locationAddress ?? slot.location_address,
     }));
 
     return {
       ...slotResponse,
-      slots: locationFilteredSlots,
+      duration_mins: request.duration_mins,
+      slots: this.offeredSlots,
     };
   }
 
   async requestLessonSlot(inviteToken: string, slotId: string, _idempotencyKey?: string): Promise<LessonRequest> {
     await wait(180);
-    const slot = schedulerSlots.find((item) => item.id === slotId) ?? schedulerSlots[0];
+    const slot = this.offeredSlots.find((item) => item.id === slotId)
+      ?? schedulerSlots.find((item) => item.id === slotId)
+      ?? schedulerSlots[0];
     this.lessonRequest = {
       ...createRequestedLesson(slot),
       invite_token: inviteToken,
@@ -138,7 +144,7 @@ export class FetchClientInviteApi implements ClientInviteApi {
     inviteToken: string,
     request: ClientAvailabilitySearchRequest,
   ): Promise<AvailabilitySearchResponse> {
-    return this.fetchJson(`/client-invites/${encodeURIComponent(inviteToken)}/slots`, {
+    return this.fetchJson(`/client-invites/${encodeURIComponent(inviteToken)}/availability/search`, {
       method: "POST",
       body: JSON.stringify(request),
     });

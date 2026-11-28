@@ -20,11 +20,10 @@ The `VITE_USE_MOCK_API=false` value may be omitted because HTTP is the default. 
 without an API URL fails instead of falling back to fixtures. Mock mode and an API URL cannot be set
 together, and production builds reject mock mode. See `.env.example` for the local HTTP configuration.
 
-Optional values:
+To use a default invite token:
 
 ```text
 VITE_CLIENT_INVITE_TOKEN=invite_sofia_0826
-VITE_CLIENT_INVITE_DATE=2026-08-29
 ```
 
 The invite token can also be supplied in the browser:
@@ -36,6 +35,7 @@ The invite token can also be supplied in the browser:
 Public requests should not include raw `instructor_id`, `client_id`, or appointment IDs. The invite
 token scopes the backend relationship. The HTTP adapter explicitly uses `credentials: "omit"` for every
 public API call and calendar download, so a same-site instructor `swim_session` cookie is never attached.
+One-time availability searches use the server's next 14 provider-local days.
 
 ## Tests
 
@@ -58,10 +58,9 @@ VITE_CLIENT_INVITE_API_URL=http://127.0.0.1:8016/api/public npm run test:e2e:liv
 ```
 
 Use an isolated backend started with `SWIM_ENV=test`, `SWIM_ENABLE_DEMO_DATA=true`, and
-`SWIM_ENABLE_DEMO_AUTH=true`. Mobile and desktop Vite servers use ports 4173 and 5173 and booking
-windows 35 days apart to prevent concurrent booking conflicts. The first window defaults to a Saturday
-at least one week from today; `VITE_CLIENT_INVITE_DATE` overrides it and should match the selected
-availability days. The backend must allow both frontend origins (included in its test defaults). Google
+`SWIM_ENABLE_DEMO_AUTH=true`. Mobile and desktop Vite servers use ports 4173 and 5173.
+Mobile searches Saturdays and desktop searches weekdays to prevent concurrent booking conflicts.
+The backend must allow both frontend origins (included in its test defaults). Google
 navigation is intercepted only at Google's external host; public API responses and downloads remain
 live. Actual Google/Apple import and provider delivery need separate manual verification.
 
